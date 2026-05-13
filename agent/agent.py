@@ -10,7 +10,10 @@ The agent:
 import json
 import os
 import sys
-from rich import print
+from rich import print, box, inspect
+from rich.prompt import Prompt
+from rich.panel import Panel
+from rich.align import Align
 from pathlib import Path
 from xdg_base_dirs import xdg_data_home
 
@@ -242,7 +245,7 @@ class Agent:
                     tool_name = tc["function"]["name"]
                     tool_args = tc["function"]["arguments"]
 
-                    print(f"{col.BGGRAY}Activating tool: {tool_name}{col.END}")
+                    print(f"[gray]☛ Activating tool: {tool_name}[/gray]")
                     result = execute_tool(tool_name, json.loads(tool_args) if isinstance(tool_args, str) else tool_args)
 
                     # Append tool result
@@ -264,17 +267,19 @@ class Agent:
         return "I've reached the maximum number of turns. Please rephrase your request."
 
     def print_help(self):
-        print(f" - [green]/q[/], [green]/quit[/], [green]/exit[/] → exit")
-        print(f" - [green]/tools[/]                               → list tools")
-        print(f" - [green]/skills[/]                              → list skills")
-        print(f" - [green]/config[/]                              → print configuration")
-        print(f" - [green]/help[/], [green]/commands[/]           → print command help")
+        print(f"⬤ [green]/q[/], [green]/quit[/], [green]/exit[/]   → exit")
+        print(f"⬤ [green]/tools[/]             → list tools")
+        print(f"⬤ [green]/skills[/]            → list skills")
+        print(f"⬤ [green]/config[/]            → print configuration")
+        print(f"⬤ [green]/help[/], [green]/commands[/]   → print command help")
         print()
         
 
     def run_interactive(self):
         """Run the agent in interactive mode."""
-        print(f"====[bold blue]LANGUR AGENT[/bold blue]====\n")
+        title = Align.center("[bold blue]LANGUR AGENT[/bold blue]", vertical='middle')
+        print(Panel(title, box=box.HEAVY, subtitle="The dead-simple AI agent for local workflows"))
+        print()
         self.print_help()
 
         # Set up prompt_toolkit if available
@@ -288,12 +293,12 @@ class Agent:
             })
             get_input = lambda: str(
                 prompt(style=style,
-                       message=":: You ::\n",
+                       message=":: You ::\n❯ ",
                        history=FileHistory(str(history_path)),
                        complete_while_typing=True)
             ).strip()
         else:
-            get_input = lambda: input(f"{col.YELLOW}:: You ::{col.END}\n").strip()
+            get_input = lambda: Prompt.ask("[yellow]:: You ::[/]\n❯ ")
 
         while True:
             try:
@@ -319,7 +324,7 @@ class Agent:
                 log_config()
                 continue
             elif user_input.lower() in ("/help", "/commands"):
-                self.print_help
+                self.print_help()
                 continue
 
             print(f"\n[magenta]:: Agent :: [/magenta]\n", end="", flush=True)
