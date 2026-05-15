@@ -2,7 +2,7 @@
 
 A dead-simple, extensible AI agent for Linux with tools, skills, and persistent memory. Created as a learning tool.
 
-## Quick Start
+## Quickstart
 
 You can install the agent with:
 
