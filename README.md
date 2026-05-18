@@ -31,7 +31,7 @@ langur-agent
 
 <p align="center">
 <img src="screenshot.jpg" 
-        alt="Picture"
+        alt="Welcome window"
         style="display: block; margin: 0 auto" />
 </p>
 
