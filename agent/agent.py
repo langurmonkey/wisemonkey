@@ -372,7 +372,7 @@ class Agent:
     def run_interactive(self):
         """Run the agent in interactive mode."""
         title = Align.center("[bold blue]LANGUR AGENT[/bold blue]", vertical='middle')
-        print(Panel(title, box=box.HEAVY, subtitle="The dead-simple AI agent for local workflows", border_style="yellow"))
+        print(Panel(title, box=box.HEAVY, border_style="yellow"))
         print()
         self.print_help()
 
