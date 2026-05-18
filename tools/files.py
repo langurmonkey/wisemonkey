@@ -4,6 +4,7 @@ Allows the agent to operate with files and directories in the file system.
 """
 
 import os
+import tempfile
 from rich import print
 from agent.tools import register_tool
 
@@ -110,7 +111,7 @@ def write_file_handler(args):
 
     fd, tmp_path = tempfile.mkstemp(dir=parent if parent else None, prefix=".patched-")
     try:
-        os.write(fd.write(fd, content.encode("utf-8")))
+        os.write(fd, content.encode("utf-8"))
         os.fsync(fd)
     finally:
         os.close(fd)
@@ -141,6 +142,8 @@ def patch_file_handler(args):
         return {"error": f"The path is not a file: {path}"}
 
     print(f"  Patching [white on #444444]{path}[/white on #444444]")
+    print(f"  [white on red]-{old_string}[/]")
+    print(f"  [white on green]+{new_string}[/]")
 
     with open(path, "r") as f:
         file_content = f.read()
@@ -161,7 +164,7 @@ def patch_file_handler(args):
 
     new_content = file_content.replace(old_string, new_string, 1)
 
-    parent = os.dirname(path)
+    parent = os.path.dirname(path)
     fd, tmp_path = tempfile.mkstemp(dir=parent if parent else None, prefix=".patched-")
     try:
         os.write(fd, new_content.encode("utf-8"))

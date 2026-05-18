@@ -44,6 +44,10 @@ except ImportError:
     print("[red]ERROR:[/red] could not initialize promtp toolkit")
     _HAS_PROMPT_TOOLKIT = False
 
+class TurnCancelled(Exception):
+    """Raised when the user cancels an LLM turn mid-stream."""
+    pass
+
 class Agent:
     """Simple LLM agent with tools, skills, and memory."""
 
@@ -137,35 +141,42 @@ class Agent:
             tool_calls = {}  # indexed by position to merge partial deltas
             first_chunk_time = None
 
-            for chunk in response:
-                delta = chunk.choices[0].delta
-                now = time.time()
+            try:
+                for chunk in response:
+                    delta = chunk.choices[0].delta
+                    now = time.time()
 
-                # Track when first chunk arrives (excludes request send time)
-                if first_chunk_time is None:
-                    first_chunk_time = now
+                    # Track when first chunk arrives (excludes request send time)
+                    if first_chunk_time is None:
+                        first_chunk_time = now
 
-                # Collect text
-                if delta.content:
-                    full_text += delta.content
+                    # Collect text
+                    if delta.content:
+                        full_text += delta.content
 
-                    # Print text
-                    print(delta.content, end="", flush=True)
+                        # Print text
+                        print(delta.content, end="", flush=True)
 
-                # Collect tool calls
-                if delta.tool_calls:
-                    for tc in delta.tool_calls:
-                        idx = tc.index
-                        if idx not in tool_calls:
-                            tool_calls[idx] = {
-                                "id": tc.id,
-                                "type": tc.type,
-                                "function": {"name": "", "arguments": ""},
-                            }
-                        if tc.function.name:
-                            tool_calls[idx]["function"]["name"] += tc.function.name
-                        if tc.function.arguments:
-                            tool_calls[idx]["function"]["arguments"] += tc.function.arguments
+                    # Collect tool calls
+                    if delta.tool_calls:
+                        for tc in delta.tool_calls:
+                            idx = tc.index
+                            if idx not in tool_calls:
+                                tool_calls[idx] = {
+                                    "id": tc.id,
+                                    "type": tc.type,
+                                    "function": {"name": "", "arguments": ""},
+                                }
+                            if tc.function.name:
+                                tool_calls[idx]["function"]["name"] += tc.function.name
+                            if tc.function.arguments:
+                                tool_calls[idx]["function"]["arguments"] += tc.function.arguments
+
+            except KeyboardInterrupt:
+                # Close the response stream to stop the API call
+                response.close()
+                print("\n[bold yellow]⏹  Turn cancelled[/bold yellow]")
+                raise TurnCancelled() from None
 
             # Newline
             print()
@@ -231,7 +242,12 @@ class Agent:
         ntools = 0
         for turn in range(self.max_turns):
             # Send to LLM
-            (result, tokens, gen_elapsed) = self._send_to_llm(stream=self.stream)
+            try:
+                (result, tokens, gen_elapsed) = self._send_to_llm(stream=self.stream)
+            except TurnCancelled:
+                # User cancelled: don't persist anything, return immediately
+                return ("[Cancelled]", 0, 0, 0.0)
+
             total_tokens += tokens
             total_gen_time += gen_elapsed
 
@@ -418,6 +434,8 @@ class Agent:
                 print(f"\n[magenta]⩥ Agent ⩤ [/magenta]  ⦗[blue]{self.model}[/blue]⦘\n", end="", flush=True)
                 (response, total_tokens, ntools, total_gen_time) = self.run(user_input)
                 print()
+                if response == "[Cancelled]":
+                    continue  # skip status line, go straight back to prompt
                 self._statusline(total_tokens, ntools, total_gen_time)
 
         # Persist memory on session exit
