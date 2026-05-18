@@ -1,8 +1,20 @@
-# Langur AI agent
+<h3 align="center"><img src="icon.png" alt="Langur Agent" width="130px"><br>Langur Agent - <i>A dead-simple CLI agent for Linux</i></h3>
 
-A dead-simple, extensible AI agent for Linux with tools, skills, and persistent memory. Created as a learning tool.
+# Langur Agent
+
+A dead-simple, extensible CLI AI agent for Linux with tools, skills, and persistent memory. Created as a learning tool. Connects to any service providing an OpenAI-compatible endpoint.
+
+- [Quickstart](#quickstart)
+- [Run from source](#run-from-source)
+- [Configuration](#configuration)
+- [Global memory](#global-memory)
+- [Rolling chat memory](#rolling-chat-memory)
+- [Adding tools](#adding-tools)
+- [Adding skills](#adding-skills)
 
 ## Quickstart
+
+Langur Agent has been tested on Linux only. It may work on macOS, but there are no guarantees.
 
 You can install the agent with:
 
