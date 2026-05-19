@@ -50,12 +50,15 @@ DANGEROUS_PATTERNS = [
     r'\bkmod\b',
     r'\bmodprobe\b',
 
-    # Package management (destructive)
-    r'\bapt-get\s+(remove|purge|autoremove)\b',
-    r'\bdpkg\s+-[rP]\b',
-    r'\bpacman\s+-R\b',
-    r'\byum\s+(remove|erase)\b',
-    r'\bbrew\s+(remove|uninstall)\b',
+    # Package management
+    r'\bapt\b',
+    r'\bapt\b',
+    r'\bdpkg\b',
+    r'\bpacman\b',
+    r'\bparu\b',
+    r'\byay\b',
+    r'\byum\b',
+    r'\bbrew\b',
 
     # Process / signal
     r'\bpkill\b',
