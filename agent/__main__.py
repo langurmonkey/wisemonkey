@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Langur Agent - entry point."""
 
+import argparse
 import sys
-import time
+from importlib.metadata import version as get_version
 from rich import print
 from pathlib import Path
 
@@ -17,27 +18,44 @@ from agent import Agent
 
 def main():
     """Run the agent interactively or as a one-shot query."""
-    config_path = None
+    try:
+        pkg_version = get_version("langur-agent")
+    except Exception:
+        # Fallback for development/uninstalled cases
+        from agent import __version__
+        pkg_version = __version__
 
-    if "-c" in sys.argv or "--config" in sys.argv:
-        idx = sys.argv.index("-c") if "-c" in sys.argv else sys.argv.index("--config")
-        config_path = sys.argv[idx + 1]
+    parser = argparse.ArgumentParser(
+        description="Langur Agent - AI assistant",
+        version=pkg_version
+    )
+    parser.add_argument(
+        "-c", "--config",
+        metavar="PATH",
+        help="Path to the configuration file",
+    )
+    parser.add_argument(
+        "query",
+        nargs=argparse.REMAINDER,
+        help="One-shot query (if provided, runs once and exits)",
+    )
+    args = parser.parse_args()
 
     try:
-        agent = Agent(config_path=config_path)
+        agent = Agent(config_path=args.config)
     except Exception as e:
-        print("[red]ERROR:[/red] Agent creation failed", e)
-        return
+        print(f"[red]ERROR:[/red] Agent creation failed: {e}")
+        sys.exit(1)
 
     # One-shot mode: langur-agent "your query"
-    if len(sys.argv) > 1 and sys.argv[1] not in ("-c", "--config"):
-        query = " ".join(sys.argv[1:])
+    if args.query:
+        query = " ".join(args.query)
         result = agent.run(query)
         # run() returns (text, total_tokens, ntools, total_gen_time) tuple
         if isinstance(result, tuple):
             print(result[0])
             if len(result) > 3:
-                print(f"\n[black on #777777]  ⬤  {result[3]:.1f}s  ⬤  {result[1]} tokens  ⬤  {result[2]} tools  [/black on #777777]")
+                print(f"\n[black on #777777]  ⏣  {result[3]:.1f}s  ⏣  {result[1]} tokens  ⏣  {result[2]} tools  [/black on #777777]")
         else:
             print(result)
         return

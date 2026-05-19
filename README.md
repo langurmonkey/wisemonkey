@@ -51,7 +51,7 @@ uv run langur-agent
 
 On first run, the configuration is created in `$XDG_CONFIG_HOME/langur-agent/config.yaml`.
 
-It works with any OpenAI-compatible endpoint, so LM Studio, Ollama, OpenWebUI, or whatever you point it to that talks OpenAI. Here are the default values:
+It works with any OpenAI-compatible endpoint, so LM Studio, Ollama, OpenWebUI, or any other service you configure. Here are the default values:
 
 ```yaml
 # Langur Agent Configuration
@@ -61,7 +61,7 @@ model:
   # Model name
   name: qwen/qwen3.6-35b-a3b
   # Local API key.
-  # Or use envar: export LANGUR_API_KEY=your-api-key
+  # Or use env. variable: export LANGUR_API_KEY=your-api-key
   api_key: ""
   base_url: "http://127.0.0.1:1234/v1"
 
@@ -83,7 +83,7 @@ Run the agent, and then you can enter your prompt. The input is multiline: Use <
 
 You can enable `vi` mode for the current session with the [command](#commands) `/vi on`, or permanently in the [configuration](#configuration).
 
-**External editor**---In `vi` mode, exit insert mode (<kbd>Esc</kbc>) and press <kbd>v</kbd> to edit your prompt in an external editor (uses your `$VISUAL` or `$EDITOR` variable).
+**External editor**---In `vi` mode, exit INSERT mode (<kbd>Esc</kbd>), then press <kbd>v</kbd> to edit your prompt in an external editor (uses your `$VISUAL` or `$EDITOR` variable).
 
 ### Commands
 
@@ -113,8 +113,6 @@ Persistent memory follows XDG Base Directory spec in `~/.local/share/langur-agen
 - `save_memory` tool explicitly persists memory to disk
 - Memory is auto-saved when the agent exits (interactive mode)
 
-Memory is loaded into the system prompt each turn.
-
 ## Rolling chat memory
 
 In addition to persistent memory, the agent maintains a **rolling chat history** of recent user input and assistant output pairs. This provides context that survives beyond the LLM's context window.
@@ -123,18 +121,18 @@ In addition to persistent memory, the agent maintains a **rolling chat history**
 - Each user message and assistant response is stored in memory
 - Automatically trimmed when exceeding the configured character limit
 - Attached to the system prompt on each turn
-- Shows the last 10 exchanges, with long messages truncated
+- The agent displays the last 10 exchanges, with long messages truncated
 
 **Persistence:**
 - Chat history is persisted to `~/.local/share/langur-agent/memory/chat_history.json`
 - Automatically loaded on startup
 - Saved after every exchange (user input or assistant response)
-- Trimming also persists to disk
+- Trimmed history is also persisted to disk
 
 **Configuration:**
 ```yaml
 agent:
-  chat_max_chars: 128000  # Maximum history characters to keep for context
+  max_chat_history: 128000  # Maximum history characters to keep for context
 ```
 
 Example chat history format in the prompt:

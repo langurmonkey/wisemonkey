@@ -123,6 +123,7 @@ class Agent:
         start = time.time()
 
         try:
+            print("[#888888] ⚙ Processing prompt...[/]")
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=self.messages,
