@@ -222,11 +222,11 @@ class Agent:
         """
         tools = get_tool_schemas()
         start = time.time()
-
+        model_name = self.config.get("model.name", "qwen/qwen3.6-35b-a3b")
         try:
             print("[grey50] ⚙ Processing prompt...[/]")
             response = self.client.chat.completions.create(
-                model=self.config.get("model.name", "qwen/qwen3.6-35b-a3b"),
+                model=model_name,
                 messages=self.messages,
                 temperature=self.config.get("model.temperature", 0.8),
                 tools=tools if tools else None,
@@ -235,7 +235,7 @@ class Agent:
             )
         except Exception as e:
             raise RuntimeError(
-                f"API connection error. Please, check the endpoint [model={self.model}, base_url={self.client.base_url}]: {e}"
+                f"API connection error. Please, check the endpoint [model={model_name}, base_url={self.client.base_url}]: {e}"
             ) from e
 
         try:
