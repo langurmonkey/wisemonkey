@@ -44,7 +44,7 @@ def main():
         action='version',
         version="%(prog)s ("+pkg_version+")")
     parser.add_argument(
-        '--update',
+        '-u', '--update',
         action='store_true',
         help='Update langur-agent from upstream and reinstall',
     )
@@ -63,7 +63,6 @@ def main():
         else:
             print(f"Updating langur-agent in {install_dir}...")
             subprocess.run(['git', 'pull'], cwd=install_dir, check=True)
-            subprocess.run([sys.executable, '-m', 'pip', 'install', install_dir, '--quiet'], check=True)
             print("Update complete.")
         return
 
