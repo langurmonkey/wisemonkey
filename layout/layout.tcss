@@ -39,10 +39,10 @@ Screen {
     background: $boost;
 }
 .thinking-header {
-    background: $panel-muted;
+    background: #555555;
 }
 .thinking-body {
-    opacity: 0.3;
+    color: #555555;
 }
 .response-body {
     
