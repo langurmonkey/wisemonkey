@@ -203,6 +203,4 @@ def log_config():
     config = get_config()
     path = config.config_path
     content = config.to_dict()
-    print(f"[bold]Config file[/bold]: [blue]{path}[/blue]")
-    print()
-    print(content)
+    return f"[bold]Config file[/bold]: [blue]{path}[/blue]"
