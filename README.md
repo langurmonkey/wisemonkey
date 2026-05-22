@@ -105,8 +105,8 @@ Below is a listing of all the slash commands.
 | Command(s) | Description | Examples |
 | :--- | :--- | :--- |
 | `/quit`, `/exit`, `/q` | Exit the agent | |
-| `/note` | Save a note to memory | `/note The sky is blue` |
-| `/notes` | List all notes | |
+| `/models` | Choose the model to use, interactively | |
+| `/notes` | List and add notes to memory | `/notes add The sky is blue`, `/notes list` |
 | `/memory` | List memory contents | `/memory`, `/memory agent`, `/memory chat` |
 | `/tools` | List available tools | |
 | `/skills` | List loaded skills | |

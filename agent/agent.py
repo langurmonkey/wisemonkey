@@ -57,17 +57,8 @@ class Agent:
         self.config = get_config()
         self.config.load(config_path)
 
-        # Initialize OpenAI client
-        api_key = self.config.get("model.api_key") or os.environ.get("LANGUR_API_KEY", "")
-        base_url = self.config.get("model.base_url", "http://127.0.0.1:1234/v1")
-        # Auto-append /v1 for LM Studio / local API servers
-        if base_url and not base_url.endswith("/v1"):
-            base_url = base_url.rstrip("/") + "/v1"
-        try:
-            self.client = openai.OpenAI(api_key=api_key, base_url=base_url or None)
-        except openai.OpenAIError as err:
-            print(f"[red]ERROR[/red]: OpenAI endpoint creation: {err}")
-            raise Exception(f"{err}")
+        # Initialize client
+        self._initialize_client()
 
         # Agent settings
         self.system_prompt = self.config.get("agent.system_prompt", "You are a helpful assistant, expert in many areas of science. Respond concisely and to the point. No fluff.")
@@ -92,6 +83,21 @@ class Agent:
         except Exception as e:
             print(f"[red]ERROR[/red]: Error loading tokenizer: {e}")
             raise Exception(f"{e}")
+
+    def _initialize_client(self):
+        """Initializes the client given the current configuration."""
+
+        # Initialize OpenAI client
+        api_key = self.config.get("model.api_key") or os.environ.get("LANGUR_API_KEY", "")
+        base_url = self.config.get("model.base_url", "http://127.0.0.1:1234/v1")
+        # Auto-append /v1 for LM Studio / local API servers
+        if base_url and not base_url.endswith("/v1"):
+            base_url = base_url.rstrip("/") + "/v1"
+        try:
+            self.client = openai.OpenAI(api_key=api_key, base_url=base_url or None)
+        except openai.OpenAIError as err:
+            print(f"[red]ERROR[/red]: OpenAI endpoint creation: {err}")
+            raise Exception(f"{err}")
 
     def _build_system_prompt(self):
         """Build the system prompt with personality, skills, and memory."""
@@ -474,10 +480,9 @@ class Agent:
             # SPECIAL COMMANDS
             if user_input.startswith("/"):
                 tokens = user_input.split()
-                command = tokens[0]
-                params = tokens[1:] if len(tokens) > 1 else []
+                command, params = registry.lookup(tokens)
 
-                if registry.lookup(command):
+                if command:
                     result, should_exit = registry.execute(self, command, params)
                     if should_exit:
                         print(f"\n[bold blue]Goodbye![/]")
@@ -486,7 +491,7 @@ class Agent:
                         print(result)
                         print()
                 else:
-                    print(f"[red]ERROR:[/red] command not found: {command}")
+                    print(f"[red]ERROR:[/red] command not found: {user_input}")
                     
                 continue
 
@@ -502,3 +507,19 @@ class Agent:
 
         # Persist memory on session exit
         self.memory.save()
+
+    def get_models(self):
+        """Gets a list with all the available models."""
+        return self.client.models.list()
+
+    def set_model(self, model_name):
+        """Sets the model to use."""
+        models = self.get_models()
+        for model in models:
+            if model_name == model.id:
+                # Match, set and return
+                self.config.set("model.name", model_name)
+                return
+
+        raise NameError(f"the model '{model_name}' does not exsit")
+        

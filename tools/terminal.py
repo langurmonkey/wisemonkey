@@ -232,7 +232,7 @@ def run_command_handler(args):
             # so the user always sees what's about to run.
             print(f"  [white on #444444] [bold]$[/bold] {command} [/white on #444444]")
 
-    # ── Execute ──
+    # Execute
     try:
         result = subprocess.run(
             command,
