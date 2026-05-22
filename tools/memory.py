@@ -11,7 +11,12 @@ from agent.tools import tool
 
 @tool(
     name="save_note",
-    description="Save a persistent note. Notes survive across sessions.",
+    description=(
+      "Save a persistent note.\n"
+      "Notes are stored persistently and survive across sessions. "
+      "Use notes to remember things long-term. Notes are not added to the context, but"  
+      "can be retrieved with the tool 'get_memory'"
+    ),
     parameters={
         "type": "object",
         "properties": {
@@ -30,8 +35,9 @@ def save_note_handler(args):
 @tool(
     name="save_memory",
     description=(
-        "Explicitly persist all memory to disk. Call this after making "
-        "changes to memory (e.g., saving notes) to ensure they are saved."
+        "Explicitly persist all memory to disk.\n"
+        "Call this after making changes to memory (e.g., saving notes)"
+        " to ensure they are saved."
     ),
     parameters={
         "type": "object",
@@ -46,7 +52,10 @@ def save_memory_handler(args):
 
 @tool(
     name="get_memory",
-    description="Read the agent's current memory (user profile + persistent notes).",
+    description=(
+        "Read the agent's current memory\n"
+        "Use this when you need to acces long-term memory, like "
+        "persistent notes or the user profile.",
     parameters={
         "type": "object",
         "properties": {},
@@ -63,7 +72,7 @@ def get_memory_handler(args):
 @tool(
     name="set_user_profile",
     description=(
-        "Set the user profile with key-value pairs. "
+        "Set the user profile with key-value pairs.\n"
         "Call save_memory after to persist to disk."
     ),
     parameters={

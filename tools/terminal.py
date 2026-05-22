@@ -159,9 +159,9 @@ def _prompt_user(command: str, reason: str) -> bool:
 @tool(
     name="run_command",
     description=(
-        "Execute a shell command and return the output. "
+        "Execute a shell command and return the output.\n"
         "Use this when you need to run terminal commands, execute scripts, "
-        "or interact with the filesystem via shell."
+        "or interact with the filesystem via shell. "
         "Dangerous commands will prompt the "
         "user for confirmation before running. The tool returns an error "
         "if the user declines."

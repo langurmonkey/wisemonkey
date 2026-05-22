@@ -412,7 +412,7 @@ class Agent:
         history_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Toolbar
-        prompt_toolbar = lambda : HTML(" <b>Alt</b>+<b>Enter</b>: new line | <b>Enter</b>: submit prompt")
+        prompt_toolbar = lambda : HTML(" <b>Alt</b>+<b>Enter</b>: new line | <b>Enter</b>: submit prompt | <b>Ctrl</b>+<b>C</b>: quit")
 
         self._session = PromptSession(
                     style=style,
@@ -433,7 +433,17 @@ class Agent:
         
     def run_interactive(self):
         """Run the agent in interactive mode."""
-        title = Align.center("[bold blue]LANGUR AGENT[/bold blue]", vertical='middle')
+        import shutil
+        term_size = shutil.get_terminal_size((80, 20))
+        if term_size.columns < 80:
+            languragent="LANGUR AGENT"
+        else:
+            languragent = '''
+██      ▄▄▄  ▄▄  ▄▄  ▄▄▄▄ ▄▄ ▄▄ ▄▄▄▄    ▄████▄  ▄▄▄▄ ▄▄▄▄▄ ▄▄  ▄▄ ▄▄▄▄▄▄
+██     ██▀██ ███▄██ ██ ▄▄ ██ ██ ██▄█▄   ██▄▄██ ██ ▄▄ ██▄▄  ███▄██   ██  
+██████ ██▀██ ██ ▀██ ▀███▀ ▀███▀ ██ ██   ██  ██ ▀███▀ ██▄▄▄ ██ ▀██   ██  
+            '''
+        title = Align.center(f"[bold blue]{languragent}[/bold blue]", vertical='middle')
         print(Panel(title, box=box.HEAVY, border_style="blue"))
         print()
         print(registry.get_commands_str())

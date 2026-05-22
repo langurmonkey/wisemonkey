@@ -164,9 +164,9 @@ The capital of France is Paris.
 
 ## Extend agent
 
-Langur Agent can be easily customized and extended by adding new tools and skills.
+Langur Agent can be easily customized and extended by adding new tools, commands, and skills.
 
-If you create a cool new tool or skill, consider contributing it via a pull request!
+If you create a cool new tool, skill, or slash command, consider contributing it via a pull request!
 
 ### Adding tools
 
@@ -196,6 +196,22 @@ def my_handler(args):
 ```
 
 Tools are auto-discovered on startup.
+
+### Adding slash commands
+
+The process is very similar to tools. You need to create your method, preferably in `agent/commands.py`, and decorate it with `@cmd(name, description, aliases, examples, can_complete)`.
+
+```python
+@cmd(
+    "/my-command",
+    "This is the description",
+    aliases=["/mycmd"],
+)
+def _cmd_mine(agent, params):
+    return "This is awesome!"
+```
+
+Decorated commands are automatically registered, and auto-completed in the input prompt.
 
 ### Adding skills
 

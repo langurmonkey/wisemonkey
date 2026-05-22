@@ -12,7 +12,7 @@ from agent.tools import tool, register_tool
 
 @tool(
     name="echo",
-    description="Echo back the provided text. For testing.",
+    description="Echo back the provided text.\nUseful for testing.",
     parameters={
       "type": "object",
       "properties": {

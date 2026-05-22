@@ -43,8 +43,9 @@ class SkillLoader:
             if skill_path.exists():
                 content = skill_path.read_text()
                 meta, _ = self._parse_frontmatter(content)
-                result += f"⬤ [cyan]{meta['name']}[/]: {meta['description']}\n"
-        return result + "\n"
+                result += f"⚔ [cyan]{meta['name']}[/]\n"
+                result += f"[grey39]{meta['description']}[/]\n"
+        return result
 
     def _parse_frontmatter(self, content):
         """Extract YAML frontmatter and body from skill content."""

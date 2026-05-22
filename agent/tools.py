@@ -12,6 +12,7 @@ Tools are discovered from the tools/ directory on startup.
 import json
 import importlib
 import inspect
+from textwrap import indent
 from rich import print
 from pathlib import Path
 
@@ -81,8 +82,9 @@ def get_tools_str():
     discover_tools()
     result = ""
     for name, tool in _registry.items():
-        result += f"⬤ [cyan]{name}[/]: {tool['description']}\n"
-    return result + "\n"
+        result += f"⚙ [cyan]{name}[/]\n"
+        result += f"[grey39]{tool['description']}[/]\n"
+    return result
 
 def discover_tools(tools_dir=None):
     """Auto-discover tools from the tools/ directory.

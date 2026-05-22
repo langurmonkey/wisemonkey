@@ -46,8 +46,8 @@ def _decode_response(response):
 @tool(
     name="fetch_url",
     description=(
-        "Browse a website given a URL and return the output."
-        "Use this when you need to browse the internet or look up things online."
+        "Browse a website given a URL and return the output.\n"
+        "This tool provides access to websites via the HTTP and HTTPS protocols. The website HTML content is stripped of script and style tags."
     ),
     parameters={
         "type": "object",

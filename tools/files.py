@@ -11,7 +11,8 @@ from agent.tools import tool
 @tool(
     name="read_file",
     description=(
-        "Read the full contents of a file. Use this when the user asks to "
+        "Read the full contents of a file.\n"
+        "Use this when the user asks to "
         "see file contents, check a file's content, or read any file. "
         "Takes a 'path' argument (absolute or relative path to the file). "
         "Optional 'show_line_numbers' (bool) to prepend line numbers."
@@ -80,7 +81,8 @@ def read_file_handler(args):
 @tool(
     name="list_dir",
     description=(
-        "List all files and subdirectories in a directory. Use this when the "
+        "List all files and subdirectories in a directory.\n"
+        "Use this when the "
         "user asks to see what's in a folder, list directory contents, or "
         "explore a directory structure. Takes a 'path' argument (absolute or "
         "relative path to the directory)."
@@ -140,9 +142,9 @@ def list_dir_handler(args):
 @tool(
     name="write_file",
     description=(
-        "Write or completely overwrite a file with new content. "
+        "Write or completely overwrite a file with new content.\n"
         "Creates parent directories if they don't exist. "
-        "Use this when creating a new file or rewriting an entire file. "
+        "Use this when creating a new file or rewriting an entire file.\n"
         "For targeted edits, use 'patch_file' instead."
     ),
     parameters={
@@ -192,7 +194,7 @@ def write_file_handler(args):
 @tool(
     name="patch_file",
     description=(
-        "Apply a targeted edit to a file by replacing exact text. "
+        "Apply a targeted edit to a file by replacing exact text.\n"
         "Provide the EXACT text to find (old_string) and the replacement (new_string). "
         "The edit only succeeds if old_string appears exactly once in the file. "
         "Use this for surgical edits like changing a variable name, fixing a bug, "
