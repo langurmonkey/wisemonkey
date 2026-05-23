@@ -133,6 +133,12 @@ class Agent:
         thinking_end = False
 
         for chunk in response:
+            # Stop prompt spinner
+            if self.spinner_prompt:
+                self.spinner_prompt.stop()
+                self.spinner_prompt = None
+                console.print("[green]✓[/] ⏳ Prompt processed")
+                
             delta = chunk.choices[0].delta
             now = time.time()
 
@@ -140,24 +146,29 @@ class Agent:
             if first_chunk_time is None:
                 first_chunk_time = now
 
+            show_thinking = self.config.get("model.show_thinking", False)
             # Thinking
             if (
-                self.config.get("model.show_thinking", False)
-                and hasattr(delta, 'reasoning_content')
+                hasattr(delta, 'reasoning_content')
                 and delta.reasoning_content
             ):
             
                 if not self.thinking:
-                    console.print("[white on #777777]Thinking...[/]")
-                    if reasoning_callback:
-                        reasoning_callback("start")
+                    if show_thinking:
+                        console.print("[white on #777777]Thinking...[/]")
+                        if reasoning_callback:
+                            reasoning_callback("start")
+                    else:
+                        self.spinner_thinking = console.status("💡 Thinking")
+                        self.spinner_thinking.start()
 
                 self.thinking_buffer += delta.reasoning_content
 
-                # Only print, do not save
-                console.print(f"[grey39]{delta.reasoning_content}[/]", end="")
-                if reasoning_callback:
-                    reasoning_callback("body", delta.reasoning_content)
+                if show_thinking:
+                    # Only print, do not save to main buffer
+                    console.print(f"[grey39]{delta.reasoning_content}[/]", end="")
+                    if reasoning_callback:
+                        reasoning_callback("body", delta.reasoning_content)
 
                 self.thinking = True
 
@@ -167,10 +178,13 @@ class Agent:
                     # End thinking
                     self.thinking = False
                     thinking_end = True
-                    console.print("[white on #777777]Done thinking[/]")
-                    console.print()
-                    if reasoning_callback:
-                        reasoning_callback("end")
+                    if show_thinking:
+                        if reasoning_callback:
+                            reasoning_callback("end")
+                    elif self.spinner_thinking:
+                        self.spinner_thinking.stop()
+                        self.spinner_thinking = None
+                    console.print("[green]✓[/] 💡 Done thinking")
                 
                 self.response_buffer += delta.content
                 if content_callback:
@@ -207,7 +221,9 @@ class Agent:
         start = time.time()
         model_name = self.config.get("model.name", "qwen/qwen3.6-35b-a3b")
         try:
-            console.print("[grey50] ⚙ Processing prompt...[/]")
+            self.spinner_prompt = console.status("⏳ Processing prompt...")
+            self.spinner_prompt.start()
+
                 
             response = self.client.chat.completions.create(
                 model=model_name,

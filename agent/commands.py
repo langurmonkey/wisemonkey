@@ -144,7 +144,9 @@ def _cmd_quit(agent, params):
 def _cmd_showthinking(agent, params):
     if params:
         state = params[0].lower() == "on"
-        return _cmd_config(agent, ["model.show_thinking", state])
+        cmd, pars = registry.lookup(["/config-set", "model.show_thinking", str(state)])
+        result, _ = registry.execute(agent, cmd, pars)
+        return result
     return "[red]ERROR:[/] /showthinking command needs a parameter (on/off)"
 
 
@@ -300,7 +302,7 @@ def _cmd_config_set(agent, params):
 def _cmd_vi(agent, params):
     if params:
         state = params[0].lower() == "on"
-        cmd, pars = registry.lookup(["/config", "agent.vi_mode", str(state)])
+        cmd, pars = registry.lookup(["/config-set", "agent.vi_mode", str(state)])
         result, _ = registry.execute(agent, cmd, pars)
         if result.startswith("[green]OK"):
             agent._create_prompt_session()

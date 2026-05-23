@@ -10,6 +10,7 @@ Follows XDG Base Directory spec:
 import os
 import shutil
 import yaml
+import json
 from pathlib import Path
 from xdg_base_dirs import xdg_config_home
 
@@ -201,5 +202,5 @@ def log_config():
     """Log the current configuration (backward compatibility)."""
     config = get_config()
     path = config.config_path
-    content = config.to_dict()
-    return f"[bold]Config file[/bold]: [blue]{path}[/blue]"
+    content = json.dumps(config.to_dict(), indent=4, sort_keys=True, default=str)
+    return f"[bold]Config file[/bold]: [blue]{path}[/blue]\n{content}"

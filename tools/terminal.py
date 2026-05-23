@@ -13,8 +13,8 @@ import re
 
 from rich.prompt import Confirm as RichConfirm
 
-from agent.agent import console
 from agent.tools import tool
+from agent.console import console
 
 # ──────────────────────────────────────────────
 # Configurable danger detection
