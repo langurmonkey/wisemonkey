@@ -155,11 +155,11 @@ class Agent:
             
                 if not self.thinking:
                     if show_thinking:
-                        console.print("[white on #777777]Thinking...[/]")
+                        console.print("[orange1]⇨[/] 💡 Thinking...")
                         if reasoning_callback:
                             reasoning_callback("start")
                     else:
-                        self.spinner_thinking = console.status("💡 Thinking")
+                        self.spinner_thinking = console.status("💡 Thinking...")
                         self.spinner_thinking.start()
 
                 self.thinking_buffer += delta.reasoning_content
