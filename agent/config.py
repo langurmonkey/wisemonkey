@@ -10,7 +10,6 @@ Follows XDG Base Directory spec:
 import os
 import shutil
 import yaml
-from rich import print
 from pathlib import Path
 from xdg_base_dirs import xdg_config_home
 

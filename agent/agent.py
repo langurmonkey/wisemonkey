@@ -14,11 +14,10 @@ import time
 import tiktoken
 import openai
 
-from rich import print, box, inspect
+from rich import box, inspect
 from rich.prompt import Prompt
 from rich.panel import Panel
 from rich.align import Align
-from rich.console import Console as RichConsole
 from rich.markdown import Markdown
 
 from pathlib import Path
@@ -29,6 +28,8 @@ from agent.memory import Memory
 from agent.skills import SkillLoader
 from agent.tools import get_tool_schemas, execute_tool
 from agent.commands import registry
+from agent.console import console
+
 
 # Try to import prompt_toolkit for rich input; fall back to plain input.
 try:
@@ -43,7 +44,7 @@ try:
     _HAS_PROMPT_TOOLKIT = True
 
 except ImportError:
-    print("[red]ERROR:[/red] could not initialize promtp toolkit")
+    console.print("[red]ERROR:[/red] could not initialize promtp toolkit")
     _HAS_PROMPT_TOOLKIT = False
 
 class TurnCancelled(Exception):
@@ -81,7 +82,7 @@ class Agent:
         try:
             self.encoding = tiktoken.get_encoding(encoding_name)
         except Exception as e:
-            print(f"[red]ERROR[/red]: Error loading tokenizer: {e}")
+            console.print(f"[red]ERROR[/red]: Error loading tokenizer: {e}")
             raise Exception(f"{e}")
 
     def _initialize_client(self):
@@ -96,7 +97,7 @@ class Agent:
         try:
             self.client = openai.OpenAI(api_key=api_key, base_url=base_url or None)
         except openai.OpenAIError as err:
-            print(f"[red]ERROR[/red]: OpenAI endpoint creation: {err}")
+            console.print(f"[red]ERROR[/red]: OpenAI endpoint creation: {err}")
             raise Exception(f"{err}")
 
     def _build_system_prompt(self):
@@ -147,14 +148,14 @@ class Agent:
             ):
             
                 if not self.thinking:
-                    print("[white on #777777]Thinking...[/]")
+                    console.print("[white on #777777]Thinking...[/]")
                     if reasoning_callback:
                         reasoning_callback("start")
 
                 self.thinking_buffer += delta.reasoning_content
 
                 # Only print, do not save
-                print(f"[grey39]{delta.reasoning_content}[/]", end="", flush=True)
+                console.print(f"[grey39]{delta.reasoning_content}[/]", end="")
                 if reasoning_callback:
                     reasoning_callback("body", delta.reasoning_content)
 
@@ -166,8 +167,8 @@ class Agent:
                     # End thinking
                     self.thinking = False
                     thinking_end = True
-                    print("[white on #777777]Done thinking[/]")
-                    print()
+                    console.print("[white on #777777]Done thinking[/]")
+                    console.print()
                     if reasoning_callback:
                         reasoning_callback("end")
                 
@@ -178,7 +179,7 @@ class Agent:
                 self.generating = True
 
                 # Print text
-                print(delta.content, end="", flush=True)
+                console.print(delta.content, end="")
 
             # Collect tool calls
             if delta.tool_calls:
@@ -206,7 +207,7 @@ class Agent:
         start = time.time()
         model_name = self.config.get("model.name", "qwen/qwen3.6-35b-a3b")
         try:
-            print("[grey50] ⚙ Processing prompt...[/]")
+            console.print("[grey50] ⚙ Processing prompt...[/]")
                 
             response = self.client.chat.completions.create(
                 model=model_name,
@@ -228,15 +229,14 @@ class Agent:
         except KeyboardInterrupt:
             # Close the response stream to stop the API call
             response.close()
-            print("\n[bold yellow]⏹  Turn cancelled[/bold yellow]")
+            console.print("\n[bold yellow]⏹  Turn cancelled[/bold yellow]")
             raise TurnCancelled() from None
 
         # We are done!
-        print()
+        console.print()
 
         # Print markdown if needed
         if self.markdown and self.response_buffer:
-            console = RichConsole()
             md_panel = Panel(
                 Markdown(self.response_buffer),
                 title="[bold]📝 Markdown version[/bold]",
@@ -356,7 +356,7 @@ class Agent:
                     tool_name = tc["function"]["name"]
                     tool_args = tc["function"]["arguments"]
 
-                    print(f"[black on #66aa99] ⚙ Activating tool: {tool_name} [/black on #66aa99]")
+                    console.print(f"[black on #66aa99] ⚙ Activating tool: {tool_name} [/black on #66aa99]")
                     result = execute_tool(tool_name, json.loads(tool_args) if isinstance(tool_args, str) else tool_args)
 
                     # Append tool result
@@ -384,8 +384,8 @@ class Agent:
         return "I've reached the maximum number of turns. Please rephrase your request."
 
     def _statusline(self, total_tokens, ntools, total_gen_time):
-        print(f"[black on #777777]  ⬤  {total_gen_time:.1f}s  ⬤  {total_tokens} tokens  ⬤  {ntools} tools  [/black on #777777]")
-        print()
+        console.print(f"[black on #777777]  ⬤  {total_gen_time:.1f}s  ⬤  {total_tokens} tokens  ⬤  {ntools} tools  [/black on #777777]")
+        console.print()
 
         
     def _create_prompt_session(self):
@@ -450,9 +450,9 @@ class Agent:
 ██████ ██▀██ ██ ▀██ ▀███▀ ▀███▀ ██ ██   ██  ██ ▀███▀ ██▄▄▄ ██ ▀██   ██  
             '''
         title = Align.center(f"[bold blue]{languragent}[/bold blue]", vertical='middle')
-        print(Panel(title, box=box.HEAVY, border_style="blue"))
-        print()
-        print(registry.get_commands_str())
+        console.print(Panel(title, box=box.HEAVY, border_style="blue"))
+        console.print()
+        console.print(registry.get_commands_str())
 
         if _HAS_PROMPT_TOOLKIT:
             self._create_prompt_session()
@@ -471,7 +471,7 @@ class Agent:
             try:
                 user_input = get_input()
             except (EOFError, KeyboardInterrupt):
-                print(f"\n[bold blue]Goodbye![/]")
+                console.print(f"\n[bold blue]Goodbye![/]")
                 break
 
             if not user_input:
@@ -485,22 +485,22 @@ class Agent:
                 if command:
                     result, should_exit = registry.execute(self, command, params)
                     if should_exit:
-                        print(f"\n[bold blue]Goodbye![/]")
+                        console.print(f"\n[bold blue]Goodbye![/]")
                         break
                     if result:
-                        print(result)
-                        print()
+                        console.print(result)
+                        console.print()
                 else:
-                    print(f"[red]ERROR:[/red] command not found: {user_input}")
+                    console.print(f"[red]ERROR:[/red] command not found: {user_input}")
                     
                 continue
 
             else:
 
-                print(f"\n[magenta]⩥ Agent ⩤ [/magenta]  ⦗[blue]{self.config.get('model.name')}[/blue]⦘", flush=True)
-                print("  [dim][bold]Ctrl[/bold]+[bold]C[/bold]: Cancel turn[/dim]\n", flush=True)
+                console.print(f"\n[magenta]⩥ Agent ⩤ [/magenta]  ⦗[blue]{self.config.get('model.name')}[/blue]⦘")
+                console.print("  [dim][bold]Ctrl[/bold]+[bold]C[/bold]: Cancel turn[/dim]\n")
                 (response, total_tokens, ntools, total_gen_time) = self.run(user_input)
-                print()
+                console.print()
                 if response == "[Cancelled]":
                     continue  # skip status line, go straight back to prompt
                 self._statusline(total_tokens, ntools, total_gen_time)

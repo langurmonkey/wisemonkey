@@ -13,8 +13,9 @@ import json
 import importlib
 import inspect
 from textwrap import indent
-from rich import print
 from pathlib import Path
+
+from agent.console import console
 
 # Global registry
 _registry = {}
@@ -117,7 +118,7 @@ def discover_tools(tools_dir=None):
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
         except Exception as e:
-            print(f"Warning: failed to load tool {py_file.name}: {e}")
+            console.print(f"Warning: failed to load tool {py_file.name}: {e}")
 
     _discovered = True
 

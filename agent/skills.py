@@ -15,9 +15,7 @@ system prompt.
 """
 
 import re
-from rich import print
 from pathlib import Path
-
 
 class SkillLoader:
     """Load and manage skills from markdown files."""

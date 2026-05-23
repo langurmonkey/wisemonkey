@@ -55,7 +55,7 @@ def save_memory_handler(args):
     description=(
         "Read the agent's current memory\n"
         "Use this when you need to acces long-term memory, like "
-        "persistent notes or the user profile.",
+        "persistent notes or the user profile."
     ),
     parameters={
         "type": "object",

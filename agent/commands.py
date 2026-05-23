@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import ast
-from rich import print
 from rich.prompt import Prompt
 from dataclasses import dataclass, field
 from typing import Callable, Optional
+
+from agent.console import console
 
 def smart_cast(value, target_type):
     """Cast a string value to a given type, handling booleans correctly."""
@@ -234,9 +235,9 @@ def _cmd_models(agent, params):
     for (i, model) in enumerate(models):
         pr += f"{i}: [green]{model.id}[/]\n"
         idx = i
-    print(pr)
+    console.print(pr)
 
-    print()
+    console.print()
     index_str = Prompt.ask("Choose a model", choices=[f"{i}" for i in range(idx+1)], default='0', case_sensitive=False)
     
     model = models.data[int(index_str)]

@@ -5,8 +5,9 @@ Allows the agent to operate with files and directories in the file system.
 
 import os
 import tempfile
-from rich import print
+
 from agent.tools import tool
+from agent.console import console
 
 @tool(
     name="read_file",
@@ -59,7 +60,7 @@ def read_file_handler(args):
         return {"error": f"The path exists but does not point to a file: {path}"}
 
     with open(path, "r") as file:
-        print(f"  Reading [white on #444444]{path}[/white on #444444]")
+        console.print(f"  Reading [white on #444444]{path}[/white on #444444]")
         content = file.read()
 
     # Optionally add line numbers
@@ -115,7 +116,7 @@ def list_dir_handler(args):
     if os.path.isfile(path):
         return {"error": f"The path exists but does not point to a directory: {path}"}
 
-    print(f"  Listing [white on #444444]{path}[/white on #444444]")
+    console.print(f"  Listing [white on #444444]{path}[/white on #444444]")
 
     content = os.listdir(path)
     # Format as a readable listing
@@ -176,7 +177,7 @@ def write_file_handler(args):
     parent = os.path.dirname(path)
     if parent and not os.path.exists(parent):
         os.makedirs(parent, exist_ok=True)
-        print(f"  Created directory [white on #444444]{parent}[/white on #444444]")
+        console.print(f"  Created directory [white on #444444]{parent}[/white on #444444]")
 
     fd, tmp_path = tempfile.mkstemp(dir=parent if parent else None, prefix=".patched-")
     try:
@@ -186,7 +187,7 @@ def write_file_handler(args):
         os.close(fd)
     os.replace(tmp_path, path)
 
-    print(f"  Wrote [white on #444444]{path}[/white on #444444] ({len(content)} chars)")
+    console.print(f"  Wrote [white on #444444]{path}[/white on #444444] ({len(content)} chars)")
 
     return {"path": path, "success": True, "message": f"Wrote {len(content)} bytes to {path}"}
 
@@ -238,9 +239,9 @@ def patch_file_handler(args):
     if not os.path.isfile(path):
         return {"error": f"The path is not a file: {path}"}
 
-    print(f"  Patching [white on #444444]{path}[/white on #444444]")
-    print(f"  [white on red]-{old_string}[/]")
-    print(f"  [white on green]+{new_string}[/]")
+    console.print(f"  Patching [white on #444444]{path}[/white on #444444]")
+    console.print(f"  [white on red]-{old_string}[/]")
+    console.print(f"  [white on green]+{new_string}[/]")
 
     with open(path, "r") as f:
         file_content = f.read()
