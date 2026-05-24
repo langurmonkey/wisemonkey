@@ -475,7 +475,7 @@ class Agent:
         if _HAS_PROMPT_TOOLKIT:
             self._create_prompt_session()
         
-        if self._session:
+        if self._session and False:
             style = Style.from_dict({
                 "prompt": "ansiyellow",
             })
@@ -483,7 +483,8 @@ class Agent:
                 self._session.prompt()
             ).strip()
         else:
-            get_input = lambda: Prompt.ask("[yellow]⩥ You ⩤[/yellow]\n❯ ")
+            get_input = lambda: Prompt.ask(prompt="[yellow]⩥ You ⩤[/yellow]\n❯",
+                                           console=console)
 
         while True:
             try:
