@@ -475,7 +475,7 @@ class Agent:
         if _HAS_PROMPT_TOOLKIT:
             self._create_prompt_session()
         
-        if self._session and False:
+        if self._session:
             style = Style.from_dict({
                 "prompt": "ansiyellow",
             })
