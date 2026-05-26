@@ -201,6 +201,12 @@ Tools are auto-discovered on startup.
 
 The process is very similar to tools. You need to create your method, preferably in `agent/commands.py`, and decorate it with `@cmd(name, description, aliases, examples, can_complete)`.
 
+A shash command must return `ok:bool, msg:str, content:str`:
+
+1. `ok`: a `bool` indicating if the command succeeded or failed.
+2. `msg`: an optional short message with the status. It is printed with `OK` or `ERROR`.
+3. `content`: an optional `str` with the content to print directly to the output.
+
 ```python
 @cmd(
     "/my-command",
@@ -208,7 +214,8 @@ The process is very similar to tools. You need to create your method, preferably
     aliases=["/mycmd"],
 )
 def _cmd_mine(agent, params):
-    return "This is awesome!"
+    """This command returns a message but no content"""
+    return True, "This is awesome!", None
 ```
 
 Decorated commands are automatically registered, and auto-completed in the input prompt.

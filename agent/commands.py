@@ -59,12 +59,11 @@ class CommandRegistry:
             params and
             (params[0].lower() == "-h" or params[0].lower() == "help")
         ):
-            msg = self._command_str(cmd)
-            return msg, False
+            return self._command_str(cmd)
                 
-        result = cmd.handler(agent, params)
-        should_exit = result in ("EXIT", "exit")
-        return result, should_exit
+        ok, msg, content = cmd.handler(agent, params)
+        should_exit = msg in ("EXIT", "exit")
+        return ok, msg, content, should_exit
 
     def list_commands(self) -> list[Command]:
         """Return all unique commands (deduplicated by primary name)."""
@@ -112,6 +111,10 @@ class CommandRegistry:
 registry = CommandRegistry()
 
 # Decorator for commands
+# Commands return three values:
+# ok:bool      - False if there was an error
+# msg:str      - A one-line message
+# content:str  - Multi-line content
 def cmd(name: str,
         description: str = "",
         aliases: list[str] = [],
@@ -135,7 +138,7 @@ def cmd(name: str,
       aliases=["/exit", "/q"]
 )
 def _cmd_quit(agent, params):
-    return "EXIT"
+    return True, "EXIT", None
 
 
 @cmd(
@@ -147,9 +150,9 @@ def _cmd_showthinking(agent, params):
     if params:
         state = params[0].lower() == "on"
         cmd, pars = registry.lookup(["/config-set", "model.show_thinking", str(state)])
-        result, _ = registry.execute(agent, cmd, pars)
-        return result
-    return "[red]ERROR:[/] /showthinking command needs a parameter (on/off)"
+        ok, msg, content, _ = registry.execute(agent, cmd, pars)
+        return ok, msg, content
+    return False, "/showthinking command needs a parameter (on/off)", None
 
 
 @cmd(
@@ -162,7 +165,7 @@ def _cmd_notes_list(agent, params):
     for note in notes:
         buff += f"📋︎  [blue]{note['id']}[/blue] ({note['category']}):\n"
         buff += f"[grey39]{note['content']}[/]\n\n"
-    return buff
+    return True, None, buff
 
 @cmd(
       "/notes-add",
@@ -174,9 +177,9 @@ def _cmd_notes_list(agent, params):
 def _cmd_notes_add(agent, params):
     if params:
         agent.memory.add_note(" ".join(params))
-        return "[green]OK:[/] note added successfully"
+        return True, "note added successfully", None
            
-    return "[red]ERROR:[/] please, provide a note"
+    return False, "please, provide a note", None
 
 def _agent_memory(agent):
     return f"[red]===== AGENT MEMORY =====[/red]\n\n{agent.memory.get_formatted()}\n\n"
@@ -202,14 +205,14 @@ def _cmd_memory(agent, params):
     if params:
         subcommand = params[0].lower()
         if subcommand == "agent":
-            return _agent_memory(agent)
+            return True, None, _agent_memory(agent)
         elif subcommand == "chat":
-            return _chat_memory(agent)
+            return True, None, _chat_memory(agent)
         else:
-            return f"[red]ERROR:[/] unrecognized subcommand '{subcommand}'"
+            return False, f"unrecognized subcommand '{subcommand}'", None
     else:
         # Print all
-        return _agent_memory(agent) + _chat_memory(agent)
+        return True, None, _agent_memory(agent) + _chat_memory(agent)
 
 
 @cmd(
@@ -218,7 +221,7 @@ def _cmd_memory(agent, params):
 )
 def _cmd_tools(agent, params):
     from agent.tools import get_tools_str
-    return get_tools_str()
+    return True, None, get_tools_str()
 
 
 @cmd(
@@ -226,7 +229,7 @@ def _cmd_tools(agent, params):
       "List loaded skills ⚔",
 )
 def _cmd_skills(agent, params):
-    return agent.skills.get_skills_str()
+    return True, None, agent.skills.get_skills_str()
 
 @cmd(
       "/models",
@@ -237,7 +240,7 @@ def _cmd_models(agent, params):
 
     opts = [(f"{model.id}", f"{model.id}") for (_, model) in enumerate(models)]
     defa = models.data[0].id
-    console.print(f"default: {defa}")
+
     result = choice(
         message="Choose a model:",
         options=opts,
@@ -250,9 +253,9 @@ def _cmd_models(agent, params):
     try:
         agent.set_model(result)
     except NameError as e:
-        return f"[red]ERROR:[/] {e}"
+        return False, f"{e}", None
         
-    return f"[green]OK:[/] model: {result}"
+    return True, f"model: {result}", None
         
 @cmd(
       "/config",
@@ -272,9 +275,9 @@ def _cmd_configure(agent, params):
 
     ok, msg = agent.initialize_client()
     if not ok:
-        return f"[red]ERROR:[/red] {msg}"
+        return False, f"{msg}", None
 
-    return f"[green]OK:[/green] configuration modified"
+    return True, f"configuration modified", None
     
 
 @cmd(
@@ -283,7 +286,7 @@ def _cmd_configure(agent, params):
 )
 def _cmd_config_list(agent, params):
     from agent.config import log_config
-    return log_config()
+    return True, None, log_config()
 
 @cmd(
       "/config-set",
@@ -297,7 +300,7 @@ def _cmd_config_set(agent, params):
     if params:
         # Set configuration values
         if len(params) != 2:
-            return "[red]ERROR:[/] /config needs two parameters: key and value"
+            return False, "/config needs two parameters: key and value"
         else:
             from agent.config import get_config
             config = get_config()
@@ -311,12 +314,12 @@ def _cmd_config_set(agent, params):
                 if hasattr(agent, key):
                     setattr(agent, key, new_value)
 
-                return f"[green]OK:[/] {key}: {value}"
+                return True, f"{key}: {value}", None
             
             else:
-                return f"[red]ERROR:[/] Key '{key}' does not exist in the configuration"
+                return False, f"Key '{key}' does not exist in the configuration", None
     else:
-        return f"[red]ERROR[/] /config needs two parameters: key and value"
+        return False, f"/config needs two parameters: key and value", None
             
 
 @cmd(
@@ -328,11 +331,11 @@ def _cmd_vi(agent, params):
     if params:
         state = params[0].lower() == "on"
         cmd, pars = registry.lookup(["/config-set", "agent.vi_mode", str(state)])
-        result, _ = registry.execute(agent, cmd, pars)
-        if result.startswith("[green]OK"):
+        ok, msg, _, _ = registry.execute(agent, cmd, pars)
+        if ok:
             agent._create_prompt_session()
-        return result
-    return "[red]ERROR:[/] /vi command needs a parameter (on/off)"
+        return ok, msg, None
+    return False, "/vi command needs a parameter (on/off)", None
 
 @cmd(
     "/help",
@@ -340,5 +343,5 @@ def _cmd_vi(agent, params):
     aliases=["/commands"],
 )
 def _cmd_help(agent, params):
-    return registry.get_commands_str()
+    return True, None, registry.get_commands_str()
 

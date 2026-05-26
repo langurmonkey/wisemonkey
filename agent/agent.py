@@ -517,13 +517,19 @@ class Agent:
                 command, params = registry.lookup(tokens)
 
                 if command:
-                    result, should_exit = registry.execute(self, command, params)
+                    ok, msg, content, should_exit = registry.execute(self, command, params)
                     if should_exit:
                         console.print(f"\n[bold blue]Goodbye![/]")
                         break
-                    if result:
-                        console.print(result)
+                    if ok:
+                        if msg:
+                            console.print(f"[green]OK[/green]: {msg}")
+                        if content:
+                            console.print(content)
                         console.print()
+                    else:
+                        if msg:
+                            console.print(f"[red]ERROR[/red]: {msg}")
                 else:
                     console.print(f"[red]ERROR:[/red] command not found: {user_input}")
                     
