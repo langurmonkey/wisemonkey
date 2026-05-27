@@ -5,7 +5,9 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass, field
 from typing import Callable, Optional
+
 from rich.prompt import Prompt
+from rich.progress import Progress
 from prompt_toolkit.shortcuts import choice
 from prompt_toolkit.formatted_text import HTML
 
@@ -54,16 +56,25 @@ class CommandRegistry:
         return None, None
 
     def execute(self, agent, cmd: Command, params: list[str]):
-        """Execute a command. Returns (result_string | None, should_exit)."""
+        """
+        Execute a command.
+
+        Returns:
+        - ok:bool - status of the operation
+        - msg:str - short message with an informative message
+        - content:str - long text in python rich format
+        - markdown:str - long text in markdown format
+        - should_exit:bool - boolean indicating whether the agent must exit
+        """
         if (
             params and
             (params[0].lower() == "-h" or params[0].lower() == "help")
         ):
             return self._command_str(cmd)
                 
-        ok, msg, content = cmd.handler(agent, params)
+        ok, msg, content, markdown = cmd.handler(agent, params)
         should_exit = msg in ("EXIT", "exit")
-        return ok, msg, content, should_exit
+        return ok, msg, content, markdown, should_exit
 
     def list_commands(self) -> list[Command]:
         """Return all unique commands (deduplicated by primary name)."""
@@ -113,8 +124,9 @@ registry = CommandRegistry()
 # Decorator for commands
 # Commands return three values:
 # ok:bool      - False if there was an error
-# msg:str      - A one-line message
-# content:str  - Multi-line content
+# msg:str      - A one-line status message
+# content:str  - Multi-line content in rich formatting
+# markdown:str - Multi-line content in markdown
 def cmd(name: str,
         description: str = "",
         aliases: list[str] = [],
@@ -138,7 +150,7 @@ def cmd(name: str,
       aliases=["/exit", "/q"]
 )
 def _cmd_quit(agent, params):
-    return True, "EXIT", None
+    return True, "EXIT", None, None
 
 
 @cmd(
@@ -150,8 +162,8 @@ def _cmd_showthinking(agent, params):
     if params:
         state = params[0].lower() == "on"
         cmd, pars = registry.lookup(["/config-set", "model.show_thinking", str(state)])
-        ok, msg, content, _ = registry.execute(agent, cmd, pars)
-        return ok, msg, content
+        ok, msg, _, _, _ = registry.execute(agent, cmd, pars)
+        return ok, msg, None, None
     return False, "/showthinking command needs a parameter (on/off)", None
 
 
@@ -165,7 +177,7 @@ def _cmd_notes_list(agent, params):
     for note in notes:
         buff += f"📋︎  [blue]{note['id']}[/blue] ({note['category']}):\n"
         buff += f"[grey39]{note['content']}[/]\n\n"
-    return True, None, buff
+    return True, None, buff, None
 
 @cmd(
       "/notes-add",
@@ -177,20 +189,35 @@ def _cmd_notes_list(agent, params):
 def _cmd_notes_add(agent, params):
     if params:
         agent.core.memory.add_note(" ".join(params))
-        return True, "note added successfully", None
+        return True, "note added successfully", None, None
            
-    return False, "please, provide a note", None
+    return False, "please, provide a note", None, None
 
-def _agent_memory(core):
-    return f"[red]===== AGENT MEMORY =====[/red]\n\n{core.memory.get_formatted()}\n\n"
-
-def _chat_memory(core):
-    chat = core.memory.get_formatted_chat()
-    chars = len(chat)
-    max = core.config.get("agent.max_chat_history")
-    chat = f"[red]===== CHAT MEMORY ===== [/red]\n\n{chat}\n\n[red underline]CHAT MEM SIZE:[/red underline] {chars}/{max} ({float(chars) * 100.0/float(max):.2f}%)\n\n"
-    return chat
     
+@cmd(
+    "/memory-clear",
+    "Clear the current chat memory",
+    examples=[
+        "/memory clear        # Clear all chat memory",
+        "/memory clear 10     # Clear the 10 oldest chat exchanges",
+    ]
+)
+def _cmd_memory_clear(agent, params):
+    n = 0
+    if params:
+        try:
+            n = int(params[0])
+        except ValueError:
+            return False, f"the parameter must be an integer: '{params[0]}'", None, None
+
+    cleared = agent.core.memory.clear_chat(n)
+    return True, f"{cleared} exchanges cleared", None, None
+    
+def _agent_memory(core):
+    return core.memory.get_formatted()
+
+def _chat_memory(core, max_exchanges):
+    return core.memory.get_chat_formatted(max_exchanges)
 
 @cmd(
       "/memory",
@@ -205,14 +232,64 @@ def _cmd_memory(agent, params):
     if params:
         subcommand = params[0].lower()
         if subcommand == "agent":
-            return True, None, _agent_memory(agent.core)
+            return True, None, None, _agent_memory(agent.core)
         elif subcommand == "chat":
-            return True, None, _chat_memory(agent.core)
+            chars, max, rate = agent.core.memory.get_chat_stats()
+            stats = f"Memory status: {chars}/{max} ({rate:.2f}%)"
+            return True, stats, None, _chat_memory(agent.core, 0)
         else:
-            return False, f"unrecognized subcommand '{subcommand}'", None
+            return False, f"unrecognized subcommand '{subcommand}'", None, None
     else:
         # Print all
-        return True, None, _agent_memory(agent.core) + _chat_memory(agent.core)
+        mem = "# Agent memory\n\n" + _agent_memory(agent.core)
+        mem += "\n\n# Chat memory\n\n" + _chat_memory(agent.core, 15)
+        return True, None, None, mem
+
+@cmd(
+    "/memory-compact",
+    "Compact the chat history by summarizing it into a shorter form."   
+)
+def _cmd_memory_compact(agent, params):
+    if params:
+        return False, f"this command does not take any arguments", None, None
+
+    history_text = agent.core.memory.get_chat_formatted()
+    len_before = len(history_text) if history_text else 0
+
+    content = (
+        "You are a technical editor. Summarize and compact this conversation as a dense agent briefing. Follow these guidelines:\n"
+        "- Include what was being worked on\n"
+        "- Remove greetings, small talk, pleasantries, repeated interactions, and filler words\n"
+        "- Remember files created or modified and how\n"
+        "- Preserve file names, technical constraints, and logical reasoning\n"
+        "- Add facts worth remembering long term\n"
+        "- Output format is markdown, use bullet points if needed\n"
+        "CONVERSATION:\n"
+    )
+    content += history_text
+    
+    messages=[{
+        "role": "user",
+        "content": content
+    }]
+
+    try:
+        spinner_compact = console.status("⏳ Compacting chat history...")
+        spinner_compact.start()
+
+        response = agent.core.llm_chat_raw(messages)
+
+        spinner_compact.stop()
+
+        summary = response.choices[0].message.content
+        len_after = len(summary)
+
+        agent.core.memory.reset_chat_memory(content=[{"role": "summary", "content": summary}])
+
+        return True, f"memory compacted successfully from {len_before} to {len_after}", None, None
+    except Exception as e:
+        console.print(e)
+        return False, f"memory compact operation failed: {e}", None, None
 
 
 @cmd(
@@ -221,7 +298,7 @@ def _cmd_memory(agent, params):
 )
 def _cmd_tools(agent, params):
     from agent.tools import get_tools_str
-    return True, None, get_tools_str()
+    return True, None, get_tools_str(), None
 
 
 @cmd(
@@ -229,7 +306,7 @@ def _cmd_tools(agent, params):
       "List loaded skills ⚔",
 )
 def _cmd_skills(agent, params):
-    return True, None, agent.core.skills.get_skills_str()
+    return True, None, agent.core.skills.get_skills_str(), None
 
 @cmd(
       "/models",
@@ -239,7 +316,7 @@ def _cmd_models(agent, params):
     try:
         models = agent.core.get_models()
     except Exception as e:
-        return False, f"{e}", None
+        return False, f"{e}", None, None
         
     opts = [(f"{model.id}", f"{model.id}") for (_, model) in enumerate(models)]
     defa = models.data[0].id
@@ -256,9 +333,9 @@ def _cmd_models(agent, params):
     try:
         agent.core.set_model(result)
     except NameError as e:
-        return False, f"{e}", None
+        return False, f"{e}", None, None
         
-    return True, f"model: {result}", None
+    return True, f"model: {result}", None, None
         
 @cmd(
       "/config",
@@ -267,7 +344,7 @@ def _cmd_models(agent, params):
 def _cmd_config(agent, params):
     from agent.config import get_config
     if params:
-        return False, "/config does not get any parameters", None
+        return False, "/config does not get any parameters", None, None
 
     config = get_config()
     base_url = config.get("model.base_url")
@@ -281,9 +358,9 @@ def _cmd_config(agent, params):
 
     ok, msg = agent.core.initialize_client()
     if not ok:
-        return False, f"{msg}", None
+        return False, f"{msg}", None, None
 
-    return True, f"configuration modified", None
+    return True, f"configuration modified", None, None
     
 
 @cmd(
@@ -292,7 +369,7 @@ def _cmd_config(agent, params):
 )
 def _cmd_config_list(agent, params):
     from agent.config import log_config
-    return True, None, log_config()
+    return True, None, log_config(), None
 
 @cmd(
       "/config-set",
@@ -306,7 +383,7 @@ def _cmd_config_set(agent, params):
     if params:
         # Set configuration values
         if len(params) != 2:
-            return False, "/config needs two parameters: key and value"
+            return False, "/config needs two parameters: key and value", None, None
         else:
             from agent.config import get_config
             config = get_config()
@@ -320,12 +397,12 @@ def _cmd_config_set(agent, params):
                 if hasattr(agent.core, key):
                     setattr(agent.core, key, new_value)
 
-                return True, f"{key}: {value}", None
+                return True, f"{key}: {value}", None, None
             
             else:
-                return False, f"Key '{key}' does not exist in the configuration", None
+                return False, f"Key '{key}' does not exist in the configuration", None, None
     else:
-        return False, f"/config needs two parameters: key and value", None
+        return False, f"/config needs two parameters: key and value", None, None
             
 
 @cmd(
@@ -337,11 +414,11 @@ def _cmd_vi(agent, params):
     if params:
         state = params[0].lower() == "on"
         cmd, pars = registry.lookup(["/config-set", "agent.vi_mode", str(state)])
-        ok, msg, _, _ = registry.execute(agent, cmd, pars)
+        ok, msg, _, _, _ = registry.execute(agent, cmd, pars)
         if ok:
             agent._create_prompt_session()
-        return ok, msg, None
-    return False, "/vi command needs a parameter (on/off)", None
+        return ok, msg, None, None
+    return False, "/vi command needs a parameter (on/off)", None, None
 
 @cmd(
     "/help",
@@ -349,5 +426,5 @@ def _cmd_vi(agent, params):
     aliases=["/commands"],
 )
 def _cmd_help(agent, params):
-    return True, None, registry.get_commands_str()
+    return True, None, registry.get_commands_str(), None
 

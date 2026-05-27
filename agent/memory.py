@@ -9,6 +9,7 @@ when save() is called. On init, state is loaded from disk.
 """
 
 import json
+from rich.markup import escape
 from pathlib import Path
 from xdg_base_dirs import xdg_data_home
 
@@ -111,11 +112,40 @@ class Memory:
 
         return "\n".join(lines) if lines else None
 
-    def get_formatted_chat(self):
-        return self._chat_history.get_formatted()
+    def reset_chat_memory(self, content):
+        """
+        Resets the chat memory with the given content.
+        """
+        self._chat_history.set_exchanges(content)
+        self.save()
+
+    def get_chat_unformatted(self):
+        return self._chat_history.get_unformatted()
+
+    def get_chat_formatted(self, num_exchanges: int = 0):
+        return self._chat_history.get_formatted(num_exchanges)
 
     def add_chat_exchange(self, role, content):
         self._chat_history.add_exchange(role, content)
+
+    def get_chat_stats(self):
+        """
+        Returns the current chat memory length, the maximum length, and the
+        fill percentage
+        """
+        curr_length = self._chat_history.total_chars
+        max_chars = self._chat_history.max_chars
+        fill_rate = float(curr_length) * 100.0 / float(max_chars)
+
+        return curr_length, max_chars, fill_rate
+
+    def clear_chat(self, n=5):
+        """
+        Clear the n last chat exchanges from the memory.
+
+        Return: The number of exchanges actually cleared.
+        """
+        return self._chat_history._clear(n)
 
 
 class ChatMemory:
@@ -133,9 +163,9 @@ class ChatMemory:
             max_chars: Maximum total characters to keep in memory (default: 128000)
             memory_dir: Directory to persist chat history (default: ~/.local/share/langur-agent/memory/)
         """
-        self._exchanges = []  # list of {"role": "user"|"assistant", "content": str}
-        self.max_chars = max_chars
+        self._exchanges = []  # list of {"role": "user"|"assistant"|"summary", "content": str}
         self.total_chars = 0
+        self.max_chars = max_chars
         
         # Set up persistence
         if memory_dir is None:
@@ -147,7 +177,11 @@ class ChatMemory:
         
         # Load from disk
         self._load()
-    
+
+    def set_exchanges(self, content):
+        self._exchanges = content
+        self.total_chars = sum(len(e["content"]) for e in self._exchanges)
+
     def _load(self):
         """Load chat history from disk."""
         if self._chat_path.exists():
@@ -180,24 +214,56 @@ class ChatMemory:
         })
         self.total_chars += char_count
         
-        # Trim if exceeded
+        # Compact if exceeded
         if self.total_chars > self.max_chars:
-            self._trim()
+            from agent.commands import registry
+            command, _ = registry.lookup(["/memory-compact"])
+            ok, msg, _, _, _ = registry.execute(self, command, [])
         
         # Persist immediately
         self.save()
     
     def _trim(self):
         """Remove oldest exchanges until under the character limit."""
-        print("Trimming memory...")
+
         while self.total_chars > self.max_chars and self._exchanges:
             oldest = self._exchanges.pop(0)
             self.total_chars -= len(oldest["content"])
         
         # Save after trimming
         self.save()
+
+    def _clear(self, n=5):
+        """
+        Removes the n oldest exchanges from the chat memory.
+        If n <= 0, all chat exchanges are cleared.
+
+        Return: The number of exchanges actually cleared.
+        """
+
+        cleared = 0
+        if n <= 0:
+            n = len(self._exchanges)
+
+        for i in range(n):
+            if self._exchanges:
+                out = self._exchanges.pop(0)
+                self.total_chars -= len(out["content"])
+                cleared += 1
+            else:
+                # We ran out of items
+                break
+
+        # Save after clearing
+        self.save()
+
+        return cleared
+
+    def get_unformatted(self):
+        return self._exchanges
     
-    def get_formatted(self):
+    
+    def get_formatted(self, num_exchanges):
         """Return chat history formatted for the system prompt.
         
         Returns:
@@ -206,17 +272,12 @@ class ChatMemory:
         if not self._exchanges:
             return None
         
-        lines = ["## Recent Conversation"]
-        # Show most recent exchanges first (last 10)
-        recent = self._exchanges[-10:]
-        for exchange in recent:
-            role_label = "User" if exchange["role"] == "user" else "Assistant"
-            # Truncate very long messages
-            content = exchange["content"]
-            if len(content) > 500:
-                content = content[:500] + "... (truncated)"
-            lines.append(f"### {role_label}")
-            lines.append(content)
-            lines.append("---")
+        lines = []
+        # Show most recent exchanges
+        history = self._exchanges[-num_exchanges:]
+        for turn in history:
+            content = escape(turn['content'])
+            lines.append(f"## {turn['role'].capitalize()}:")
+            lines.append(f"{content}\n\n")
         
         return "\n".join(lines)

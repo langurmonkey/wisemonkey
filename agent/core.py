@@ -103,7 +103,7 @@ class Core:
             parts.append(memory_text)
 
         # Add chat history
-        chat_text = self.memory.get_formatted_chat()
+        chat_text = self.memory.get_chat_formatted()
         if chat_text:
             parts.append(chat_text)
 
@@ -192,32 +192,62 @@ class Core:
 
         return (first_chunk_time, tool_calls)
 
+    def llm_chat_raw(self,
+                    messages,
+                    error_callback=None):
+        """
+        Send a single interaction to the LLM and get the non-streaming response.
+        """
+        
+        model_name = self.config.get("model.name", "qwen/qwen3.6-35b-a3b")
+        temp = self.config.get("model.temperature", 0.8)
+        try:
+            return self.client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=temp,
+                tools=None,
+                tool_choice="auto",
+                stream=False,
+            )
+        except Exception as e:
+            if error_callback:
+                error_callback(e, f"API connection error. Please, check the endpoint (model={model_name}, base_url={self.client.base_url}): {e}")
+            else:
+                raise RuntimeError(f"API connection error. Please, check the endpoint (model={model_name}, base_url={self.client.base_url}): {e}") from e
+                
+
     def _send_to_llm(self,
                      prompt_callback=None,
                      reasoning_callback=None,
                      content_callback=None,
                      cancel_callback=None,
                      error_callback=None):
-        """Send messages to the LLM and get a response.
+        """
+        Send messages to the LLM and get a response.
         """
         tools = get_tool_schemas()
         start = time.time()
         model_name = self.config.get("model.name", "qwen/qwen3.6-35b-a3b")
+        temp = self.config.get("model.temperature", 0.8)
         try:
+
             if prompt_callback:
                 prompt_callback(Stage.START)
                 
             response = self.client.chat.completions.create(
                 model=model_name,
                 messages=self.messages,
-                temperature=self.config.get("model.temperature", 0.8),
+                temperature=temp,
                 tools=tools if tools else None,
                 tool_choice="auto",
                 stream=True,
             )
         except Exception as e:
             if error_callback:
-                error_callback(e, f"API connection error. Please, check the endpoint [model={model_name}, base_url={self.client.base_url}]: {e}")
+                error_callback(e, f"API connection error. Please, check the endpoint (model={model_name}, base_url={self.client.base_url}): {e}")
+            else:
+                raise RuntimeError(f"API connection error. Please, check the endpoint (model={model_name}, base_url={self.client.base_url}): {e}") from e
 
         try:
             (first_chunk_time, tool_calls) = self._stream_handler(response,
@@ -231,9 +261,9 @@ class Core:
             if cancel_callback:
                 cancel_callback(e)
 
-        return self._finish_inference(first_chunk_time, tool_calls)
+        return self._finish_inference(start, first_chunk_time, tool_calls)
 
-    def _finish_inference(self, first_chunk_time, tool_calls):
+    def _finish_inference(self, start, first_chunk_time, tool_calls):
         self.thinking = False
         self.generating = False
         now = time.time()
@@ -275,7 +305,7 @@ class Core:
             reasoning_callback: Callback for reasoning updates. Gets Stage and optional message.
             content_callback: Callback for content updates. Gets message.
             tool_callback: Callback to run during tool activations. Gets tool name and args.
-            cancel_callback: Callback for user-cancelled inference.
+            cancel_callback: Callback for user-canceled inference.
             error_callback: Callback on error.
 
         Returns:
@@ -308,8 +338,8 @@ class Core:
                                                                   cancel_callback,
                                                                   error_callback)
             except TurnCancelled:
-                # User cancelled: don't persist anything, return immediately
-                return ("[Cancelled]", 0, 0, 0.0)
+                # User canceled turn: don't persist anything, return immediately
+                return ("[Canceled]", 0, 0, 0.0)
 
             total_tokens += tokens
             total_gen_time += gen_elapsed
@@ -413,4 +443,4 @@ class Core:
                 self.config.set("model.name", model_name)
                 return
 
-        raise NameError(f"the model '{model_name}' does not exsit")
+        raise NameError(f"the model '{model_name}' does not exist")

@@ -7,14 +7,14 @@ handling to the core.
 from pathlib import Path
 from xdg_base_dirs import xdg_data_home
 from functools import partial
+from textwrap import shorten
 
-from rich import box, inspect
+from rich import box
+from rich.markup import escape
 from rich.prompt import Prompt
-from rich.panel import Panel
 from rich.align import Align
 from rich.markdown import Markdown
 from rich.panel import Panel
-
 
 from agent.core import Core, Stage, TurnCancelled
 from agent.commands import registry
@@ -34,7 +34,7 @@ try:
     _HAS_PROMPT_TOOLKIT = True
 
 except ImportError:
-    console.print("[red]ERROR:[/red] could not initialize promtp toolkit")
+    console.print("[red]ERROR:[/red] could not initialize prompt toolkit")
     _HAS_PROMPT_TOOLKIT = False
 
 
@@ -100,7 +100,8 @@ class Agent:
 
 
     def _statusline(self, total_tokens, ntools, total_gen_time):
-        console.print(f"[black on #777777]   {total_gen_time:.1f}s  ⬤  {total_tokens} tokens  ⬤  {ntools} tools   [/black on #777777]", justify="full")
+        len, max, rate =self.core.memory.get_chat_stats()
+        console.print(f"[black on #777777]   {total_gen_time:.1f}s  ∣  {total_tokens} tokens  |  {ntools} tools  |  Mem: {len}/{max} ({rate:.2f}%)    [/black on #777777]", justify="full")
         console.print()
 
         
@@ -166,14 +167,30 @@ class Agent:
 ██████ ██▀██ ██ ▀██ ▀███▀ ▀███▀ ██ ██   ██  ██ ▀███▀ ██▄▄▄ ██ ▀██   ██  
             '''
         title = Align.center(f"[bold blue]{languragent}[/bold blue]", vertical='middle')
-        console.print(Panel(title, box=box.HEAVY, border_style="blue"))
+        console.print(Panel(title, box=box.HEAVY, border_style="blue", subtitle="Monkee at your service!"))
         console.print()
-        console.print(registry.get_commands_str())
 
+        # Print history
+        history = self.core.memory.get_chat_unformatted()
+        if history:
+            lines = []
+            for turn in history:
+                content = shorten(f"{escape(turn['content'])}", width=550)
+                lines.append(f"## {turn['role'].capitalize()}:")
+                lines.append(f"{content}")
+
+            curr, max, rate = self.core.memory.get_chat_stats()
+            console.print(Panel(Markdown('\n'.join(lines)),
+                            border_style="magenta",
+                            title="Previous conversation",
+                            subtitle=f"Previous conversation stats: {curr}/{max} - {rate:.2f}%"))
+
+        console.print()
+
+        # Get help
+        console.print("[gray39]Type [bold green]/help[/bold green] for command information[/gray39]")
         if _HAS_PROMPT_TOOLKIT:
             self._session = self._create_prompt_session()
-        
-        if self._session:
             # Prompt Toolkit
             style = Style.from_dict({
                 "prompt": "ansiyellow",
@@ -211,15 +228,27 @@ class Agent:
                 command, params = registry.lookup(tokens)
 
                 if command:
-                    ok, msg, content, should_exit = registry.execute(self, command, params)
+                    ok, msg, content, md, should_exit = registry.execute(self, command, params)
                     if should_exit:
                         console.print(txt_goodbye)
                         break
                     if ok:
+                        # Content in rich or Markdown format
+                        if content or md:
+                            if params:
+                                param_list = ' '.join(params)
+                            else:
+                                params_list = ''
+
+                            cont = content if content else Markdown(md)
+                            console.print(Panel(cont,
+                                            border_style="magenta",
+                                            title=f"{command.name} {param_list}",
+                                            subtitle=f"{command.name} {param_list}"))
+
+                        # Short status message
                         if msg:
                             console.print(f"[green]OK[/green]: {msg}")
-                        if content:
-                            console.print(content)
                         console.print()
                     else:
                         if msg:
