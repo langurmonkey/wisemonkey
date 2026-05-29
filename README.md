@@ -2,14 +2,18 @@
 
 ---
 
-Langur Agent is a simple, open, hackable CLI AI agent for Linux. It connects to any service providing an OpenAI-compatible endpoint. It features:
+Langur Agent is a simple, open, hackable CLI AI agent for Linux and macOS. It connects to any service providing an OpenAI-compatible endpoint. It features:
 
-- **Session management**
-- **Memory management**
-- **Tools**
-- **Skills**
-- **Autocompletion**
+- session management
+- memory management
+- visual candy
+- tools
+- skills
+- autocompletion
+- interactive configuration
 - and much more
+
+[![asciicast](https://asciinema.org/a/8cTlvnN0qFeyflLH.svg)](https://asciinema.org/a/8cTlvnN0qFeyflLH)
 
 The sections of this document are:
 
