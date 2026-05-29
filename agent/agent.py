@@ -4,6 +4,8 @@ The agent orchestrates the 'user-assistant' turns and delegates the actual turn
 handling to the core.
 """
 
+import os
+from pathlib import Path
 from functools import partial
 
 from rich import box
@@ -183,17 +185,20 @@ class Agent:
 
         new_session = self.core.memory.session_is_new
         session_dir = self.core.memory.session_dir
+        working_dir = contractuser(Path(os.getcwd()))
         created = self.core.memory.session_created
         accessed = self.core.memory.session_accessed
         console.rule(style="weak")
         if new_session:
             console.print(f"[info]⇨[/] Session created: [accent-bold]{self.core.memory.session}[/accent-bold]")
-            console.print(f"[dim]   location: {contractuser(session_dir)}[/dim]")
-            console.print(f"[dim]   created: {created}[/dim]")
+            console.print(f"[dim]   location:      {contractuser(session_dir)}[/dim]")
+            console.print(f"[dim]   working dir:   {working_dir}[/dim]")
+            console.print(f"[dim]   created:       {created}[/dim]")
         else:
             console.print(f"[info]⇨[/] Session restored: [accent-bold]{self.core.memory.session}[/accent-bold]")
-            console.print(f"[dim]   location: {contractuser(session_dir)}[/dim]")
-            console.print(f"[dim]   created: {created}[/dim]")
+            console.print(f"[dim]   location:      {contractuser(session_dir)}[/dim]")
+            console.print(f"[dim]   working dir:   {working_dir}[/dim]")
+            console.print(f"[dim]   created:       {created}[/dim]")
             console.print(f"[dim]   last accessed: {accessed}[/dim]")
         console.rule(style="weak")
 

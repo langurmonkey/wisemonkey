@@ -8,6 +8,9 @@ and execute them.
 from __future__ import annotations
 
 import ast
+import os
+
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -273,11 +276,13 @@ def _cmd_session(agent, params):
     mem = agent.core.memory
     name = mem.session
     session_dir = mem.session_dir
+    working_dir = contractuser(Path(os.getcwd()))
     created = mem.session_created
     accessed = mem.session_accessed
     result = ""
     result += f"Name:           [accent-bold]{name}[/accent-bold]\n"
     result += f"Location:       {contractuser(session_dir)}\n"
+    result += f"Working dir:    {working_dir}\n"
     result += f"Created:        {created}\n"
     result += f"Last accessed:  {accessed}"
     return True, None, result, None

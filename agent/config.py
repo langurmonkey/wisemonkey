@@ -10,12 +10,13 @@ Follows XDG Base Directory spec:
 import shutil
 import yaml
 import json
+import os
 from pathlib import Path
 from xdg_base_dirs import xdg_config_home
 from dotenv import load_dotenv
 
 # Load .env: current directory first, then home directory (without overwriting)
-_cwd_env = Path(".") / ".env"
+_cwd_env = Path(os.getcwd()) / ".env"
 if _cwd_env.exists():
     load_dotenv(_cwd_env)
 load_dotenv(Path.home() / ".env", override=False)
