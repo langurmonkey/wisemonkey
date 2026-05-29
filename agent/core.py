@@ -133,7 +133,7 @@ class Core:
             if first_chunk_time is None:
                 first_chunk_time = now
 
-            show_thinking = self.config.get("model.show_thinking", False)
+            reasoning_visible = self.config.get("model.reasoning_visible", False)
             # Thinking
             if (
                 hasattr(delta, 'reasoning_content')
@@ -142,12 +142,12 @@ class Core:
             
                 if not self.thinking:
                     if reasoning_callback:
-                        reasoning_callback(Stage.START, None, show_thinking)
+                        reasoning_callback(Stage.START, None, reasoning_visible)
 
                 self.thinking_buffer += delta.reasoning_content
 
                 if reasoning_callback:
-                    reasoning_callback(Stage.PROCESS, delta.reasoning_content, show_thinking)
+                    reasoning_callback(Stage.PROCESS, delta.reasoning_content, reasoning_visible)
 
                 self.thinking = True
 
@@ -158,7 +158,7 @@ class Core:
                     self.thinking = False
                     thinking_end = True
                     if reasoning_callback:
-                        reasoning_callback(Stage.STOP, None, show_thinking)
+                        reasoning_callback(Stage.STOP, None, reasoning_visible)
                 
                 self.response_buffer += delta.content
                 if content_callback:
@@ -208,6 +208,14 @@ class Core:
                 raise RuntimeError(f"API connection error. Please, check the endpoint (model={model_name}, base_url={self.client.base_url}): {e}") from e
                 
 
+    def _cancel_prompts(self,
+                        prompt_callback=None,
+                        reasoning_callback=None):
+        if prompt_callback:
+            prompt_callback(Stage.STOP)
+        if reasoning_callback:
+            reasoning_callback(Stage.STOP)
+
     def _send_to_llm(self,
                      prompt_callback=None,
                      reasoning_callback=None,
@@ -220,6 +228,7 @@ class Core:
         tools = get_tool_schemas()
         start = time.time()
         model_name = self.config.get("model.name", "qwen/qwen3.6-35b-a3b")
+        reasoning_effort = self.config.get("model.reasoning_effort", "medium")
         temp = self.config.get("model.temperature", 0.8)
         try:
 
@@ -230,14 +239,14 @@ class Core:
                 model=model_name,
                 messages=self.messages,
                 temperature=temp,
+                reasoning_effort=reasoning_effort,
                 tools=tools if tools else None,
                 tool_choice="auto",
                 stream=True,
             )
         except Exception as e:
-            if prompt_callback:
-                prompt_callback(Stage.STOP)
-
+            self._cancel_prompts(prompt_callback, reasoning_callback)
+            
             if error_callback:
                 error_callback(e, f"API connection error. Please, check the endpoint (model={model_name}, base_url={self.client.base_url}): {e}")
             else:
@@ -252,6 +261,7 @@ class Core:
         except KeyboardInterrupt as e:
             # Close the response stream to stop the API call
             response.close()
+            self._cancel_prompts(prompt_callback, reasoning_callback)
             if cancel_callback:
                 cancel_callback(e)
 

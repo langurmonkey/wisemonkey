@@ -61,18 +61,18 @@ class Agent:
             case _:
                 raise RuntimeError(f"Prompt callback only has Start and Stop stages: {stage}")
 
-    def reasoning_callback(self, stage:Stage, content:str=None, show_thinking:bool=True):
+    def reasoning_callback(self, stage:Stage, content:str=None, reasoning_visible:bool=True):
         """Called when starting, processing, and ending the reasoning stage."""
         match stage.value:
             case Stage.START.value:
-                if show_thinking:
+                if reasoning_visible:
                     console.print("[accent]⇨[/] 💡 Thinking...")
                 else:
                     self.spinner_thinking = console.status("💡 Thinking...")
                     self.spinner_thinking.start()
                 
             case Stage.PROCESS.value:
-                if show_thinking:
+                if reasoning_visible:
                     console.print(f"[weak]{content}[/]", end="")
 
             case Stage.STOP.value:

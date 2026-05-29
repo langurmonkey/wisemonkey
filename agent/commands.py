@@ -9,10 +9,9 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Callable
 
 from rich.prompt import Prompt
-from rich.progress import Progress
 from prompt_toolkit.shortcuts import choice
 from prompt_toolkit.formatted_text import HTML
 
@@ -180,16 +179,56 @@ def _cmd_quit(agent, params):
 
 
 @cmd(
-      "/showthinking",
-       "Show or hide the model thinking tokens",
-       examples=["/showthinking (on|off)"]
+      "/reasoning",
+       "Configure model reasoning",
 )
-def _cmd_showthinking(agent, params):
+def _cmd_reasoning(agent, params):
+    from agent.config import get_config
+
     if params:
-        state = params[0].lower() == "on"
-        ok, msg, _, _, _ = registry.run_command(agent, "/config-set model.show_thinking " + str(state))
-        return ok, msg, None, None
-    return False, "/showthinking command needs a parameter (on/off)", None
+        return False, "this command does not take any arguments", None, None
+
+    try:
+        config = get_config()
+
+        # Reasoning effort
+        opts = [
+            ("high", "High"),
+            ("medium","Medium"),
+            ("low","Low"),
+            ("none", "Disable model reasoning"),
+            ]
+        defa = config.get("model.reasoning_effort", "medium")
+
+        effort = choice(
+            message="Choose the reasoning effort:",
+            options=opts,
+            default=defa,
+            bottom_toolbar=HTML(
+                " <b>↑</b>/<b>↓</b>: select | <b>Enter</b>: accept"
+            ),
+        )
+        config.set("model.reasoning_effort", effort)
+
+        # Reasoning visible
+        opts = [("true", "Yes"), ("false", "No")]
+        defa = config.get("model.reasoning_visible")
+
+        visible = choice(
+            message="Display reasoning:",
+            options=opts,
+            default=defa,
+            bottom_toolbar=HTML(
+                " <b>↑</b>/<b>↓</b>: select | <b>Enter</b>: accept"
+            ),
+        )
+        visible_bool = visible == "true"
+        console.print(f"{visible}, {visible_bool}")
+        config.set("model.reasoning_visible", visible_bool)
+    except Exception as e:
+        console.print(e)
+
+    return True, f"reasoning effort: {effort}, show reasoning: {visible}", None, None
 
 
 @cmd(
@@ -386,7 +425,7 @@ def _cmd_models(agent, params):
 def _cmd_config(agent, params):
     from agent.config import get_config
     if params:
-        return False, "/config does not get any parameters", None, None
+        return False, "this command does not take any parameters", None, None
 
     config = get_config()
     base_url = config.get("model.base_url")
@@ -414,8 +453,9 @@ def _cmd_config_list(agent, params):
       "/config-set",
        "Set configuration values",
        examples=[
-           "/config set model.show_thinking False  [dim]# do not show reasoning[/dim]",
-           "/config set agent.temperature 0.8      [dim]# set temperature[/dim]"
+           "/config set model.reasoning_effort low     [dim]# set reasoning effort to low[/dim]",
+           "/config set model.reasoning_visible False  [dim]# do not show reasoning[/dim]",
+           "/config set agent.temperature 0.8          [dim]# set temperature[/dim]"
        ]
 )
 def _cmd_config_set(agent, params):

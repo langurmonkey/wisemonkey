@@ -89,15 +89,17 @@ model:
   # Model name
   name: qwen/qwen3.6-35b-a3b
   # URL of OpenAI endpoint
-  base_url: "http://127.0.0.1:1234/v1"
+  base_url: http://127.0.0.1:1234/v1
   # Temperature setting for inference
   temperature: 0.8
+  # The reasoning effort. 'none' to disable reasoning
+  reasoning_effort: medium
   # Show the model internal thinking
-  show_thinking: False
+  reasoning_visible: False
 
 agent:
   max_turns: 50
-  system_prompt: "You are a helpful assistant, expert in many domains of science and engineering. Respond concisely and clearly. No fluff. Ask for clarification if needed. Do not invent. On first interaction, analyze the user's message for their name, role, interests, and preferences. Record them with set_user_profile."
+  system_prompt: You are a helpful assistant, expert in many domains of science and engineering. Respond concisely and clearly. No fluff. Ask for clarification if needed. Do not invent. On first interaction, analyze the user's message for their name, role, interests, and preferences. Record them with set_user_profile.
   # Display formatted output at the end of generation
   markdown: false
   # Length of chat history kept for context, in characters
