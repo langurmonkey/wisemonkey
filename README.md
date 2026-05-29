@@ -120,16 +120,24 @@ During inference, you can cancel the turn and return to the input prompt with <k
 
 ### Sessions
 
-Internally, Langur Agent uses sessions to separate different memory histories. Sessions are named by the user. By default, the agent starts in the `default` session. You can start in a different session (either create a new one, or restore it if it exists) with the `--session` argument:
+Internally, Langur Agent uses sessions to separate different memory histories. Sessions are **named** by the user. By default, the agent uses the `default` session. You can start in a different session (either create a new one, or restore it if it exists) with the `--session` argument:
 
 ```bash
 # Start in a specific session
 langur-agent --session my-project
 ```
 
+The default session's name is `default`, so the following two commands are equivalent:
+```bash
+# These two commands start the default session
+langur-agent
+langur-agent --session default
+```
+
 You can also list the existing sessions with `-ls`:
 
 ```bash
+# List sessions
 uv run langur-agent --ls           
 Sessions:
 - my-project - ~/.local/share/langur-agent/sessions/my-project
