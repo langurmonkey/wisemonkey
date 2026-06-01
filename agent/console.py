@@ -40,27 +40,27 @@ langur_theme = Theme({
 console = Console(theme=langur_theme)
 err_console = Console(theme=langur_theme, stderr=True)
 
-def print(msg:str=None, end:str=None, justify:str=None):
+def print(msg:str=None, end:str='\n', justify:str=None):
     console.print(msg,
                   end=end,
                   justify=justify)
 
-def err(msg:str, end:str=None, justify:str=None):
+def err(msg:str, end:str='\n', justify:str=None):
     err_console.print(f"[err]⨯[/] {msg}",
                       end=end,
                       justify=justify)
 
-def ok(msg:str, end:str=None, justify:str=None):
+def ok(msg:str, end:str='\n', justify:str=None):
     console.print(f"[ok]✓[/] {msg}",
                   end=end,
                   justify=justify)
 
-def info(msg:str, end:str=None, justify:str=None):
+def info(msg:str, end:str='\n', justify:str=None):
     console.print(f"[info]⇨[/] {msg}",
                   end=end,
                   justify=justify)
 
-def warn(msg:str, end:str=None, justify:str=None):
+def warn(msg:str, end:str='\n', justify:str=None):
     console.print(f"[warn]⚠[/] {msg}",
                   end=end,
                   justify=justify)
