@@ -335,12 +335,12 @@ class ChatMemory:
         # Show most recent exchanges
         history = self._exchanges[-num_exchanges:]
         for turn in history:
-            t = f"({turn['utc']})" if timestamps and 'utc' in turn else ""
+            t = f"`({turn['utc']})`" if timestamps and 'utc' in turn else ""
             content = escape(turn['content'])
             if width > 0:
                 content = shorten(content, width=width)
 
-            lines.append(f"## {turn['role'].capitalize()}:\n`{t}`\n")
+            lines.append(f"## {turn['role'].capitalize()}:\n{t}\n")
             lines.append(f"{content}\n\n")
         
         return "\n".join(lines)
