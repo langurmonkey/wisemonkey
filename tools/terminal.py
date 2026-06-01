@@ -8,13 +8,12 @@ User confirmation is required for dangerous commands.
 """
 
 import subprocess
-import json
 import re
 
 from rich.prompt import Confirm as RichConfirm
 
 from agent.tools import tool
-from agent.console import console
+from agent.console import print
 
 # ──────────────────────────────────────────────
 # Configurable danger detection
@@ -140,18 +139,18 @@ def _requires_extra_confirmation(command: str, timeout: int) -> bool:
 
 def _prompt_user(command: str, reason: str) -> bool:
     """Ask the user to confirm (or reject) a command."""
-    console.print()
-    console.print("[bold yellow]⚠️  Command requires confirmation[/bold yellow]")
-    console.print(f"  [dim]Reason[/dim]: {reason}")
-    console.print(f"  [white on #444444] [bold]$[/bold] {command} [/white on #444444]")
-    console.print()
+    print()
+    print("[bold yellow]⚠️  Command requires confirmation[/bold yellow]")
+    print(f"  [dim]Reason[/dim]: {reason}")
+    print(f"  [white on #444444] [bold]$[/bold] {command} [/white on #444444]")
+    print()
 
     confirmed = RichConfirm.ask("[bold]Run this command?[/bold]", default=False)
 
     if confirmed:
-        console.print("  [green]✓ Confirmed[/green]")
+        print("  [green]✓ Confirmed[/green]")
     else:
-        console.print("  [red]✗ Cancelled by user[/red]")
+        print("  [red]✗ Cancelled by user[/red]")
 
     return confirmed
 
@@ -165,9 +164,9 @@ def _prompt_user_pt(command: str, reason: str) -> bool:
     ).run()
 
     if confirmed:
-        console.print("  [green]✓ Confirmed[/green]")
+        print("  [green]✓ Confirmed[/green]")
     else:
-        console.print("  [red]✗ Cancelled by user[/red]")
+        print("  [red]✗ Cancelled by user[/red]")
 
     return confirmed
 
@@ -246,7 +245,7 @@ def run_command_handler(args):
         else:
             # Safe-looking commands still get a lightweight prompt
             # so the user always sees what's about to run.
-            console.print(f"  [white on #444444] [bold]$[/bold] {command} [/white on #444444]")
+            print(f"  [white on #444444] [bold]$[/bold] {command} [/white on #444444]")
 
     # Execute
     try:

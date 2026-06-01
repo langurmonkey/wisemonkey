@@ -8,16 +8,17 @@ It features sessions, memory management, tools, skills, slash commands, and more
 
 import argparse
 import sys
-import traceback
+import os
+import asyncio
 
 from importlib.metadata import version as get_version
-from rich import print
+from rich.prompt import Confirm
 from pathlib import Path
 from xdg_base_dirs import xdg_data_home
 
 from agent import Agent
 from agent.utils import contractuser
-from agent.console import console
+from agent.console import print, err, ok, info, console
 
 # Ensure the project root (parent of agent/) is on the path
 # This handles both pip-installed and direct execution
@@ -64,7 +65,14 @@ def main():
         action='store_true',
         help='List existing sessions',
     )
+    parser.add_argument(
+        '-rm', '--rm',
+        type=str,
+        help='Delete a session by name',
+    )
     args = parser.parse_args()
+
+    SESSIONS_DIR = xdg_data_home() / "langur-agent" / "sessions"
 
     # Handle --update
     if args.update:
@@ -73,29 +81,42 @@ def main():
         XDG_DATA = xdg_data_home() or str(Path.home() / ".local" / "share")
         install_dir = f"{XDG_DATA}/langur-agent/repository"
         if not Path(install_dir).exists():
-            console.print(f"langur-agent not installed. Installing to {install_dir}...")
+            print(f"langur-agent not installed. Installing to {install_dir}...")
             subprocess.run(['bash', '-c', f'BRANCH=main INSTALL_DIR="{install_dir}" curl -fsSL https://codeberg.org/langurmonkey/langur-agent/raw/branch/main/install.sh | bash'], check=True)
         else:
-            console.print(f"Updating langur-agent in {install_dir}...")
+            print(f"Updating langur-agent in {install_dir}...")
             subprocess.run(['git', 'pull'], cwd=install_dir, check=True)
-            console.print("Update complete.")
+            print("Update complete.")
         return
 
     # List sessions
     if args.ls:
-        import os
-        SESSIONS_DIR = xdg_data_home() / "langur-agent" / "sessions"
         sessions = [f for f in os.listdir(SESSIONS_DIR) if os.path.isdir(os.path.join(SESSIONS_DIR, f))]
-        console.print("Sessions:")
+        print("Sessions:")
         for sess in sessions:
-            console.print(f"- [accent-bold]{sess}[/accent-bold] - [dim]{contractuser(os.path.join(SESSIONS_DIR, sess))}[/dim]")
+            print(f"- [accent-bold]{sess}[/accent-bold] - [dim]{contractuser(os.path.join(SESSIONS_DIR, sess))}[/dim]")
         return
 
+    # Delete session
+    if args.rm:
+        session_dir = os.path.join(SESSIONS_DIR, args.rm)
+        if os.path.isdir(session_dir):
+            remove = Confirm.ask(f"Are you sure you want to [red bold]permanently delete[/red bold] the session [accent-bold]{args.rm}[/accent-bold]?", console=console)
+
+            if remove:
+                import shutil
+                shutil.rmtree(session_dir)
+                ok(f"Session deleted: [accent-bold]{args.rm}[/]")
+        else:
+            err(f"Session does not exist: [accent-bold]{args.rm}[/]")
+
+        return
+            
 
     try:
         agent = Agent(config_path=args.config, session=args.session)
     except Exception as e:
-        console.print(f"[err]ERROR:[/err] Agent creation failed: {e}")
+        err(f"Agent creation failed: {e}")
         sys.exit(1)
 
     # Interactive mode

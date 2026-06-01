@@ -36,6 +36,21 @@ langur_theme = Theme({
     "err": "bold red"
 })
 
-# Create console
+# Create consoles
 console = Console(theme=langur_theme)
+err_console = Console(theme=langur_theme, stderr=True)
 
+def print(msg:str=None):
+    console.print(msg)
+
+def err(msg:str):
+    err_console.print(f"[err]⨯[/] {msg}")
+
+def ok(msg:str):
+    console.print(f"[ok]✓[/] {msg}")
+
+def info(msg:str):
+    console.print(f"[info]⇨[/] {msg}")
+
+def warn(msg:str):
+    console.print(f"[warn]⚠[/] {msg}")

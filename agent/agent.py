@@ -17,7 +17,7 @@ from rich.panel import Panel
 from agent.core import Core, Stage, TurnCancelled
 from agent.commands import registry
 from agent.utils import contractuser
-from agent.console import console
+from agent.console import print, err, ok, info, console
 
 
 
@@ -34,7 +34,7 @@ try:
     _HAS_PROMPT_TOOLKIT = True
 
 except ImportError:
-    console.print("[err]⨯[/] could not initialize prompt toolkit")
+    err("Could not initialize prompt toolkit")
     _HAS_PROMPT_TOOLKIT = False
 
 
@@ -58,7 +58,7 @@ class Agent:
                 if self.spinner_prompt:
                     self.spinner_prompt.stop()
                     self.spinner_prompt = None
-                console.print("[ok]✓[/] ⏳ Prompt processed")
+                ok("⏳ Prompt processed")
 
             case _:
                 raise RuntimeError(f"Prompt callback only has Start and Stop stages: {stage}")
@@ -68,31 +68,31 @@ class Agent:
         match stage.value:
             case Stage.START.value:
                 if reasoning_visible:
-                    console.print("[info]⇨[/] 💡 Thinking...")
+                    info("💡 Thinking...")
                 else:
                     self.spinner_thinking = console.status("💡 Thinking...")
                     self.spinner_thinking.start()
                 
             case Stage.PROCESS.value:
                 if reasoning_visible:
-                    console.print(f"[weak]{content}[/]", end="")
+                    print(f"[weak]{content}[/]", end="")
 
             case Stage.STOP.value:
                 if self.spinner_thinking:
                     self.spinner_thinking.stop()
                     self.spinner_thinking = None
-                console.print("[ok]✓[/] 💡 Done thinking")
+                ok("💡 Done thinking")
 
     def content_callback(self, content: str = None):
         """Called when new chunks arrive in streaming mode."""
-        console.print(content, end="")
+        print(content, end="")
 
     def tool_callback(self, tool_name: str, tool_args):
-        console.print(f"[info]⇨[/] 🛠️ Activating tool:  [tool]{tool_name}[/tool]")
+        info(f"🛠️ Activating tool:  [tool]{tool_name}[/tool]")
 
     def cancel_callback(self, e: KeyboardInterrupt):
         """Handles the Ctrl+c during inference, as a keyboard interrupt"""
-        console.print("\n[warn]⏹  Turn cancelled by user  ⏹[/warn]")
+        print("\n[warn]⏹  Turn cancelled by user  ⏹[/warn]")
         raise TurnCancelled() from e
 
     def error_callback(self, e, msg):
@@ -101,8 +101,8 @@ class Agent:
 
     def _statusline(self, total_tokens, ntools, total_gen_time):
         len, max, rate =self.core.memory.get_chat_stats()
-        console.print(f"[status]   {total_gen_time:.1f}s  ∣  {total_tokens} tokens  |  {ntools} tools  |  Mem: {len}/{max} ({rate:.2f}%)    [/status]", justify="full")
-        console.print()
+        print(f"[status]   {total_gen_time:.1f}s  ∣  {total_tokens} tokens  |  {ntools} tools  |  Mem: {len}/{max} ({rate:.2f}%)    [/status]", justify="full")
+        print()
 
         
     def _create_prompt_session(self):
@@ -180,8 +180,8 @@ class Agent:
 ██████ ██▀██ ██ ▀██ ▀███▀ ▀███▀ ██ ██   ██  ██ ▀███▀ ██▄▄▄ ██ ▀██   ██  
             '''
         title = Align.center(f"[title]{monkee}{languragent}[/title]", vertical='middle')
-        console.print(Panel(title, box=box.HEAVY, border_style="title", subtitle="Monkee at your service!"))
-        console.print()
+        print(Panel(title, box=box.HEAVY, border_style="title", subtitle="Monkee at your service!"))
+        print()
 
         new_session = self.core.memory.session_is_new
         session_dir = self.core.memory.session_dir
@@ -190,16 +190,16 @@ class Agent:
         accessed = self.core.memory.session_accessed
         console.rule(style="weak")
         if new_session:
-            console.print(f"[info]⇨[/] Session created: [accent-bold]{self.core.memory.session}[/accent-bold]")
-            console.print(f"[dim]   location:      {contractuser(session_dir)}[/dim]")
-            console.print(f"[dim]   working dir:   {working_dir}[/dim]")
-            console.print(f"[dim]   created:       {created}[/dim]")
+            info(f"Session created: [accent-bold]{self.core.memory.session}[/accent-bold]")
+            print(f"[dim]   location:      {contractuser(session_dir)}[/dim]")
+            print(f"[dim]   working dir:   {working_dir}[/dim]")
+            print(f"[dim]   created:       {created}[/dim]")
         else:
-            console.print(f"[info]⇨[/] Session restored: [accent-bold]{self.core.memory.session}[/accent-bold]")
-            console.print(f"[dim]   location:      {contractuser(session_dir)}[/dim]")
-            console.print(f"[dim]   working dir:   {working_dir}[/dim]")
-            console.print(f"[dim]   created:       {created}[/dim]")
-            console.print(f"[dim]   last accessed: {accessed}[/dim]")
+            info(f"Session restored: [accent-bold]{self.core.memory.session}[/accent-bold]")
+            print(f"[dim]   location:      {contractuser(session_dir)}[/dim]")
+            print(f"[dim]   working dir:   {working_dir}[/dim]")
+            print(f"[dim]   created:       {created}[/dim]")
+            print(f"[dim]   last accessed: {accessed}[/dim]")
         console.rule(style="weak")
 
         # Print history
@@ -209,17 +209,17 @@ class Agent:
 
         if chat_history:
             curr, max, rate = self.core.memory.get_chat_stats()
-            console.print(Panel(Markdown(chat_history),
+            print(Panel(Markdown(chat_history),
                             border_style="output-frame",
                             title="Previous conversation",
                             subtitle=f"Previous conversation stats: {curr}/{max} - {rate:.2f}%"))
 
-        console.print()
+        print()
 
         # Info
         console.rule(style="weak")
-        console.print("[info]⇨[/] [weak]Type [accent]/configure[/accent] to configure the agent interactively[/weak]")
-        console.print("[info]⇨[/] [weak]Type [accent]/help[/accent] for command information[/weak]")
+        info("[weak]Type [accent]/configure[/accent] to configure the agent interactively[/weak]")
+        info("[weak]Type [accent]/help[/accent] for command information[/weak]")
         console.rule(style="weak")
         if _HAS_PROMPT_TOOLKIT:
             self._session = self._create_prompt_session()
@@ -241,7 +241,7 @@ class Agent:
             try:
                 user_input = get_input()
             except (EOFError, KeyboardInterrupt):
-                console.print(txt_goodbye)
+                print(txt_goodbye)
                 break
 
             if not user_input:
@@ -255,7 +255,7 @@ class Agent:
                 if command:
                     ok, msg, content, md, should_exit = registry.execute(self, command, params)
                     if should_exit:
-                        console.print(txt_goodbye)
+                        print(txt_goodbye)
                         break
                     if ok:
                         # Content in rich or Markdown format
@@ -266,7 +266,7 @@ class Agent:
                                 param_list = ''
 
                             cont = content if content else Markdown(md)
-                            console.print(Panel(cont,
+                            print(Panel(cont,
                                                 border_style="output-frame",
                                                 title=f"{command.name} {param_list}",
                                                 subtitle=f"{command.name} {param_list}",
@@ -274,21 +274,21 @@ class Agent:
 
                         # Short status message
                         if msg:
-                            console.print(f"[ok]✓[/] {msg}")
-                        console.print()
+                            ok(f"{msg}")
+                        print()
                     else:
                         if msg:
-                            console.print(f"[err]⨯[/] {msg}")
+                            err(f"{msg}")
                 else:
-                    console.print(f"[err]⨯[/] command not found: {user_input}")
+                    err(f"Command not found: {user_input}")
                     
                 continue
 
             else:
-                console.print()
+                print()
                 console.rule(style="agent")
-                console.print(f"[agent]⩥ Langur Agent ⩤ [/agent]  [accent]⇒ {self.core.config.get('model.name')}[/accent]")
-                console.print("  [kbd]Ctrl[/kbd]+[kbd]C[/kbd]: Cancel turn\n")
+                print(f"[agent]⩥ Langur Agent ⩤ [/agent]  [accent]⇒ {self.core.config.get('model.name')}[/accent]")
+                print("  [kbd]Ctrl[/kbd]+[kbd]C[/kbd]: Cancel turn\n")
                 try:
                     (response,
                         total_tokens,
@@ -302,12 +302,12 @@ class Agent:
                                                           cancel_cb,
                                                           error_cb
                                                       )
-                    console.print()
+                    print()
                     if response == "[Cancelled]":
                         continue  # skip status line, go straight back to prompt
                     self._statusline(total_tokens, ntools, total_gen_time)
                 except Exception as e:
-                    console.print(f"[err]⨯[/] error sending prompt: {e}")
+                    err(f"Error sending prompt: {e}")
                     
 
         # Persist memory on session exit

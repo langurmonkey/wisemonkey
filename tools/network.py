@@ -6,11 +6,10 @@ Usage: fetch_url(url='https://...')
 
 import urllib.request
 import urllib.error
-import json
 import re
 
 from agent.tools import tool
-from agent.console import console
+from agent.console import print
 
 def _strip_scripts_and_styles(html):
     html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
@@ -63,7 +62,7 @@ def _decode_response(response):
 )
 def fetch_url_handler(url):
     try:
-        console.print(f"  Accessing [white on #444444]{url}[/white on #444444]")
+        print(f"  Accessing [white on #444444]{url}[/white on #444444]")
         req = urllib.request.Request(url, headers={'User-Agent': 'LangurAgent/1.0'})
         with urllib.request.urlopen(req, timeout=10) as response:
             html = _decode_response(response)

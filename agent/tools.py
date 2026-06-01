@@ -13,7 +13,7 @@ import json
 import importlib
 from pathlib import Path
 
-from agent.console import console
+from agent.console import warn
 
 # Global registry
 _registry = {}
@@ -116,7 +116,7 @@ def discover_tools(tools_dir=None):
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
         except Exception as e:
-            console.print(f"Warning: failed to load tool {py_file.name}: {e}")
+            warn(f"Failed to load tool {py_file.name}: {e}")
 
     _discovered = True
 

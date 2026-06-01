@@ -18,7 +18,7 @@ from rich.prompt import Prompt, FloatPrompt
 from prompt_toolkit.shortcuts import choice
 from prompt_toolkit.formatted_text import HTML
 
-from agent.console import console
+from agent.console import console, err
 
 def smart_cast(value, target_type):
     """Cast a string value to a given type, handling booleans correctly."""
@@ -233,7 +233,7 @@ def _cmd_reasoning(agent, params):
         visible_bool = visible == "true"
         config.set("model.reasoning_visible", visible_bool)
     except Exception as e:
-        console.print(e)
+        err(e)
 
     return True, f"reasoning effort: {effort}, show reasoning: {visible}", None, None
 
