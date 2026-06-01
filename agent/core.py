@@ -434,8 +434,11 @@ class Core:
     def get_models(self):
         """Gets a list with all the available models."""
         try:
-            return self.client.models.list()
+            models =  self.client.models.list()
+            models = sorted(models, key=lambda model: model.id)
+            return models
         except Exception as e:
+            print(e)
             raise RuntimeError("Error getting models. Please check the endpoint is up and reachable.") from e
 
     def set_model(self, model_name):

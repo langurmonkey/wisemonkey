@@ -21,6 +21,9 @@ from pubsub import pub
 
 from agent.console import console, err
 
+# Global error messages for commands
+no_params_error = "This command does not take any parameters"
+
 def smart_cast(value, target_type):
     """Cast a string value to a given type, handling booleans correctly."""
     if target_type is bool:
@@ -195,7 +198,7 @@ def _cmd_reasoning(core, params):
     from agent.config import get_config
 
     if params:
-        return False, "this command does not take any arguments", None, None
+        return False, no_params_error, None, None
 
     try:
         config = get_config()
@@ -271,7 +274,7 @@ def _cmd_notes_add(core, params):
 )
 def _cmd_session(core, params):
     if params:
-        return False, "this command does not take any arguments", None, None
+        return False, no_params_error, None, None
 
     from agent.utils import contractuser
     mem = core.memory
@@ -317,7 +320,7 @@ def _chat_memory(core, max_exchanges):
 )
 def _cmd_session_agent(core, params):
     if params:
-        return False, "this command does not take any arguments", None, None
+        return False, no_params_error, None, None
 
     mem =  core.memory.get_formatted()
     if mem:
@@ -332,7 +335,7 @@ def _cmd_session_agent(core, params):
 )
 def _cmd_session_chat(core, params):
     if params:
-        return False, "this command does not take any arguments", None, None
+        return False, no_params_error, None, None
 
     mem = core.memory.get_chat_formatted()
     chars, max, rate = core.memory.get_chat_stats()
@@ -346,7 +349,7 @@ def _cmd_session_chat(core, params):
 )
 def _cmd_session_compact(core, params):
     if params:
-        return False, "this command does not take any arguments", None, None
+        return False, no_params_error, None, None
 
     history_text = core.memory.get_chat_formatted()
     len_before = len(history_text) if history_text else 0
@@ -440,7 +443,7 @@ def _cmd_models(core, params):
         return False, f"{e}", None, None
         
     opts = [(f"{model.id}", f"{model.id}") for (_, model) in enumerate(models)]
-    defa = models.data[0].id
+    defa = models[0].id
 
     result = choice(
         message="Choose a model:",
@@ -469,7 +472,7 @@ def _cmd_models(core, params):
 def _cmd_url(core, params):
     from agent.config import get_config
     if params:
-        return False, "This command does not take any parameters", None, None
+        return False, no_params_error, None, None
 
     config = get_config()
     base_url = config.get("model.base_url")
@@ -491,7 +494,7 @@ def _cmd_url(core, params):
 )
 def _cmd_config_show(core, params):
     if params:
-        return False, "This command does not take any parameters", None, None
+        return False, no_params_error, None, None
 
     from agent.config import log_config
     return True, None, log_config(), None
@@ -503,7 +506,7 @@ def _cmd_config_show(core, params):
 )
 def _cmd_config(core, params):
     if params:
-        return False, "This command does not take any parameters", None, None
+        return False, no_params_error, None, None
 
     # URL, model, reasoning, temperature, vi
     commands = ["/url", "/model", "/reasoning", "/temperature", "/vi"]
@@ -523,7 +526,7 @@ def _cmd_config(core, params):
 )            
 def _cmd_temperature(core, params):
     if params:
-        return False, "This command does not take any parameters", None, None
+        return False, no_params_error, None, None
 
     from agent.config import get_config
     config = get_config()
@@ -545,7 +548,7 @@ def _cmd_temperature(core, params):
 )
 def _cmd_vi(core, params):
     if params:
-        return False, "This command does not take any parameters", None, None
+        return False, no_params_error, None, None
 
     from agent.config import get_config
     config = get_config()

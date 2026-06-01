@@ -17,7 +17,7 @@ from pubsub import pub
 
 from agent.core import Core, Stage, TurnCancelled
 from agent.commands import registry
-from agent.utils import contractuser
+from agent.utils import contractuser, add_command, collapse_none_dicts
 from agent.console import print, err, ok, info, console
 
 # Try to import prompt_toolkit for rich input; fall back to plain input.
@@ -27,7 +27,7 @@ try:
     from prompt_toolkit.history import FileHistory
     from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
     from prompt_toolkit.styles import Style
-    from prompt_toolkit.completion import FuzzyWordCompleter
+    from prompt_toolkit.completion import NestedCompleter, PathCompleter, Completer
     from prompt_toolkit.clipboard import InMemoryClipboard
     from prompt_toolkit.formatted_text import HTML
     _HAS_PROMPT_TOOLKIT = True
@@ -129,9 +129,38 @@ class Agent:
         # Vi mode
         vi_mode = self.core.config.get("agent.vi_mode", False)
 
-        # Slash commands auto completer
+        # Build slash command dict
         commands = [cmd.name for cmd in registry.list_commands()]
-        slash_completer = FuzzyWordCompleter(commands)
+        commands_dict = {}
+        for command in commands:
+            add_command(commands_dict, command)
+        commands_dict = collapse_none_dicts(commands_dict)
+        slash_completer = NestedCompleter.from_nested_dict(commands_dict)
+
+        # Path auto completer (for file system paths)
+        path_completer = PathCompleter()
+
+        # Hybrid completer: detects if input looks like a path and uses PathCompleter,
+        # otherwise falls back to slash commands completer.
+        class HybridCompleter(Completer):
+            def __init__(self, slash_comp, path_comp):
+                self.slash_completer = slash_comp
+                self.path_completer = path_comp
+
+            def get_completions(self, document, completion_context):
+                text = document.text_before_cursor
+                # Obvious paths
+                if text.startswith('~') or text.startswith('.') or text.startswith('..'):
+                    return self.path_completer.get_completions(document, completion_context)
+
+                # Then, try commands, otherwise, use path
+                cmds = self.slash_completer.get_completions(document, completion_context)
+                if not cmds:
+                    return self.path_completer.get_completions(document, completion_context)
+                else:
+                    return cmds
+
+        completer = HybridCompleter(slash_completer, path_completer)
 
         # History path
         history_path = self.core.memory.session_dir / "history.txt"
@@ -154,7 +183,7 @@ class Agent:
                     enable_open_in_editor=vi_mode,
                     complete_while_typing=True,        
                     complete_in_thread=True,
-                    completer=slash_completer,
+                    completer=completer,
                     auto_suggest=AutoSuggestFromHistory(),
                     bottom_toolbar=prompt_toolbar,
         )
