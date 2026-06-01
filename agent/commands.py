@@ -335,7 +335,7 @@ def _cmd_session_chat(agent, params):
 
     mem = agent.core.memory.get_chat_formatted()
     chars, max, rate = agent.core.memory.get_chat_stats()
-    stats = f"memory status: {chars}/{max} ({rate:.2f}%)"
+    stats = f"Memory status: {chars}/{max} ({rate:.2f}%)"
     # Format in Markdown
     return True, stats, None, mem
 
@@ -380,9 +380,9 @@ def _cmd_session_compact(agent, params):
 
         agent.core.memory.reset_chat_memory(content=[{"role": "summary", "content": summary}])
 
-        return True, f"memory compacted successfully from {len_before} to {len_after}", None, None
+        return True, f"Memory compacted successfully from {len_before} to {len_after}", None, None
     except Exception as e:
-        return False, f"memory compact operation failed: {e}", None, None
+        return False, f"Memory compact operation failed: {e}", None, None
 
 
 @cmd(
@@ -430,7 +430,7 @@ def _cmd_models(agent, params):
     except NameError as e:
         return False, f"{e}", None, None
         
-    return True, f"model: {result}", None, None
+    return True, f"Model: {result}", None, None
         
 @cmd(
       "/url",
@@ -439,7 +439,7 @@ def _cmd_models(agent, params):
 def _cmd_url(agent, params):
     from agent.config import get_config
     if params:
-        return False, "this command does not take any parameters", None, None
+        return False, "This command does not take any parameters", None, None
 
     config = get_config()
     base_url = config.get("model.base_url")
@@ -452,7 +452,7 @@ def _cmd_url(agent, params):
     if not ok:
         return False, f"{msg}", None, None
 
-    return True, "configuration saved successfully", None, None
+    return True, "Configuration saved successfully", None, None
     
 
 @cmd(
@@ -461,7 +461,7 @@ def _cmd_url(agent, params):
 )
 def _cmd_config_show(agent, params):
     if params:
-        return False, "this command does not take any parameters", None, None
+        return False, "This command does not take any parameters", None, None
 
     from agent.config import log_config
     return True, None, log_config(), None
@@ -473,7 +473,7 @@ def _cmd_config_show(agent, params):
 )
 def _cmd_config(agent, params):
     if params:
-        return False, "this command does not take any parameters", None, None
+        return False, "This command does not take any parameters", None, None
 
     # URL, model, reasoning, temperature, vi
     commands = ["/url", "/model", "/reasoning", "/temperature", "/vi"]
@@ -483,7 +483,7 @@ def _cmd_config(agent, params):
         if not ok:
             return False, msg, None, None
         
-    return True, "configuration updated", None, None
+    return True, "Configuration updated", None, None
 
 
 @cmd(
@@ -493,7 +493,7 @@ def _cmd_config(agent, params):
 )            
 def _cmd_temperature(agent, params):
     if params:
-        return False, "this command does not take any parameters", None, None
+        return False, "This command does not take any parameters", None, None
 
     from agent.config import get_config
     config = get_config()
@@ -503,11 +503,11 @@ def _cmd_temperature(agent, params):
     new_temp = FloatPrompt.ask(" Enter the temperature [0..2]", default=current_temp)
 
     if new_temp < 0 or new_temp > 2:
-        return False, f"temperature out of [0..2] range: {new_temp}", None, None
+        return False, f"Temperature out of [0..2] range: {new_temp}", None, None
 
     config.set("model.temperature", new_temp)
 
-    return True, f"temperature: {new_temp}", None, None
+    return True, f"Temperature: {new_temp}", None, None
     
 @cmd(
       "/vi",
@@ -515,7 +515,7 @@ def _cmd_temperature(agent, params):
 )
 def _cmd_vi(agent, params):
     if params:
-        return False, "this command does not take any parameters", None, None
+        return False, "This command does not take any parameters", None, None
 
     from agent.config import get_config
     config = get_config()
@@ -534,7 +534,7 @@ def _cmd_vi(agent, params):
     state_bool = state == "true"
     config.set("agent.vi_mode", state_bool)
     agent._create_prompt_session()
-    return True, f"vi mode: {state_bool}", None, None
+    return True, f"Vi mode: {state_bool}", None, None
 
 
 @cmd(
