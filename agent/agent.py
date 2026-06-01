@@ -253,11 +253,13 @@ class Agent:
                 command, params = registry.lookup(tokens)
 
                 if command:
-                    ok, msg, content, md, should_exit = registry.execute(self, command, params)
+                    no_errors, msg, content, md, should_exit = registry.execute(self, command, params)
+
                     if should_exit:
                         print(txt_goodbye)
                         break
-                    if ok:
+
+                    if no_errors:
                         # Content in rich or Markdown format
                         if content or md:
                             if params:
@@ -274,11 +276,14 @@ class Agent:
 
                         # Short status message
                         if msg:
-                            ok(f"{msg}")
+                            ok(msg)
                         print()
+
                     else:
+                        # Error
                         if msg:
                             err(f"{msg}")
+
                 else:
                     err(f"Command not found: {user_input}")
                     

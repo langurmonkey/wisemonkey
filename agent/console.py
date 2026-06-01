@@ -41,9 +41,12 @@ console = Console(theme=langur_theme)
 err_console = Console(theme=langur_theme, stderr=True)
 
 def print(msg:str=None, end:str='\n', justify:str=None):
-    console.print(msg,
-                  end=end,
-                  justify=justify)
+    if msg:
+        console.print(msg,
+                      end=end,
+                      justify=justify)
+    else:
+        console.print()
 
 def err(msg:str, end:str='\n', justify:str=None):
     err_console.print(f"[err]⨯[/] {msg}",

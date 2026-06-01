@@ -9,7 +9,7 @@ It features sessions, memory management, tools, skills, slash commands, and more
 import argparse
 import sys
 import os
-import asyncio
+import traceback
 
 from importlib.metadata import version as get_version
 from rich.prompt import Confirm
@@ -124,6 +124,7 @@ def main():
         agent.run_interactive()
     except Exception as e:
         print(e)
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
