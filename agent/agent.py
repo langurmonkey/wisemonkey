@@ -13,13 +13,14 @@ from rich import box
 from rich.prompt import Prompt
 from rich.align import Align
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.panel import Panel
 from pubsub import pub
 
 from agent.core import Core, Stage, TurnCancelled
 from agent.commands import registry
 from agent.utils import contractuser, add_command, collapse_none_dicts
-from agent.console import print, err, ok, info, console
+from agent.console import print, err, ok, info, newline, console
 
 # Try to import prompt_toolkit for rich input; fall back to plain input.
 try:
@@ -77,7 +78,7 @@ class Agent:
                 
             case Stage.PROCESS.value:
                 if reasoning_visible:
-                    print(f"[weak]{content}[/]", end="")
+                    print(f"[weak]{escape(content)}[/]", end="")
 
             case Stage.STOP.value:
                 if self.spinner_thinking:
@@ -87,10 +88,10 @@ class Agent:
 
     def content_callback(self, content: str = None):
         """Called when new chunks arrive in streaming mode."""
-        print(content, end="")
+        print(escape(content), end="")
 
     def tool_callback(self, tool_name: str, tool_args):
-        print()
+        newline()
         info(f"🛠️ Activating tool:  [tool]{tool_name}[/tool]")
 
     def cancel_callback(self, e: KeyboardInterrupt):
@@ -105,7 +106,6 @@ class Agent:
     def _statusline(self, total_tokens, ntools, total_gen_time):
         len, max, rate =self.core.memory.get_chat_stats()
         print(f"[status]   {total_gen_time:.1f}s  ∣  {total_tokens} tokens  |  {ntools} tools  |  Mem: {len}/{max} ({rate:.2f}%)    [/status]\n", justify="full")
-        print()
 
         
     def _create_prompt_session(self):
@@ -247,7 +247,7 @@ class Agent:
                                  _/.-.-.\\_␍
                                 ( ( o o ) )␍
                                  |/  "  \\|
-                                  \\ .-. /␍
+                                  \\ ݁݁ ⏝  /␍
                                   /`"""`\␍
                                  /       \␍
         '''
@@ -261,7 +261,7 @@ class Agent:
             '''
         title = Align.center(f"[title]{monkee}{languragent}[/title]", vertical='middle')
         print(Panel(title, box=box.HEAVY, border_style="title", subtitle="Monkee at your service!"))
-        print()
+        newline()
 
         new_session = self.core.memory.session_is_new
         session_dir = self.core.memory.session_dir
@@ -271,14 +271,12 @@ class Agent:
         console.rule(style="weak")
         if new_session:
             info(f"Session created: [accent-bold]{self.core.memory.session}[/accent-bold]")
-            print(f"[dim]   location:      {contractuser(session_dir)}[/dim]")
-            print(f"[dim]   working dir:   {working_dir}[/dim]")
-            print(f"[dim]   created:       {created}[/dim]")
         else:
             info(f"Session restored: [accent-bold]{self.core.memory.session}[/accent-bold]")
-            print(f"[dim]   location:      {contractuser(session_dir)}[/dim]")
-            print(f"[dim]   working dir:   {working_dir}[/dim]")
-            print(f"[dim]   created:       {created}[/dim]")
+        print(f"[dim]   location:      {contractuser(session_dir)}[/dim]")
+        print(f"[dim]   working dir:   {working_dir}[/dim]")
+        print(f"[dim]   created:       {created}[/dim]")
+        if not new_session:
             print(f"[dim]   last accessed: {accessed}[/dim]")
         console.rule(style="weak")
 
@@ -294,7 +292,7 @@ class Agent:
                             title="Previous conversation",
                             subtitle=f"Previous conversation stats: {curr}/{max} - {rate:.2f}%"))
 
-        print()
+        newline()
 
         # Info
         console.rule(style="weak")
@@ -357,7 +355,7 @@ class Agent:
                         # Short status message
                         if msg:
                             ok(msg)
-                        print()
+                        newline()
 
                     else:
                         # Error
@@ -370,7 +368,7 @@ class Agent:
                 continue
 
             else:
-                print()
+                newline()
                 console.rule(style="agent")
                 print(f"[agent]⩥ Langur Agent ⩤ [/agent]  [accent]⇒ {self.core.config.get('model.name')}[/accent]")
                 print("  [kbd]Ctrl[/kbd]+[kbd]C[/kbd]: Cancel turn\n")
@@ -387,10 +385,11 @@ class Agent:
                                                           cancel_cb,
                                                           error_cb
                                                       )
-                    print()
+                    newline()
                     if response == "[Cancelled]":
                         continue  # skip status line, go straight back to prompt
                     self._statusline(total_tokens, ntools, total_gen_time)
+                    newline()
                 except Exception as e:
                     err(f"Error sending prompt: {e}")
                     

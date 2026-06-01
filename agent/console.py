@@ -31,7 +31,6 @@ langur_theme = Theme({
     "ok": "chartreuse4",
     "info": "dim cyan",
     "warn": "orange_red1",
-    "warning": "orange_red1",
     "error": "bold red",
     "err": "bold red"
 })
@@ -40,30 +39,30 @@ langur_theme = Theme({
 console = Console(theme=langur_theme)
 err_console = Console(theme=langur_theme, stderr=True)
 
+def newline():
+    console.print()
+
 def print(msg:str=None, end:str='\n', justify:str=None):
-    if msg:
-        console.print(msg,
-                      end=end,
-                      justify=justify)
-    else:
-        console.print()
+    console.print(msg,
+                  end=end,
+                  justify=justify)
 
 def err(msg:str, end:str='\n', justify:str=None):
-    err_console.print(f"[err]⨯[/] {msg}",
+    err_console.print(f"[err]⨯[/err] {msg}",
                       end=end,
                       justify=justify)
 
 def ok(msg:str, end:str='\n', justify:str=None):
-    console.print(f"[ok]✓[/] {msg}",
+    console.print(f"[ok]✓[/ok] {msg}",
                   end=end,
                   justify=justify)
 
 def info(msg:str, end:str='\n', justify:str=None):
-    console.print(f"[info]⇨[/] {msg}",
+    console.print(f"[info]⇨[/info] {msg}",
                   end=end,
                   justify=justify)
 
 def warn(msg:str, end:str='\n', justify:str=None):
-    console.print(f"[warn]⚠[/] {msg}",
-                  end=end,
-                  justify=justify)
+    err_console.print(f"[warn]⚠[/warn] {msg}",
+                      end=end,
+                      justify=justify)
