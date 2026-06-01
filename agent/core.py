@@ -42,11 +42,12 @@ class Core:
 
         # Agent settings
         self.system_prompt = self.config.get("agent.system_prompt", "You are a helpful assistant, expert in many areas of science. Respond concisely and to the point. No fluff.")
-        max_chat_history = self.config.get("max_chat_history", 128000)
-        self.markdown = self.config.get("agent.markdown", False)
 
-        # Initialize subsystems
+        # Initialize memory
+        max_chat_history = self.config.get("max_chat_history", 128000)
         self.memory = Memory(max_chat_history=max_chat_history, session=session)
+
+        # Initialize skills
         self.skills = SkillLoader()
 
         # Conversation history
@@ -317,8 +318,6 @@ class Core:
             The final text response from the LLM.
         """
 
-        # Record user input in chat memory
-        self.memory.add_chat_exchange("user", user_input)
 
         # Initialize with system prompt
         self.messages = [
@@ -384,8 +383,10 @@ class Core:
             # No tool calls - this is the final response
             self.messages.append({"role": "assistant", "content": response_text})
             
-            # Record assistant output in chat memory
-            self.memory.add_chat_exchange("assistant", response_text)
+            # Record exchange to chat history
+            self.memory.add_chat_exchange(self, "user", user_input)
+            self.memory.add_chat_exchange(self, "assistant", response_text)
+
             # Persist memory
             self.memory.save()
             
@@ -398,7 +399,7 @@ class Core:
 
     def _tool_calls(self, tool_calls, tool_callback=None):
         """Handle tool calls"""
-        # Append the assistant message with tool calls as plain dicts
+        # Append the assistant message with tool calls as plain dictionaries
         self.messages.append({
             "role": "assistant",
             "content": None,
@@ -444,6 +445,6 @@ class Core:
             if model_name == model.id:
                 # Match, set and return
                 self.config.set("model.name", model_name)
-                return
+                return True
 
         raise NameError(f"the model '{model_name}' does not exist")

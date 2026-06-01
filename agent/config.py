@@ -44,10 +44,15 @@ def _get_defaults():
     """Return default configuration."""
     return {
         "model": {
-            "provider": "openai",
-            "name": "gpt-4o-mini",
+            "name": "qwen/qwen3.6-35b-a3b",
             "base_url": "",
             "temperature": 0.8,
+            "reasoning_effort": "medium",
+            "reasoning_visible": False,
+        },
+        "embedding": {
+            "name": "text-embedding-qwen3-embedding-0.6b",
+            "base_url": "",
         },
         "agent": {
             "max_turns": 50,

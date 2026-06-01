@@ -17,6 +17,7 @@ from typing import Callable
 from rich.prompt import Prompt, FloatPrompt
 from prompt_toolkit.shortcuts import choice
 from prompt_toolkit.formatted_text import HTML
+from pubsub import pub
 
 from agent.console import console, err
 
@@ -62,7 +63,7 @@ class CommandRegistry:
 
         return None, None
 
-    def execute(self, agent, cmd: Command, params: list[str]):
+    def execute(self, core, cmd: Command, params: list[str]):
         """
         Execute a command.
 
@@ -79,11 +80,11 @@ class CommandRegistry:
         ):
             return True, None, self._command_str(cmd), None, False
                 
-        ok, msg, content, markdown = cmd.handler(agent, params)
+        ok, msg, content, markdown = cmd.handler(core, params)
         should_exit = msg in ("EXIT", "exit")
         return ok, msg, content, markdown, should_exit
 
-    def run_command(self, agent, command: str):
+    def run_command(self, core, command: str):
         """
         Shortcut to run a command from a string.
 
@@ -96,7 +97,7 @@ class CommandRegistry:
         """
         cmd, params = self.lookup(command.split())
         if cmd:
-            return self.execute(agent, cmd, params)
+            return self.execute(core, cmd, params)
         else:
             raise RuntimeError(f"command not found: {command}")
 
@@ -182,7 +183,7 @@ def cmd(name: str,
       "Exit the agent",
       aliases=["/exit", "/q"]
 )
-def _cmd_quit(agent, params):
+def _cmd_quit(core, params):
     return True, "EXIT", None, None
 
 
@@ -190,7 +191,7 @@ def _cmd_quit(agent, params):
       "/reasoning",
        "Configure model reasoning",
 )
-def _cmd_reasoning(agent, params):
+def _cmd_reasoning(core, params):
     from agent.config import get_config
 
     if params:
@@ -242,8 +243,8 @@ def _cmd_reasoning(agent, params):
       "/notes",
       "List all notes",
 )
-def _cmd_notes(agent, params):
-    notes = agent.core.memory.get_notes()
+def _cmd_notes(core, params):
+    notes = core.memory.get_notes()
     buff = ""
     for note in notes:
         buff += f"📋︎  [blue]{note['id']}[/blue] ({note['category']}):\n"
@@ -257,9 +258,9 @@ def _cmd_notes(agent, params):
           "/notes add This is my note   # Add a new note",
       ]
 )
-def _cmd_notes_add(agent, params):
+def _cmd_notes_add(core, params):
     if params:
-        agent.core.memory.add_note(" ".join(params))
+        core.memory.add_note(" ".join(params))
         return True, "note added successfully", None, None
            
     return False, "please, provide a note", None, None
@@ -268,12 +269,12 @@ def _cmd_notes_add(agent, params):
     "/session",
     "Print session information",
 )
-def _cmd_session(agent, params):
+def _cmd_session(core, params):
     if params:
         return False, "this command does not take any arguments", None, None
 
     from agent.utils import contractuser
-    mem = agent.core.memory
+    mem = core.memory
     name = mem.session
     session_dir = mem.session_dir
     working_dir = contractuser(Path(os.getcwd()))
@@ -296,7 +297,7 @@ def _cmd_session(agent, params):
         "/session clear 10     # Clear the 10 oldest chat exchanges of this session",
     ]
 )
-def _cmd_session_clear(agent, params):
+def _cmd_session_clear(core, params):
     n = 0
     if params:
         try:
@@ -304,7 +305,7 @@ def _cmd_session_clear(agent, params):
         except ValueError:
             return False, f"the parameter must be an integer: '{params[0]}'", None, None
 
-    cleared = agent.core.memory.clear_chat(n)
+    cleared = core.memory.clear_chat(n)
     return True, f"{cleared} exchanges cleared", None, None
     
 def _chat_memory(core, max_exchanges):
@@ -314,11 +315,11 @@ def _chat_memory(core, max_exchanges):
       "/session-agent",
       "Show the session agent memory contents (user profile and notes)",
 )
-def _cmd_session_agent(agent, params):
+def _cmd_session_agent(core, params):
     if params:
         return False, "this command does not take any arguments", None, None
 
-    mem =  agent.core.memory.get_formatted()
+    mem =  core.memory.get_formatted()
     if mem:
         # Format in Markdown
         return True, None, None, mem
@@ -329,12 +330,12 @@ def _cmd_session_agent(agent, params):
       "/session-chat",
       "Show the session chat memory contents",
 )
-def _cmd_session_chat(agent, params):
+def _cmd_session_chat(core, params):
     if params:
         return False, "this command does not take any arguments", None, None
 
-    mem = agent.core.memory.get_chat_formatted()
-    chars, max, rate = agent.core.memory.get_chat_stats()
+    mem = core.memory.get_chat_formatted()
+    chars, max, rate = core.memory.get_chat_stats()
     stats = f"Memory status: {chars}/{max} ({rate:.2f}%)"
     # Format in Markdown
     return True, stats, None, mem
@@ -343,11 +344,11 @@ def _cmd_session_chat(agent, params):
     "/session-compact",
     "Compact the session chat history by summarizing it into a shorter form."   
 )
-def _cmd_session_compact(agent, params):
+def _cmd_session_compact(core, params):
     if params:
         return False, "this command does not take any arguments", None, None
 
-    history_text = agent.core.memory.get_chat_formatted()
+    history_text = core.memory.get_chat_formatted()
     len_before = len(history_text) if history_text else 0
 
     content = (
@@ -367,29 +368,55 @@ def _cmd_session_compact(agent, params):
         "content": content
     }]
 
+    spinner_compact = console.status("⏳ Compacting chat history...")
     try:
-        spinner_compact = console.status("⏳ Compacting chat history...")
         spinner_compact.start()
-
-        response = agent.core.llm_chat_raw(messages)
-
+        response = core.llm_chat_raw(messages)
         spinner_compact.stop()
 
         summary = response.choices[0].message.content
         len_after = len(summary)
 
-        agent.core.memory.reset_chat_memory(content=[{"role": "summary", "content": summary}])
+        core.memory.reset_chat_memory(content=[{"role": "summary", "content": summary}])
 
         return True, f"Memory compacted successfully from {len_before} to {len_after}", None, None
     except Exception as e:
+        if spinner_compact:
+            spinner_compact.stop()
         return False, f"Memory compact operation failed: {e}", None, None
+
+
+@cmd(
+    "/embed",
+    "Embed a document into the session vector store",
+    examples=[
+        "/embed ~/documents/research_paper.pdf",
+        "/embed ./notes.md",
+    ]
+)
+def _cmd_embed(core, params):
+    if not params:
+        return False, "please provide a file path", None, None
+    
+    file_path = " ".join(params)
+    spinner_embed = console.status(f"⏳ Embedding: {file_path}...")
+    file_path = os.path.expanduser(file_path)
+    try:
+        spinner_embed.start()
+        count = core.memory.vectorstore.ingest(file_path)
+        spinner_embed.stop()
+        return True, f"Successfully embedded {count} chunks from '{file_path}'", None, None
+    except Exception as e:
+        if spinner_embed:
+            spinner_embed.stop()
+        return False, f"Embedding failed: {e}", None, None
 
 
 @cmd(
       "/tools",
       "List available tools ⚙",
 )
-def _cmd_tools(agent, params):
+def _cmd_tools(core, params):
     from agent.tools import get_tools_str
     return True, None, get_tools_str(), None
 
@@ -398,17 +425,17 @@ def _cmd_tools(agent, params):
       "/skills",
       "List loaded skills ⚔",
 )
-def _cmd_skills(agent, params):
-    return True, None, agent.core.skills.get_skills_str(), None
+def _cmd_skills(core, params):
+    return True, None, core.skills.get_skills_str(), None
 
 @cmd(
       "/model",
       "Configure the model to use",
       aliases=["/models"]
 )
-def _cmd_models(agent, params):
+def _cmd_models(core, params):
     try:
-        models = agent.core.get_models()
+        models = core.get_models()
     except Exception as e:
         return False, f"{e}", None, None
         
@@ -425,18 +452,21 @@ def _cmd_models(agent, params):
     )
 
     try:
-        agent.core.set_model(result)
-        agent._create_prompt_session()
+        success = core.set_model(result)
+        if success:
+            pub.sendMessage("prompt-update")
+            return True, f"Model: {result}", None, None
+        else:
+            return False, "Model could not be set", None, None
     except NameError as e:
         return False, f"{e}", None, None
         
-    return True, f"Model: {result}", None, None
         
 @cmd(
       "/url",
       "Configure the base URL",
 )
-def _cmd_url(agent, params):
+def _cmd_url(core, params):
     from agent.config import get_config
     if params:
         return False, "This command does not take any parameters", None, None
@@ -448,7 +478,7 @@ def _cmd_url(agent, params):
 
     config.set("model.base_url", new_url)
 
-    ok, msg = agent.core.initialize_client()
+    ok, msg = core.initialize_client()
     if not ok:
         return False, f"{msg}", None, None
 
@@ -459,7 +489,7 @@ def _cmd_url(agent, params):
       "/config-show",
        "Show current configuration",
 )
-def _cmd_config_show(agent, params):
+def _cmd_config_show(core, params):
     if params:
         return False, "This command does not take any parameters", None, None
 
@@ -471,7 +501,7 @@ def _cmd_config_show(agent, params):
     "Configure the agent interactively",
     aliases = ["/configure"],
 )
-def _cmd_config(agent, params):
+def _cmd_config(core, params):
     if params:
         return False, "This command does not take any parameters", None, None
 
@@ -479,7 +509,7 @@ def _cmd_config(agent, params):
     commands = ["/url", "/model", "/reasoning", "/temperature", "/vi"]
 
     for command in commands:
-        ok, msg, _, _, _ = registry.run_command(agent, command)
+        ok, msg, _, _, _ = registry.run_command(core, command)
         if not ok:
             return False, msg, None, None
         
@@ -491,7 +521,7 @@ def _cmd_config(agent, params):
     "Set the inference temperature parameter in 0..2",
     aliases=["/temp", "/t"],
 )            
-def _cmd_temperature(agent, params):
+def _cmd_temperature(core, params):
     if params:
         return False, "This command does not take any parameters", None, None
 
@@ -513,7 +543,7 @@ def _cmd_temperature(agent, params):
       "/vi",
        "Enable/disable vi input mode",
 )
-def _cmd_vi(agent, params):
+def _cmd_vi(core, params):
     if params:
         return False, "This command does not take any parameters", None, None
 
@@ -533,7 +563,7 @@ def _cmd_vi(agent, params):
     )
     state_bool = state == "true"
     config.set("agent.vi_mode", state_bool)
-    agent._create_prompt_session()
+    pub.sendMessage("prompt-update")
     return True, f"Vi mode: {state_bool}", None, None
 
 
@@ -542,6 +572,6 @@ def _cmd_vi(agent, params):
     "Show command help",
     aliases=["/commands"],
 )
-def _cmd_help(agent, params):
+def _cmd_help(core, params):
     return True, None, registry.get_commands_str(), None
 

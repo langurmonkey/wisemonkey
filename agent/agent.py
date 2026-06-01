@@ -13,13 +13,12 @@ from rich.prompt import Prompt
 from rich.align import Align
 from rich.markdown import Markdown
 from rich.panel import Panel
+from pubsub import pub
 
 from agent.core import Core, Stage, TurnCancelled
 from agent.commands import registry
 from agent.utils import contractuser
 from agent.console import print, err, ok, info, console
-
-
 
 # Try to import prompt_toolkit for rich input; fall back to plain input.
 try:
@@ -38,14 +37,15 @@ except ImportError:
     _HAS_PROMPT_TOOLKIT = False
 
 
+# Constants
 txt_goodbye = "\n[accent-bold]Goodbye![/accent-bold]"
-
 
 class Agent:
     def __init__(self, config_path=None, session='default'):
         self.core = Core(config_path, session)
         self.spinner_prompt = None
         self.spinner_thinking = None
+        pub.subscribe(self._create_prompt_session, "prompt-update")
 
     def prompt_callback(self, stage:Stage):
         """Called when starting and ending prompt processing for a given turn"""
@@ -141,9 +141,10 @@ class Agent:
         def prompt_toolbar():
             return HTML("  <kbd>Alt</kbd>+<kbd>Enter</kbd>: new line | <kbd>Enter</kbd>: submit prompt | <kbd>Ctrl</kbd>+<kbd>C</kbd>: quit")
 
-        return PromptSession(
+        model = self.core.config.get("model.name")
+        self._session = PromptSession(
                     style=style,
-                    message=HTML(f"⩥ You ⩤ <model>⇒ {self.core.config.get('model.name')}</model>\n❯ "),
+                    message=HTML(f"⩥ You ⩤ <model>⇒ {model}</model>\n❯ "),
                     history=FileHistory(str(history_path)),
                     show_frame=True,
                     multiline=True,
@@ -222,7 +223,7 @@ class Agent:
         info("[weak]Type [accent]/help[/accent] for command information[/weak]")
         console.rule(style="weak")
         if _HAS_PROMPT_TOOLKIT:
-            self._session = self._create_prompt_session()
+            self._create_prompt_session()
             def get_input(): return str(self._session.prompt()).strip()
         else:
             # Rich
@@ -253,7 +254,7 @@ class Agent:
                 command, params = registry.lookup(tokens)
 
                 if command:
-                    no_errors, msg, content, md, should_exit = registry.execute(self, command, params)
+                    no_errors, msg, content, md, should_exit = registry.execute(self.core, command, params)
 
                     if should_exit:
                         print(txt_goodbye)

@@ -18,12 +18,13 @@ from rich.markup import escape
 from pathlib import Path
 from xdg_base_dirs import xdg_data_home
 
+from agent.vectorstore import VectorStore
+
 SESSIONS_DIR = xdg_data_home() / "langur-agent" / "sessions"
 SESSION_METADATA_FILE = ".session-metadata"
 
 # Singleton instance
 _instance = None
-
 
 class Memory:
     """Persistent per-session memory with in-memory buffering.
@@ -85,9 +86,14 @@ class Memory:
             raise RuntimeError("Invalid session state: new session but metadata already exists?")
             
 
+        # User profile
         self._user_profile_path = self.session_dir / "user_profile.json"
+        # Persistent notes
         self._notes_path = self.session_dir / "notes.json"
+        # Chat history
         self._chat_history = ChatMemory(self.session_dir, max_chars=max_chat_history)
+        # Document vector store
+        self.vectorstore = VectorStore(self.session_dir)
 
         # Load from disk into memory buffers
         self._user_profile = self._load_json(self._user_profile_path, {})
@@ -186,8 +192,8 @@ class Memory:
         """
         return self._chat_history.get_formatted(num_exchanges, timestamps, width)
 
-    def add_chat_exchange(self, role, content):
-        self._chat_history.add_exchange(role, content)
+    def add_chat_exchange(self, core, role, content):
+        self._chat_history.add_exchange(core, role, content)
 
     def get_chat_stats(self):
         """
@@ -254,7 +260,7 @@ class ChatMemory:
         with open(self._chat_path, "w") as f:
             json.dump({"exchanges": self._exchanges}, f, indent=2)
     
-    def add_exchange(self, role, content):
+    def add_exchange(self, core, role, content):
         """
         Add a user input or assistant output to memory.
         
@@ -276,8 +282,7 @@ class ChatMemory:
         # Compact if exceeded
         if self.total_chars > self.max_chars:
             from agent.commands import registry
-            command, _ = registry.lookup(["/session-compact"])
-            ok, msg, _, _, _ = registry.execute(self, command, [])
+            ok, msg, _, _, _ = registry.run_command(core, "/session-compact")
         
         # Persist immediately
         self.save()
