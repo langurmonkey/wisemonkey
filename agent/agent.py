@@ -68,7 +68,7 @@ class Agent:
         match stage.value:
             case Stage.START.value:
                 if reasoning_visible:
-                    info("💡 Thinking...")
+                    info("💡 Thinking...\n")
                 else:
                     self.spinner_thinking = console.status("💡 Thinking...")
                     self.spinner_thinking.start()
@@ -81,18 +81,19 @@ class Agent:
                 if self.spinner_thinking:
                     self.spinner_thinking.stop()
                     self.spinner_thinking = None
-                ok("💡 Done thinking")
+                ok("💡 Done thinking\n")
 
     def content_callback(self, content: str = None):
         """Called when new chunks arrive in streaming mode."""
         print(content, end="")
 
     def tool_callback(self, tool_name: str, tool_args):
+        print()
         info(f"🛠️ Activating tool:  [tool]{tool_name}[/tool]")
 
     def cancel_callback(self, e: KeyboardInterrupt):
         """Handles the Ctrl+c during inference, as a keyboard interrupt"""
-        print("\n[warn]⏹  Turn cancelled by user  ⏹[/warn]")
+        print("[warn]⏹  Turn cancelled by user  ⏹[/warn]")
         raise TurnCancelled() from e
 
     def error_callback(self, e, msg):
@@ -101,7 +102,7 @@ class Agent:
 
     def _statusline(self, total_tokens, ntools, total_gen_time):
         len, max, rate =self.core.memory.get_chat_stats()
-        print(f"[status]   {total_gen_time:.1f}s  ∣  {total_tokens} tokens  |  {ntools} tools  |  Mem: {len}/{max} ({rate:.2f}%)    [/status]", justify="full")
+        print(f"[status]   {total_gen_time:.1f}s  ∣  {total_tokens} tokens  |  {ntools} tools  |  Mem: {len}/{max} ({rate:.2f}%)    [/status]\n", justify="full")
         print()
 
         
@@ -140,8 +141,10 @@ class Agent:
         # Path auto completer (for file system paths)
         path_completer = PathCompleter()
 
-        # Hybrid completer: detects if input looks like a path and uses PathCompleter,
-        # otherwise falls back to slash commands completer.
+        # Hybrid completer: detects if the current word looks like a path and uses
+        # PathCompleter, otherwise falls back to slash commands completer.
+        from prompt_toolkit.document import Document
+
         class HybridCompleter(Completer):
             def __init__(self, slash_comp, path_comp):
                 self.slash_completer = slash_comp
@@ -149,16 +152,42 @@ class Agent:
 
             def get_completions(self, document, completion_context):
                 text = document.text_before_cursor
-                # Obvious paths
+
+                # Slash commands: always check first when line starts with '/'
+                if text.startswith('/'):
+                    cmds = list(self.slash_completer.get_completions(document, completion_context))
+                    if cmds:
+                        return cmds
+                    # If no slash completions match, fall through to path check below
+
+                # Extract the last word/token being typed (strip leading '/' for path detection)
+                words = text.rsplit(None, 1)
+                last_word = words[-1] if words else ""
+                # Remove leading slash so "/embed ~/Doc" doesn't trigger path on "/embed"
+                last_word_stripped = last_word.lstrip('/')
+
+                # If the last word looks like a path, use PathCompleter.
+                # We create a synthetic Document containing only the path portion,
+                # because PathCompleter checks the full text and fails when there's
+                # non-path text (like "/embed ") before the cursor.
+                if last_word_stripped and ('/' in last_word_stripped or last_word_stripped.startswith('~') or last_word_stripped.startswith('.')):
+                    fake_doc = Document(
+                        text=last_word_stripped,
+                        cursor_position=len(last_word_stripped),
+                    )
+                    path_completions = list(self.path_completer.get_completions(fake_doc, completion_context))
+                    if path_completions:
+                        offset = len(text) - len(last_word_stripped)
+                        for c in path_completions:
+                            c.start_position += offset
+                        return path_completions
+
+                # If the whole line starts with a path prefix (no command), use PathCompleter
                 if text.startswith('~') or text.startswith('.') or text.startswith('..'):
                     return self.path_completer.get_completions(document, completion_context)
 
-                # Then, try commands, otherwise, use path
-                cmds = self.slash_completer.get_completions(document, completion_context)
-                if not cmds:
-                    return self.path_completer.get_completions(document, completion_context)
-                else:
-                    return cmds
+                # Fall back to path completer
+                return self.path_completer.get_completions(document, completion_context)
 
         completer = HybridCompleter(slash_completer, path_completer)
 

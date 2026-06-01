@@ -16,10 +16,12 @@ def contractuser(path_str: str) -> str:
 
 separator_re = re.compile(r"[-\s]+")
 def add_command(tree: dict, command: str) -> None:
-    # Remove leading "/" and split on "-" or spaces.
+    # Keep leading "/" so NestedCompleter keys match the raw input.
+    # Split on "-" or spaces.
+    cmd = command.strip()
     parts = [
         part
-        for part in separator_re.split(command.strip().lstrip("/"))
+        for part in separator_re.split(cmd)
         if part
     ]
 
@@ -48,8 +50,12 @@ def collapse_none_dicts(obj):
         for key, value in obj.items()
     }
 
-    # If all values are None, convert this dict to a set of keys.
+    # If all values are None and there are multiple keys, convert to a set.
+    # Single-key dicts are kept as dicts so NestedCompleter.from_nested_dict
+    # accepts them (it requires dict branches, not sets).
     if collapsed and all(value is None for value in collapsed.values()):
-        return set(collapsed.keys())
+        if len(collapsed) > 1:
+            return set(collapsed.keys())
+        # Single leaf: keep as dict so NestedCompleter works.
 
     return collapsed
