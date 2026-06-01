@@ -384,8 +384,7 @@ def _cmd_session_compact(core, params):
 
         return True, f"Memory compacted successfully from {len_before} to {len_after}", None, None
     except Exception as e:
-        if spinner_compact:
-            spinner_compact.stop()
+        spinner_compact.stop()
         return False, f"Memory compact operation failed: {e}", None, None
 
 
@@ -410,8 +409,7 @@ def _cmd_embed(core, params):
         spinner_embed.stop()
         return True, f"Successfully embedded {count} chunks from '{file_path}'", None, None
     except Exception as e:
-        if spinner_embed:
-            spinner_embed.stop()
+        spinner_embed.stop()
         return False, f"Embedding failed: {e}", None, None
 
 
