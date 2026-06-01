@@ -72,7 +72,7 @@ echo "OPENAI_API_KEY=your-api-key-here" > .env
 # Clone the repo, then build the project:
 uv build
 # Set API key:
-export LANGUR_API_KEY=your-api-key
+export OPENAI_API_KEY=your-api-key
 # Run the agent:
 uv run langur-agent
 ```
@@ -169,8 +169,8 @@ There are a few commands available to use in the agent loop. You can list them w
 
 Persistent memory follows XDG Base Directory spec in `~/.local/share/langur-agent/session/$SESSION_NAME`:
 
-- `user_profile.json` — user information
-- `notes.json` — persistent notes (added via `save_note` tool)
+- `user_profile.json`---User information
+- `notes.json`---Persistent notes (added via `save_note` tool)
 
 **Lifecycle:**
 - Memory is loaded into the system prompt each turn
@@ -222,7 +222,7 @@ from langur.tools import tool
         "type": "object",
         "properties": {
             "input": {
-                "type": "string"
+                "type": "string",
                 "description": "The input parameter."
             }
         },
