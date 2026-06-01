@@ -37,7 +37,7 @@ def main():
         pkg_version = __version__
 
     parser = argparse.ArgumentParser(
-        description="Langur Agent - Simple and hackable AI assistant",
+        description="Langur Agent - A simple and hackable AI agent for the Linux and macOS terminal",
     )
     parser.add_argument(
         "-c", "--config",

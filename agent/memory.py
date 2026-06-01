@@ -18,7 +18,14 @@ from rich.markup import escape
 from pathlib import Path
 from xdg_base_dirs import xdg_data_home
 
-from agent.vectorstore import VectorStore
+
+def _load_vectorstore(session_dir):
+    """Lazily initialize the vector store. Returns None if dependencies are missing."""
+    try:
+        from agent.vectorstore import VectorStore
+        return VectorStore(session_dir)
+    except Exception:
+        return None
 
 SESSIONS_DIR = xdg_data_home() / "langur-agent" / "sessions"
 SESSION_METADATA_FILE = ".session-metadata"
@@ -92,8 +99,8 @@ class Memory:
         self._notes_path = self.session_dir / "notes.json"
         # Chat history
         self._chat_history = ChatMemory(self.session_dir, max_chars=max_chat_history)
-        # Document vector store
-        self.vectorstore = VectorStore(self.session_dir)
+        # Document vector store (lazy, optional)
+        self.vectorstore = None
 
         # Load from disk into memory buffers
         self._user_profile = self._load_json(self._user_profile_path, {})
@@ -205,6 +212,21 @@ class Memory:
         fill_rate = float(curr_length) * 100.0 / float(max_chars)
 
         return curr_length, max_chars, fill_rate
+
+    def create_pasted_file(self, content):
+        """Save pasted content to a file in the session's pasted directory.
+
+        Creates session_dir/pasted/paste_$TIMESTAMP.md with the given content.
+        Returns the file path as a string.
+        """
+        pasted_dir = self.session_dir / "pasted"
+        pasted_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        paste_file = pasted_dir / f"paste_{timestamp}.md"
+        paste_file.write_text(content, encoding="utf-8")
+
+        return str(paste_file)
 
     def clear_chat(self, n=5):
         """

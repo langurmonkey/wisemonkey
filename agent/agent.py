@@ -30,8 +30,11 @@ try:
     from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
     from prompt_toolkit.styles import Style
     from prompt_toolkit.completion import NestedCompleter, PathCompleter, Completer
-    from prompt_toolkit.clipboard import InMemoryClipboard
+    from prompt_toolkit.clipboard import InMemoryClipboard, ClipboardData
     from prompt_toolkit.formatted_text import HTML
+    from prompt_toolkit.keys import Keys
+    from prompt_toolkit.lexers import PygmentsLexer
+    from pygments.lexers.markup import MarkdownLexer
     _HAS_PROMPT_TOOLKIT = True
 
 except ImportError:
@@ -41,6 +44,7 @@ except ImportError:
 
 # Constants
 txt_goodbye = "\n[accent-bold]Goodbye![/accent-bold]"
+PASTE_THRESHOLD = 100
 
 class Agent:
     def __init__(self, config_path=None, session='default'):
@@ -138,6 +142,19 @@ class Agent:
                     # Single press on empty: just reset and record time
                     buffer.reset()
                     self._last_ctrl_c_time = now
+        def _handle_paste(text):
+            """Intercept large pastes and save them to a file."""
+            if len(text) > PASTE_THRESHOLD:
+                file_path = self.core.memory.create_pasted_file(text)
+                return f"*Pasted file: {file_path}*\n"
+            return text
+        # Bracketed paste: catches middle-click, Shift+Insert, and
+        # Ctrl+Shift+V (terminals wrap pasted text in \x1b[200~...\x1b[201~)
+        @kb.add(Keys.BracketedPaste)
+        def _(event):
+            """Bracketed paste: intercept large pastes from any paste method."""
+            text = event.data
+            event.current_buffer.insert_text(_handle_paste(text))
 
         # Create prompt session now
         style = Style.from_dict({
@@ -218,7 +235,7 @@ class Agent:
 
         # Toolbar
         def prompt_toolbar():
-            return HTML("  <kbd>Alt</kbd>+<kbd>Enter</kbd>: new line | <kbd>Enter</kbd>: submit | <kbd>Ctrl</kbd>+<kbd>C</kbd>: clear / double-tap to quit")
+            return HTML("  <kbd>Shift</kbd>+<kbd>Enter</kbd>: new line | <kbd>Enter</kbd>: submit | <kbd>Ctrl</kbd>+<kbd>C</kbd>: clear / double-tap to quit")
 
         model = self.core.config.get("model.name")
         self._session = PromptSession(
@@ -235,6 +252,7 @@ class Agent:
                     complete_in_thread=True,
                     completer=completer,
                     auto_suggest=AutoSuggestFromHistory(),
+                    lexer=PygmentsLexer(MarkdownLexer),
                     bottom_toolbar=prompt_toolbar,
         )
         

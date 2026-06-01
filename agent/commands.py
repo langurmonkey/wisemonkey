@@ -403,6 +403,16 @@ def _cmd_embed(core, params):
     file_path = " ".join(params)
     spinner_embed = console.status(f"⏳ Embedding: {file_path}...")
     file_path = os.path.expanduser(file_path)
+
+    # Lazily initialize the vector store on first use
+    if core.memory.vectorstore is None:
+        from agent.memory import _load_vectorstore
+        core.memory.vectorstore = _load_vectorstore(core.memory.session_dir)
+
+    if core.memory.vectorstore is None:
+        spinner_embed.stop()
+        return False, "Vector store is not available. Check that chromadb and tiktoken are installed, and embedding config is correct.", None, None
+
     try:
         spinner_embed.start()
         count = core.memory.vectorstore.ingest(file_path)
