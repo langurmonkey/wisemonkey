@@ -40,17 +40,27 @@ langur_theme = Theme({
 console = Console(theme=langur_theme)
 err_console = Console(theme=langur_theme, stderr=True)
 
-def print(msg:str=None, end:str=None):
-    console.print(msg, end=end)
+def print(msg:str=None, end:str=None, justify:str=None):
+    console.print(msg,
+                  end=end,
+                  justify=justify)
 
-def err(msg:str, end:str=None):
-    err_console.print(f"[err]⨯[/] {msg}", end=end)
+def err(msg:str, end:str=None, justify:str=None):
+    err_console.print(f"[err]⨯[/] {msg}",
+                      end=end,
+                      justify=justify)
 
-def ok(msg:str, end:str=None):
-    console.print(f"[ok]✓[/] {msg}", end=end)
+def ok(msg:str, end:str=None, justify:str=None):
+    console.print(f"[ok]✓[/] {msg}",
+                  end=end,
+                  justify=justify)
 
-def info(msg:str, end:str=None):
-    console.print(f"[info]⇨[/] {msg}", end=end)
+def info(msg:str, end:str=None, justify:str=None):
+    console.print(f"[info]⇨[/] {msg}",
+                  end=end,
+                  justify=justify)
 
-def warn(msg:str, end:str=None):
-    console.print(f"[warn]⚠[/] {msg}", end=end)
+def warn(msg:str, end:str=None, justify:str=None):
+    console.print(f"[warn]⚠[/] {msg}",
+                  end=end,
+                  justify=justify)
