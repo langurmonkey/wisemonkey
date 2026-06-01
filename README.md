@@ -97,6 +97,12 @@ model:
   # Show the model internal thinking
   reasoning_visible: False
 
+embedding:
+  # Embedding model name
+  name: qwen/qwen3-embedding-0.6b-gguf
+  # URL of the OpenAI endpoint for embeddings
+  base_url: http://127.0.0.1:1234/v1
+
 agent:
   max_turns: 50
   system_prompt: You are a helpful assistant, expert in many domains of science and engineering. Respond concisely and clearly. No fluff. Ask for clarification if needed. Do not invent. On first interaction, analyze the user's message for their name, role, interests, and preferences. Record them with set_user_profile.
@@ -177,6 +183,17 @@ Persistent memory follows XDG Base Directory spec in `~/.local/share/langur-agen
 - `save_note` tool adds notes during a session
 - `save_memory` tool explicitly persists memory to disk
 - Memory is auto-saved when the agent exits (interactive mode)
+
+## Document embedding
+
+Langur Agent can embed documents into a per-session vector store, allowing the agent to search and reference their contents during conversation. Use `/embed` to add a document:
+
+```bash
+/embed ~/documents/research_paper.pdf
+/embed ./notes.md
+```
+
+The agent uses the `search_knowledge` tool to query embedded documents when answering questions about previously indexed files. Supported formats include PDF, Markdown, and plain text. Embeddings are powered by the configured embedding model and stored in the session directory under `vectordb/`.
 
 ## Chat memory
 
