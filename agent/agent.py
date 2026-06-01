@@ -243,13 +243,13 @@ class Agent:
         import shutil
         term_size = shutil.get_terminal_size((80, 20))
         monkee = '''
-                                   .-"-.␍
-                                 _/.-.-.\\_␍
-                                ( ( o o ) )␍
+                                   .-"-.
+                                 _/.-.-.\\_
+                                ( ( o o ) )
                                  |/  "  \\|
-                                  \\ ݁݁ ⏝  /␍
-                                  /`"""`\␍
-                                 /       \␍
+                                  \\ ݁݁ ⏝  /
+                                  /`"""`\\
+                                 /       \\
         '''
         if term_size.columns < 80:
             languragent="LANGUR AGENT"
