@@ -55,6 +55,7 @@ langur-agent
 If you need an API key to access the endpoint, put it in the `.env` file. Langur Agent looks for the `.env` file in the following locations, in order:
 
 - Current directory, `./.env`
+- Config directory, `$XDG_CONFIG_HOME/langur-agent/.env`
 - Home directory, `$HOME/.env`
 
 Create the `.env` file with the API key:

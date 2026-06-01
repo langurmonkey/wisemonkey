@@ -15,15 +15,22 @@ from pathlib import Path
 from xdg_base_dirs import xdg_config_home
 from dotenv import load_dotenv
 
-# Load .env: current directory first, then home directory (without overwriting)
-_cwd_env = Path(os.getcwd()) / ".env"
-if _cwd_env.exists():
-    load_dotenv(_cwd_env)
-load_dotenv(Path.home() / ".env", override=False)
-
 DEFAULT_CONFIG = Path(__file__).parent.parent / "config.yaml"
 XDG_CONFIG_DIR = xdg_config_home() / "langur-agent"
 XDG_CONFIG_FILE = XDG_CONFIG_DIR / "config.yaml"
+
+# Load .env:
+# - current directory first,
+# - then config directory,
+# - then home directory (without overwriting)
+_cwd_env = Path(os.getcwd()) / ".env"
+_config_env = Path(XDG_CONFIG_DIR) / ".env"
+if _cwd_env.exists():
+    load_dotenv(_cwd_env)
+elif _config_env.exists():
+    load_dotenv(_config_env)
+else:
+    load_dotenv(Path.home() / ".env", override=False)
 
 
 def _ensure_xdg_config():
