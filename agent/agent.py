@@ -5,6 +5,7 @@ handling to the core.
 """
 
 import os
+import time
 from pathlib import Path
 from functools import partial
 
@@ -45,6 +46,7 @@ class Agent:
         self.core = Core(config_path, session)
         self.spinner_prompt = None
         self.spinner_thinking = None
+        self._last_ctrl_c_time = 0  # Timestamp of last Ctrl+C for double-tap detection
         pub.subscribe(self._create_prompt_session, "prompt-update")
 
     def prompt_callback(self, stage:Stage):
@@ -107,7 +109,7 @@ class Agent:
 
         
     def _create_prompt_session(self):
-        # Key bindings: 
+        # Key bindings:
         kb = KeyBindings()
         @kb.add('enter')
         def _(event):
@@ -117,6 +119,25 @@ class Agent:
         def _(event):
             """Alt+Enter inserts a newline."""
             event.current_buffer.insert_text('\n')
+        @kb.add('c-c')
+        def _(event):
+            """Ctrl+C: first press clears input, second press (within 1s) quits."""
+            buffer = event.current_buffer
+            now = time.time()
+
+            if buffer.text:
+                # First press with text: clear the buffer
+                buffer.reset()
+                self._last_ctrl_c_time = now
+            else:
+                # Buffer is empty: check for double-tap
+                if now - self._last_ctrl_c_time < 1.0:
+                    # Double Ctrl+C: quit
+                    raise KeyboardInterrupt
+                else:
+                    # Single press on empty: just reset and record time
+                    buffer.reset()
+                    self._last_ctrl_c_time = now
 
         # Create prompt session now
         style = Style.from_dict({
@@ -197,7 +218,7 @@ class Agent:
 
         # Toolbar
         def prompt_toolbar():
-            return HTML("  <kbd>Alt</kbd>+<kbd>Enter</kbd>: new line | <kbd>Enter</kbd>: submit prompt | <kbd>Ctrl</kbd>+<kbd>C</kbd>: quit")
+            return HTML("  <kbd>Alt</kbd>+<kbd>Enter</kbd>: new line | <kbd>Enter</kbd>: submit | <kbd>Ctrl</kbd>+<kbd>C</kbd>: clear / double-tap to quit")
 
         model = self.core.config.get("model.name")
         self._session = PromptSession(
