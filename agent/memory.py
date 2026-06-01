@@ -87,7 +87,7 @@ class Memory:
 
         self._user_profile_path = self.session_dir / "user_profile.json"
         self._notes_path = self.session_dir / "notes.json"
-        self._chat_history = ChatMemory(max_chars=max_chat_history, memory_dir=self.session_dir)
+        self._chat_history = ChatMemory(self.session_dir, max_chars=max_chat_history)
 
         # Load from disk into memory buffers
         self._user_profile = self._load_json(self._user_profile_path, {})
@@ -217,7 +217,7 @@ class ChatMemory:
     when the window is exceeded. Persisted to disk.
     """
     
-    def __init__(self, max_chars=128000, memory_dir=None):
+    def __init__(self, session_dir, max_chars=128000):
         """Initialize chat memory.
         
         Args:
@@ -229,12 +229,7 @@ class ChatMemory:
         self.max_chars = max_chars
         
         # Set up persistence
-        if memory_dir is None:
-            self.memory_dir = DEFAULT_MEMORY_DIR
-        else:
-            self.memory_dir = Path(memory_dir)
-        self.memory_dir.mkdir(parents=True, exist_ok=True)
-        self._chat_path = self.memory_dir / "chat_history.json"
+        self._chat_path = Path(session_dir) / "chat_history.json"
         
         # Load from disk
         self._load()

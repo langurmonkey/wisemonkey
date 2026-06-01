@@ -333,14 +333,11 @@ def _cmd_session_chat(agent, params):
     if params:
         return False, "this command does not take any arguments", None, None
 
-    mem =  agent.core.memory.get_formatted()
-    if mem:
-        chars, max, rate = agent.core.memory.get_chat_formatted(0)
-        stats = f"memory status: {chars}/{max} ({rate:.2f}%)"
-        # Format in Markdown
-        return True, stats, None, mem
-    else:
-        return False, "session chat memory is empty", None, None
+    mem = agent.core.memory.get_chat_formatted()
+    chars, max, rate = agent.core.memory.get_chat_stats()
+    stats = f"memory status: {chars}/{max} ({rate:.2f}%)"
+    # Format in Markdown
+    return True, stats, None, mem
 
 @cmd(
     "/session-compact",
