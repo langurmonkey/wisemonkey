@@ -108,8 +108,9 @@ class Agent:
 
 
     def _statusline(self, total_tokens, ntools, total_gen_time):
-        len, max, rate =self.core.memory.get_chat_stats()
-        print(f"[status]   {total_gen_time:.1f}s  ∣  {total_tokens} tokens  |  {ntools} tools  |  Mem: {len}/{max} ({rate:.2f}%)    [/status]\n", justify="full")
+        length, max, rate = self.core.memory.get_chat_stats()
+        title = f"  {total_gen_time:.1f}s   |   {total_tokens} tokens   |   {ntools} tools   |   Mem: {length}/{max} ({rate:.2f}%)  "
+        console.rule(title=title, style="status")
 
         
     def _create_prompt_session(self):
