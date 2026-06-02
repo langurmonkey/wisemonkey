@@ -235,11 +235,46 @@ agent:
   max_chat_history: 128000  # Maximum history characters to keep for context
 ```
 
+## Structure
+
+Wisemonkey is built to be modular and hackable. Here is an overview of the main parts and their mapping to the file system.
+
+```
+wisemonkey/
+├── agent/                  # Core agent code.
+│   ├── agent.py            # Main agent loop, prompt handling, key bindings.
+│   ├── commands.py         # Slash commands (e.g. /embed, /quit).
+│   ├── config.py           # Configuration loading and handling.
+│   ├── console.py          # Rich console output with themed formatting.
+│   ├── core.py             # Core agent functions, like API connection and tool calls.
+│   ├── mcp.py              # MCP server support.
+│   ├── memory.py           # Session memory, paste file creation.
+│   ├── skills.py           # Skill loading and management.
+│   ├── tools.py            # Tool definitions.
+│   ├── utils.py            # Utility functions.
+│   └── vectorstore.py      # Vector store wrapper.
+├── tools/                  # Tool implementations available to the model.
+│   ├── basic.py            # Basic and example tools.
+│   ├── files.py            # File read/write tools.
+│   ├── memory.py            # search_knowledge tool.
+│   ├── network.py          # URL fetching.
+│   ├── terminal.py         # Shell command execution.
+│   └── vectorstore.py      # Vector store tool handler.
+├── skills/                 # Skill definitions. Add new skills here.
+│   ├── example.md
+│   └── rolldice.md
+├── config.yaml             # Default config file.
+├── README.md
+├── pyproject.toml
+├── install.sh              # Installer script.
+└── .env.example
+```
+
 ## Extend the agent
 
-Wisemonkey can be easily customized and extended by adding new tools, commands, and skills.
+This agent is simple enough that it can be easily customized and extended by adding new tools, commands, and skills.
 
-If you create a cool new tool, skill, or slash command, consider contributing it via a pull request!
+If you create a cool new tool, skill, or slash command, consider contributing it via a merge request!
 
 ### Adding tools
 
@@ -287,7 +322,7 @@ A slash command must return, in that order, `ok:bool`, `msg:str`, `content:str`,
     "This is the description",
     aliases=["/mycmd"],
 )
-def _cmd_mine(agent, params):
+def _cmd_my_command(agent, params) -> (bool, str, str, str):
     """This command returns a message but no content"""
     return True, "This is awesome!", None, None
 ```
@@ -317,4 +352,3 @@ description: What this skill does
 
 The front matter `name` and `description` are parsed and shown in the
 skills list. The body is injected into the system prompt.
-
