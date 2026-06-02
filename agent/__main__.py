@@ -10,15 +10,16 @@ import argparse
 import sys
 import os
 import traceback
+import subprocess
 
 from importlib.metadata import version as get_version
 from rich.prompt import Confirm
 from pathlib import Path
-from xdg_base_dirs import xdg_data_home
+from xdg_base_dirs import xdg_data_home, xdg_config_home
 
 from agent import Agent
 from agent.utils import contractuser
-from agent.console import print, err, ok, info, console
+from agent.console import print, err, ok, console
 
 # Ensure the project root (parent of agent/) is on the path
 # This handles both pip-installed and direct execution
@@ -45,6 +46,10 @@ def main():
         metavar="PATH",
         help="Path to the configuration file",
     )
+    parser.add_argument(
+        "--edit-config",
+         action="store_true",
+          help="Open the default configuration file in $EDITOR")
     parser.add_argument(
         '-V', '-v', '--version',
         action='version',
@@ -76,8 +81,6 @@ def main():
 
     # Handle --update
     if args.update:
-        import subprocess
-        
         XDG_DATA = xdg_data_home() or str(Path.home() / ".local" / "share")
         install_dir = f"{XDG_DATA}/langur-agent/repository"
         if not Path(install_dir).exists():
@@ -87,6 +90,13 @@ def main():
             print(f"Updating langur-agent in {install_dir}...")
             subprocess.run(['git', 'pull'], cwd=install_dir, check=True)
             print("Update complete.")
+        return
+
+    # Edit configuration
+    if args.edit_config:
+        editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "nano"
+        config_path = xdg_config_home() / "langur-agent" / "config.yaml"
+        subprocess.run([editor, str(config_path)])
         return
 
     # List sessions
