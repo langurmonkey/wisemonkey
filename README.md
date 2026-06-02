@@ -120,9 +120,9 @@ agent:
   vi_mode: false
 ```
 
-### MCP
+### Model Context Protocol (MCP)
 
-Wisemonkey also supports MCP to load tools via MCP servers. Use the following commands to manage the MCP integration:
+Wisemonkey also supports MCP. Use the following commands to manage the MCP integration:
 
 - `/mcp`: Show the current MCP configuration
 - `/mcp edit`: Edit the MCP configuration file (`~/.config/wisemonkey/mcp.json`)
