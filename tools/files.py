@@ -5,6 +5,7 @@ Allows the agent to operate with files and directories in the file system.
 
 import os
 import tempfile
+from textwrap import indent
 
 from agent.tools import tool
 from agent.console import print
@@ -60,7 +61,7 @@ def read_file_handler(args):
         return {"error": f"The path exists but does not point to a file: {path}"}
 
     with open(path, "r") as file:
-        print(f"  Reading [white on #444444]{path}[/white on #444444]")
+        print(f"  [weak]Reading[/weak] [path]{path}[/path]")
         content = file.read()
 
     # Optionally add line numbers
@@ -116,7 +117,7 @@ def list_dir_handler(args):
     if os.path.isfile(path):
         return {"error": f"The path exists but does not point to a directory: {path}"}
 
-    print(f"  Listing [white on #444444]{path}[/white on #444444]")
+    print(f"  [weak]Listing[/weak] [path]{path}[/path]")
 
     content = os.listdir(path)
     # Format as a readable listing
@@ -177,7 +178,7 @@ def write_file_handler(args):
     parent = os.path.dirname(path)
     if parent and not os.path.exists(parent):
         os.makedirs(parent, exist_ok=True)
-        print(f"  Created directory [white on #444444]{parent}[/white on #444444]")
+        print(f"  [weak]Created directory[/weak] [path]{parent}[/path]")
 
     fd, tmp_path = tempfile.mkstemp(dir=parent if parent else None, prefix=".patched-")
     try:
@@ -187,7 +188,7 @@ def write_file_handler(args):
         os.close(fd)
     os.replace(tmp_path, path)
 
-    print(f"  Wrote [white on #444444]{path}[/white on #444444] ({len(content)} chars)")
+    print(f"  [weak]Wrote[/weak] [path]{path}[/path] ({len(content)} chars)")
 
     return {"path": path, "success": True, "message": f"Wrote {len(content)} bytes to {path}"}
 
@@ -238,10 +239,10 @@ def patch_file_handler(args):
         return {"error": f"The file does not exist: {path}"}
     if not os.path.isfile(path):
         return {"error": f"The path is not a file: {path}"}
-
-    print(f"  Patching [white on #444444]{path}[/white on #444444]")
-    print(f"  [white on red]-{old_string}[/]")
-    print(f"  [white on green]+{new_string}[/]")
+    
+    print(f"  [weak]Patching[/weak] [path]{path}[/path]")
+    print(f"  [patch-remove]{indent(old_string, '  - ')}[/patch-remove]")
+    print(f"  [patch-add]{indent(new_string, '  + ')}[/patch-add]")
 
     with open(path, "r") as f:
         file_content = f.read()

@@ -96,7 +96,7 @@ class Agent:
 
     def tool_callback(self, tool_name: str, tool_args):
         newline()
-        info(f"🛠️ Activating tool:  [tool]{tool_name}[/tool]")
+        info(f"🛠️ [weak]Activating tool:[/weak]  [tool]{tool_name}[/tool]")
 
     def cancel_callback(self, e: KeyboardInterrupt):
         """Handles the Ctrl+c during inference, as a keyboard interrupt"""

@@ -62,7 +62,7 @@ def _decode_response(response):
 )
 def fetch_url_handler(url):
     try:
-        print(f"  Accessing [white on #444444]{url}[/white on #444444]")
+        print(f"  [weak]Accessing[/weak] [path]{url}[/path]")
         req = urllib.request.Request(url, headers={'User-Agent': 'Wisemonkey/1.0'})
         with urllib.request.urlopen(req, timeout=10) as response:
             html = _decode_response(response)

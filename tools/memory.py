@@ -54,7 +54,7 @@ def save_memory_handler(args):
     name="get_memory",
     description=(
         "Read the agent's current memory\n"
-        "Use this when you need to acces long-term memory, like "
+        "Use this when you need to access long-term memory, like "
         "persistent notes or the user profile."
     ),
     parameters={
@@ -90,7 +90,7 @@ def get_memory_handler(args):
 def set_user_profile_handler(args):
     """Set the user profile. Call save_memory after to persist."""
     mem = Memory()
-    # args can be a dict of key-value pairs, or a 'data' key with a dict
+    # Arguments can be a dict of key-value pairs, or a 'data' key with a dict
     if "data" in args and isinstance(args["data"], dict):
         profile = args["data"]
     else:
