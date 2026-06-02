@@ -415,5 +415,7 @@ class Agent:
                     err(f"Error sending prompt: {e}")
                     
 
-        # Persist memory on session exit
-        self.core.save_memory()
+        # Persist memory and shut down core on session exit
+        if self.core:
+            self.core.save_memory()
+            self.core.shutdown()

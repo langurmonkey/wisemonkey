@@ -10,6 +10,8 @@ Wisemonkey is a simple, open, and hackable AI agent for the Linux and macOS term
     - memory compaction
     - vector store for documents
 - tools
+    - native
+    - MCP
 - skills
 - autocompletion
 - interactive configuration
@@ -117,6 +119,16 @@ agent:
   # Enable vi mode input
   vi_mode: false
 ```
+
+### MCP
+
+Wisemonkey also supports MCP to load tools via MCP servers. Use the following commands to manage the MCP integration:
+
+- `/mcp`: Show the current MCP configuration
+- `/mcp edit`: Edit the MCP configuration file (`~/.config/wisemonkey/mcp.json`)
+- `/mcp tools`: List all MCP tools available. Alias: `/tools mcp`
+
+MCP servers are started when the agent boots. You need to restart the agent if you add new servers.
 
 ## Usage and commands
 

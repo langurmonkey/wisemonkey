@@ -14,9 +14,10 @@ import openai
 
 from enum import Enum
 
-from agent.config import get_config
+from agent.config import get_config, get_mcp_config_path
 from agent.memory import Memory
 from agent.skills import SkillLoader
+from agent.mcp import MCPClient
 from agent.tools import get_tool_schemas, execute_tool
 
 class TurnCancelled(Exception):
@@ -42,6 +43,11 @@ class Core:
 
         # Agent settings
         self.system_prompt = self.config.get("agent.system_prompt", "You are a helpful assistant, expert in many areas of science. Respond concisely and to the point. No fluff.")
+
+        # Initialize MCP
+        self.mcp = MCPClient()
+        self.mcp.load_config(get_mcp_config_path())
+        self.mcp.start_all()
 
         # Initialize memory
         max_chat_history = self.config.get("max_chat_history", 128000)
@@ -84,6 +90,11 @@ class Core:
             return False, f"OpenAI endpoint creation: {err}"
 
         return True, None
+
+    def shutdown(self):
+        """Shutdown the agent core."""
+        if self.mcp:
+            self.mcp.stop_all()
 
     def _build_system_prompt(self):
         """Build the system prompt with personality, skills, and memory."""

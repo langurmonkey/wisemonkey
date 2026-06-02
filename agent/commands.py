@@ -52,8 +52,14 @@ class CommandRegistry:
         for alias in cmd.aliases:
             self._commands[alias] = cmd  # alias points to same Command
 
-    def lookup(self, tokens: list[str]):
-        """Look up a command by name or alias (case-insensitive)."""
+    def lookup(self, tokens: list[str]) -> (Command, list[str]):
+        """
+        Look up a command by name or alias (case-insensitive).
+
+        Returns:
+        - command: Command     - command instance
+        - tokens: list[str]    - command arguments as a token list
+        """
         if not tokens:
             return None, None
 
@@ -66,7 +72,7 @@ class CommandRegistry:
 
         return None, None
 
-    def execute(self, core, cmd: Command, params: list[str]):
+    def execute(self, core, cmd: Command, params: list[str]) -> (bool, str, str, str, bool):
         """
         Execute a command.
 
@@ -87,7 +93,7 @@ class CommandRegistry:
         should_exit = msg in ("EXIT", "exit")
         return ok, msg, content, markdown, should_exit
 
-    def run_command(self, core, command: str):
+    def run_command(self, core, command: str) -> (bool, str, str, str, bool):
         """
         Shortcut to run a command from a string.
 
@@ -186,7 +192,7 @@ def cmd(name: str,
       "Exit the agent",
       aliases=["/exit", "/q"]
 )
-def _cmd_quit(core, params):
+def _cmd_quit(core, params) -> (bool, str, str, str):
     return True, "EXIT", None, None
 
 
@@ -194,7 +200,7 @@ def _cmd_quit(core, params):
       "/reasoning",
        "Configure model reasoning",
 )
-def _cmd_reasoning(core, params):
+def _cmd_reasoning(core, params) -> (bool, str, str, str):
     from agent.config import get_config
 
     if params:
@@ -246,7 +252,7 @@ def _cmd_reasoning(core, params):
       "/notes",
       "List all notes",
 )
-def _cmd_notes(core, params):
+def _cmd_notes(core, params) -> (bool, str, str, str):
     notes = core.memory.get_notes()
     buff = ""
     for note in notes:
@@ -261,7 +267,7 @@ def _cmd_notes(core, params):
           "/notes add This is my note   # Add a new note",
       ]
 )
-def _cmd_notes_add(core, params):
+def _cmd_notes_add(core, params) -> (bool, str, str, str):
     if params:
         core.memory.add_note(" ".join(params))
         return True, "note added successfully", None, None
@@ -272,7 +278,7 @@ def _cmd_notes_add(core, params):
     "/session",
     "Print session information",
 )
-def _cmd_session(core, params):
+def _cmd_session(core, params) -> (bool, str, str, str):
     if params:
         return False, no_params_error, None, None
 
@@ -300,7 +306,7 @@ def _cmd_session(core, params):
         "/session clear 10     # Clear the 10 oldest chat exchanges of this session",
     ]
 )
-def _cmd_session_clear(core, params):
+def _cmd_session_clear(core, params) -> (bool, str, str, str):
     n = 0
     if params:
         try:
@@ -318,7 +324,7 @@ def _chat_memory(core, max_exchanges):
       "/session-agent",
       "Show the session agent memory contents (user profile and notes)",
 )
-def _cmd_session_agent(core, params):
+def _cmd_session_agent(core, params) -> (bool, str, str, str):
     if params:
         return False, no_params_error, None, None
 
@@ -333,7 +339,7 @@ def _cmd_session_agent(core, params):
       "/session-chat",
       "Show the session chat memory contents",
 )
-def _cmd_session_chat(core, params):
+def _cmd_session_chat(core, params) -> (bool, str, str, str):
     if params:
         return False, no_params_error, None, None
 
@@ -347,7 +353,7 @@ def _cmd_session_chat(core, params):
     "/session-compact",
     "Compact the session chat history by summarizing it into a shorter form."   
 )
-def _cmd_session_compact(core, params):
+def _cmd_session_compact(core, params) -> (bool, str, str, str):
     if params:
         return False, no_params_error, None, None
 
@@ -396,7 +402,7 @@ def _cmd_session_compact(core, params):
         "/embed ./notes.md",
     ]
 )
-def _cmd_embed(core, params):
+def _cmd_embed(core, params) -> (bool, str, str, str):
     if not params:
         return False, "please provide a file path", None, None
     
@@ -425,18 +431,33 @@ def _cmd_embed(core, params):
 
 @cmd(
       "/tools",
-      "List available tools ⚙",
+      "List all available tools ⚙",
 )
-def _cmd_tools(core, params):
+def _cmd_tools(core, params) -> (bool, str, str, str):
     from agent.tools import get_tools_str
     return True, None, get_tools_str(), None
 
+@cmd(
+      "/tools-native",
+      "List native tools ⚙",
+)
+def _cmd_tools_native(core, params) -> (bool, str, str, str):
+    from agent.tools import get_tools_str
+    return True, None, get_tools_str(prefix="mcp_", contains=False), None
+
+@cmd(
+      "/tools-mcp",
+      "List MCP tools ⚙",
+)
+def _cmd_tools_mcp(core, params) -> (bool, str, str, str):
+    from agent.tools import get_tools_str
+    return True, None, get_tools_str(prefix="mcp_", contains=True), None
 
 @cmd(
       "/skills",
       "List loaded skills ⚔",
 )
-def _cmd_skills(core, params):
+def _cmd_skills(core, params) -> (bool, str, str, str):
     return True, None, core.skills.get_skills_str(), None
 
 @cmd(
@@ -444,7 +465,7 @@ def _cmd_skills(core, params):
       "Configure the model to use",
       aliases=["/models"]
 )
-def _cmd_models(core, params):
+def _cmd_models(core, params) -> (bool, str, str, str):
     try:
         models = core.get_models()
     except Exception as e:
@@ -477,7 +498,7 @@ def _cmd_models(core, params):
       "/url",
       "Configure the base URL",
 )
-def _cmd_url(core, params):
+def _cmd_url(core, params) -> (bool, str, str, str):
     from agent.config import get_config
     if params:
         return False, no_params_error, None, None
@@ -500,7 +521,7 @@ def _cmd_url(core, params):
       "/config-show",
        "Show current configuration",
 )
-def _cmd_config_show(core, params):
+def _cmd_config_show(core, params) -> (bool, str, str, str):
     if params:
         return False, no_params_error, None, None
 
@@ -511,12 +532,12 @@ def _cmd_config_show(core, params):
       "/config-edit",
        "Edit the configuration file with $EDITOR or $VISUAL",
 )
-def _cmd_config_edit(core, params):
+def _cmd_config_edit(core, params) -> (bool, str, str, str):
     if params:
         return False, no_params_error, None, None
 
-    from agent.config import edit_config_visual
-    result = edit_config_visual()
+    from agent.config import edit_base_config_visual
+    result = edit_base_config_visual()
     ok = result.returncode == 0
     if ok:
         return ok, "Configuration edited successfully", None, None
@@ -528,7 +549,7 @@ def _cmd_config_edit(core, params):
     "Configure the agent interactively",
     aliases = ["/configure"],
 )
-def _cmd_config(core, params):
+def _cmd_config(core, params) -> (bool, str, str, str):
     if params:
         return False, no_params_error, None, None
 
@@ -542,13 +563,55 @@ def _cmd_config(core, params):
         
     return True, "Configuration updated", None, None
 
+@cmd(
+      "/mcp-edit",
+       "Edit the mcp.json configuration file with $EDITOR or $VISUAL",
+)
+def _cmd_mcp_edit(core, params) -> (bool, str, str, str):
+    if params:
+        return False, no_params_error, None, None
+
+    from agent.config import edit_mcp_config_visual
+    result = edit_mcp_config_visual()
+    ok = result.returncode == 0
+    if ok:
+        return ok, "MCP configuration edited successfully", None, None
+    else:
+        return ok, result.stderr, None, None
+
+@cmd(
+      "/mcp",
+      "Show the current MCP configuration file",
+      aliases = ["/mcp-show"],
+)
+def _cmd_mcp_show(core, params) -> (bool, str, str, str):
+    if params:
+        return False, no_params_error, None, None
+
+    from agent.config import get_mcp_config_path
+    path = get_mcp_config_path()
+    with path.open() as file:
+        content = file.read()
+    
+    if content:
+        return True, f"MCP configuration: {path}", content, None
+    else:
+        return False, "Could not load MCP configuration file", None, None
+
+@cmd(
+      "/mcp-tools",
+      "List MCP tools ⚙",
+)
+def _cmd_mcp_tools(core, params) -> (bool, str, str, str):
+    from agent.tools import get_tools_str
+    return True, None, get_tools_str(prefix="mcp_", contains=True), None
 
 @cmd(
     "/temperature",
     "Set the inference temperature parameter in 0..2",
     aliases=["/temp", "/t"],
 )            
-def _cmd_temperature(core, params):
+def _cmd_temperature(core, params) -> (bool, str, str, str):
     if params:
         return False, no_params_error, None, None
 
@@ -570,7 +633,7 @@ def _cmd_temperature(core, params):
       "/vi",
        "Enable/disable vi input mode",
 )
-def _cmd_vi(core, params):
+def _cmd_vi(core, params) -> (bool, str, str, str):
     if params:
         return False, no_params_error, None, None
 
@@ -599,6 +662,6 @@ def _cmd_vi(core, params):
     "Show command help",
     aliases=["/commands"],
 )
-def _cmd_help(core, params):
+def _cmd_help(core, params) -> (bool, str, str, str):
     return True, None, registry.get_commands_str(), None
 

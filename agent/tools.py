@@ -61,7 +61,7 @@ def get_tool_schemas():
     return schemas
 
 
-def execute_tool(name, arguments):
+def execute_tool(name, arguments) -> dict:
     """Execute a registered tool by name with parsed arguments."""
     if name not in _registry:
         return json.dumps({"error": f"Unknown tool: {name}"})
@@ -76,13 +76,33 @@ def execute_tool(name, arguments):
         return result
     return json.dumps(result)
 
-def get_tools_str():
-    """Auto-discover tools and log them to terminal"""
+def _tool_str(name, tool):
+    result = f"⚙ [list-item]{name}[/]\n"
+    result += f"[list-desc]{tool['description']}[/]\n"
+    return result
+
+def get_tools_str(prefix:str = None, contains:bool = True):
+    """
+    Auto-discover tools and log them to terminal
+    Parameters:
+    prefix:str    - string prefix to filter tools
+    contains:bool - whether to filter tools that
+                    contain (True) or do not contain (False) the prefix
+    """
     discover_tools()
     result = ""
     for name, tool in _registry.items():
-        result += f"⚙ [list-item]{name}[/]\n"
-        result += f"[list-desc]{tool['description']}[/]\n"
+        if prefix:
+            if contains and name.startswith(prefix):
+                # Add tools that contain the prefix
+                result += _tool_str(name, tool)
+            if not contains and not name.startswith(prefix):
+                # Add tools that don't contain the prefix
+                result += _tool_str(name, tool)
+        else:
+            # Add all
+            result += _tool_str(name, tool)
+
     return result
 
 def discover_tools(tools_dir=None):

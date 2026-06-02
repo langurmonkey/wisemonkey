@@ -16,16 +16,20 @@ from pathlib import Path
 from xdg_base_dirs import xdg_config_home
 from dotenv import load_dotenv
 
-DEFAULT_CONFIG = Path(__file__).parent.parent / "config.yaml"
-XDG_CONFIG_DIR = xdg_config_home() / "wisemonkey"
-XDG_CONFIG_FILE = XDG_CONFIG_DIR / "config.yaml"
+BASE_CONFIG_DIR = xdg_config_home() / "wisemonkey"
+
+DEFAULT_BASE_CONFIG = Path(__file__).parent.parent / "config.yaml"
+BASE_CONFIG_FILE = BASE_CONFIG_DIR / "config.yaml"
+
+DEFAULT_MCP_CONFIG = Path(__file__).parent.parent / "mcp.json"
+MCP_CONFIG_FILE = BASE_CONFIG_DIR / "mcp.json"
 
 # Load .env:
 # - current directory first,
 # - then config directory,
 # - then home directory (without overwriting)
 _cwd_env = Path(os.getcwd()) / ".env"
-_config_env = Path(XDG_CONFIG_DIR) / ".env"
+_config_env = Path(BASE_CONFIG_DIR) / ".env"
 if _cwd_env.exists():
     load_dotenv(_cwd_env)
 elif _config_env.exists():
@@ -34,19 +38,30 @@ else:
     load_dotenv(Path.home() / ".env", override=False)
 
 
-def _ensure_xdg_config():
-    """Ensure XDG config directory exists, copy ./config.yaml if needed."""
-    if XDG_CONFIG_FILE.exists():
-        return XDG_CONFIG_FILE
+def _ensure_base_config():
+    """Ensure base config directory exists, copy ./config.yaml if needed."""
+    if BASE_CONFIG_FILE.exists():
+        return BASE_CONFIG_FILE
 
-    XDG_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    # Copy default file to configuration directory
+    BASE_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    if DEFAULT_BASE_CONFIG.exists():
+        shutil.copy2(DEFAULT_BASE_CONFIG, BASE_CONFIG_FILE)
+        return BASE_CONFIG_FILE
 
-    if DEFAULT_CONFIG.exists():
-        shutil.copy2(DEFAULT_CONFIG, XDG_CONFIG_FILE)
-        return XDG_CONFIG_FILE
+    return BASE_CONFIG_FILE
 
-    return XDG_CONFIG_FILE
+def _ensure_mcp_config():
+    """Ensure XDG config directory exists, create empty config if needed."""
+    if MCP_CONFIG_FILE.exists():
+        return MCP_CONFIG_FILE
 
+    # Create empty mcp configuration.
+    BASE_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    config = {"mcpServers": {}}
+    MCP_CONFIG_FILE.write_text(json.dumps(config, indent=2))
+
+    return MCP_CONFIG_FILE
 
 def _get_defaults():
     """Return default configuration."""
@@ -92,15 +107,20 @@ class Config:
 
     @property
     def config_path(self):
-        """Return the XDG config file path."""
-        return _ensure_xdg_config()
+        """Return the base config file path."""
+        return _ensure_base_config()
+
+    @property
+    def mcp_config_path(self):
+        """Get the MCP configuration file path"""
+        return _ensure_mcp_config()
 
     def load(self, path=None):
         """Load configuration from a YAML file."""
         if path:
             config_path = Path(path)
         else:
-            config_path = _ensure_xdg_config()
+            config_path = _ensure_base_config()
 
         self._config_path = config_path
 
@@ -115,7 +135,7 @@ class Config:
     def save(self):
         """Persist current configuration to the file."""
         if self._config_path is None:
-            self._config_path = _ensure_xdg_config()
+            self._config_path = _ensure_base_config()
 
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self._config_path, "w") as f:
@@ -205,9 +225,13 @@ def get_config():
     return _config_instance
 
 
-def get_default_config_path():
+def get_default_config_path() -> Path:
     """Get the default config file path (backward compatibility)."""
-    return _ensure_xdg_config()
+    return _ensure_base_config()
+
+def get_mcp_config_path() -> Path:
+    """Get the MCP configuration file path"""
+    return _ensure_mcp_config()
 
 
 def load_config(path=None):
@@ -224,10 +248,18 @@ def log_config():
     content = json.dumps(config.to_dict(), indent=4, sort_keys=True, default=str)
     return f"[bold]Config file[/bold]: [blue]{path}[/blue]\n{content}"
 
-def edit_config_visual():
+def edit_base_config_visual():
     """Edit the configuration file with $EDITOR or $VISUAL."""
     import subprocess
 
     config = get_config()
     editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "nano"
     return subprocess.run([editor, str(config.config_path)])
+
+def edit_mcp_config_visual():
+    """Edit the configuration file with $EDITOR or $VISUAL."""
+    import subprocess
+
+    config = get_config()
+    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "nano"
+    return subprocess.run([editor, str(config.mcp_config_path)])
