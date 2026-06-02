@@ -112,6 +112,13 @@ class Agent:
         title = f"  {total_gen_time:.1f}s   |   {total_tokens} tokens   |   {ntools} tools   |   Mem: {length}/{max} ({rate:.2f}%)  "
         console.rule(title=title, style="status")
 
+    def _cancel_all_spinners(self):
+        if self.spinner_prompt:
+            self.spinner_prompt.stop()
+            self.spinner_prompt = None
+        if self.spinner_thinking:
+            self.spinner_thinking.stop()
+            self.spinner_thinking = None
         
     def _create_prompt_session(self):
         # Key bindings:
@@ -412,6 +419,7 @@ class Agent:
                     self._statusline(total_tokens, ntools, total_gen_time)
                     newline()
                 except Exception as e:
+                    self._cancel_all_spinners()
                     err(f"Error sending prompt: {e}")
                     
 
