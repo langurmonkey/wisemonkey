@@ -3,7 +3,7 @@ Simple file-based session memory system.
 
 Stores user profile and persistent notes as JSON.
 Follows XDG Base Directory spec:
-- Data: $XDG_DATA_HOME/langur-agent/session/$SESSION_NAME
+- Data: $XDG_DATA_HOME/wisemonkey/session/$SESSION_NAME
 
 Design: memory is buffered in memory. Changes are persisted to disk
 when save() is called. On init, state is loaded from disk.
@@ -27,7 +27,7 @@ def _load_vectorstore(session_dir):
     except Exception:
         return None
 
-SESSIONS_DIR = xdg_data_home() / "langur-agent" / "sessions"
+SESSIONS_DIR = xdg_data_home() / "wisemonkey" / "sessions"
 SESSION_METADATA_FILE = ".session-metadata"
 
 # Singleton instance
@@ -245,12 +245,12 @@ class ChatMemory:
     when the window is exceeded. Persisted to disk.
     """
     
-    def __init__(self, session_dir, max_chars=128000):
+    def __init__(self, session_dir, max_chars=320000):
         """Initialize chat memory.
         
         Args:
-            max_chars: Maximum total characters to keep in memory (default: 128000)
-            memory_dir: Directory to persist chat history (default: ~/.local/share/langur-agent/memory/)
+            max_chars: Maximum total characters to keep in memory (default: 320000)
+            memory_dir: Directory to persist chat history (default: ~/.local/share/wisemonkey/memory/)
         """
         self._exchanges = []  # list of {"role": "user"|"assistant"|"summary", "content": str}
         self.total_chars = 0

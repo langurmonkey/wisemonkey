@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Langur Agent installer
-# Usage: curl -fsSL https://codeberg.org/langurmonkey/langur-agent/raw/branch/master/install.sh | bash
+# Wisemonkey installer
+# Usage: curl -fsSL https://codeberg.org/langurmonkey/wisemonkey/raw/branch/master/install.sh | bash
 
 set -euo pipefail
 
@@ -11,7 +11,7 @@ if ! command -v uv &>/dev/null; then
 fi
 
 # Configuration
-REPO="langur-agent"
+REPO="wisemonkey"
 OWNER="langurmonkey"
 BRANCH="${BRANCH:-master}"
 REPO_URL="https://codeberg.org/$OWNER/$REPO.git"
@@ -24,7 +24,7 @@ if [ "$(uname)" = "Darwin" ]; then
 fi
 
 XDG_DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
-INSTALL_DIR="${INSTALL_DIR:-$XDG_DATA/langur-agent/repository}"
+INSTALL_DIR="${INSTALL_DIR:-$XDG_DATA/wisemonkey/repository}"
 
 # Detect platform for symlink location
 if [ "$(uname)" = "Darwin" ]; then
@@ -41,13 +41,13 @@ if [ -d "$INSTALL_DIR/.git" ]; then
     git checkout "$BRANCH"
     git pull origin "$BRANCH"
 else
-    echo "Cloning langur-agent repository..."
+    echo "Cloning wisemonkey repository..."
     mkdir -p "$(dirname "$INSTALL_DIR")"
     git clone --branch "$BRANCH" --single-branch "$REPO_URL" "$INSTALL_DIR"
 fi
 
 # Create venv and install with uv
-echo "Installing langur-agent with uv..."
+echo "Installing wisemonkey with uv..."
 cd "$INSTALL_DIR"
 if [ ! -d ".venv" ]; then
     uv venv
@@ -56,39 +56,26 @@ uv sync
 
 # Create default config if not exists
 XDG_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}"
-CONFIG_DIR="$XDG_CONFIG/langur-agent"
+CONFIG_DIR="$XDG_CONFIG/wisemonkey"
 if [ ! -f "$CONFIG_DIR/config.yaml" ]; then
     mkdir -p "$CONFIG_DIR"
     echo "Creating default config at $CONFIG_DIR/config.yaml"
-    cat > "$CONFIG_DIR/config.yaml" << 'EOF'
-# Langur Agent Configuration
-model:
-  provider: openai
-  name: gpt-4o-mini
-  api_key: ""
-  base_url: ""
-
-agent:
-  max_turns: 50
-  system_prompt: "You are a helpful assistant, expert in many domains of science and engineering. Respond concisely and clearly. No fluff."
-  stream: true
-  chat_max_chars: 64000
-EOF
+    cp "$INSTALL_DIR/config.yaml" "$CONFIG_DIR/config.yaml"
 fi
 
 # Create wrapper script in ~/.local/bin
 mkdir -p "$BIN_DIR"
-cat > "$BIN_DIR/langur-agent" << WRAPPER
+cat > "$BIN_DIR/wisemonkey" << WRAPPER
 #!/bin/bash
 INSTALL_DIR="$INSTALL_DIR"
 if [ ! -d "\$INSTALL_DIR" ] || [ ! -f "\$INSTALL_DIR/pyproject.toml" ]; then
-    echo "Error: Could not find langur-agent installation"
+    echo "Error: Could not find wisemonkey installation"
     exit 1
 fi
-exec uv --project "\$INSTALL_DIR/pyproject.toml" run langur-agent "\$@"
+exec uv --project "\$INSTALL_DIR/pyproject.toml" run wisemonkey "\$@"
 WRAPPER
-chmod +x "$BIN_DIR/langur-agent"
-echo "Created wrapper: $BIN_DIR/langur-agent"
+chmod +x "$BIN_DIR/wisemonkey"
+echo "Created wrapper: $BIN_DIR/wisemonkey"
 
 # Ensure ~/.local/bin is in PATH
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
@@ -99,9 +86,9 @@ fi
 
 # Show next steps
 echo ""
-echo "✅ langur-agent installed successfully!"
+echo "✅ wisemonkey installed successfully!"
 echo ""
 echo "Next steps:"
-echo "  1. Edit config: nano ~/.config/langur-agent/config.yaml"
-echo "  2. Run: langur-agent"
-echo "  3. Update: langur-agent --update"
+echo "  1. Edit config: wisemonkey --edit-config"
+echo "  2. Run: wisemonkey"
+echo "  3. Update: wisemonkey --update"

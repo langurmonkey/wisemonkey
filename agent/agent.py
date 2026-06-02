@@ -271,14 +271,15 @@ class Agent:
                                  /       \\
         '''
         if term_size.columns < 80:
-            languragent="LANGUR AGENT"
+            wisemonkey = "WISEMONKEY"
         else:
-            languragent = '''
-██      ▄▄▄  ▄▄  ▄▄  ▄▄▄▄ ▄▄ ▄▄ ▄▄▄▄    ▄████▄  ▄▄▄▄ ▄▄▄▄▄ ▄▄  ▄▄ ▄▄▄▄▄▄
-██     ██▀██ ███▄██ ██ ▄▄ ██ ██ ██▄█▄   ██▄▄██ ██ ▄▄ ██▄▄  ███▄██   ██  
-██████ ██▀██ ██ ▀██ ▀███▀ ▀███▀ ██ ██   ██  ██ ▀███▀ ██▄▄▄ ██ ▀██   ██  
+            wisemonkey = '''
+                                                                        
+██     ██ ██ ▄█████ ██████ ██▄  ▄██ ▄████▄ ███  ██ ██ ▄█▀ ██████ ██  ██ 
+██ ▄█▄ ██ ██ ▀▀▀▄▄▄ ██▄▄   ██ ▀▀ ██ ██  ██ ██ ▀▄██ ████   ██▄▄    ▀██▀  
+ ▀██▀██▀  ██ █████▀ ██▄▄▄▄ ██    ██ ▀████▀ ██   ██ ██ ▀█▄ ██▄▄▄▄   ██   
             '''
-        title = Align.center(f"[title]{monkee}{languragent}[/title]", vertical='middle')
+        title = Align.center(f"[title]{monkee}{wisemonkey}[/title]", vertical='middle')
         print(Panel(title, box=box.HEAVY, border_style="title", subtitle="Monkee at your service!"))
         newline()
 
@@ -323,7 +324,7 @@ class Agent:
             def get_input(): return str(self._session.prompt()).strip()
         else:
             # Rich
-            def get_input(): return Prompt.ask(prompt="[user]⩥ You ⩤[/user]\n❯", console=console)
+            def get_input(): return Prompt.ask(prompt="[user]⩥ [bold]You[/bold] ⩤[/user]\n❯", console=console)
 
         # Wrap each callback to pass self
         prompt_cb = partial(self.prompt_callback)
@@ -389,7 +390,7 @@ class Agent:
             else:
                 newline()
                 console.rule(style="agent")
-                print(f"[agent]⩥ Langur Agent ⩤ [/agent]  [accent]⇒ {self.core.config.get('model.name')}[/accent]")
+                print(f"[agent]⩥ [bold]Wisemonkey[/bold] ⩤ [/agent]  [accent]⇒ {self.core.config.get('model.name')}[/accent]")
                 print("  [kbd]Ctrl[/kbd]+[kbd]C[/kbd]: Cancel turn\n")
                 try:
                     (response,
@@ -404,6 +405,7 @@ class Agent:
                                                           cancel_cb,
                                                           error_cb
                                                       )
+                    newline()
                     newline()
                     if response == "[Cancelled]":
                         continue  # skip status line, go straight back to prompt

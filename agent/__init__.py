@@ -1,7 +1,11 @@
-"""Langur Agent - a simple, extensible AI agent."""
+"""Wisemonkey package."""
 
-__version_info__ = ('2026','05','19')
-__version__ = '.'.join(__version_info__)
+from importlib.metadata import version, PackageNotFoundError
+
+try:
+    __version__ = version("wisemonkey")
+except PackageNotFoundError:
+    __version__ = "0.0.0-dev"
 
 from agent.agent import Agent
 

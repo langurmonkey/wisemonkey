@@ -1,6 +1,6 @@
 """Basic tools.
 
-Basic example tools for the Langur agent.
+Basic example tools for Wisemonkey.
 
 Contains 2 tools:
 
@@ -8,7 +8,7 @@ Contains 2 tools:
 - List-skills: returns a list with all the skills
 """
 
-from agent.tools import tool, register_tool
+from agent.tools import tool
 
 @tool(
     name="echo",
@@ -57,7 +57,7 @@ def get_datetime(args):
 )
 def list_skills_handler(args):
     """List all available skills."""
-    from langur.skills import SkillLoader
+    from agent.skills import SkillLoader
     loader = SkillLoader()
     skills = loader.list_skills()
     return {"skills": skills}

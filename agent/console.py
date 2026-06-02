@@ -6,7 +6,7 @@ from rich.traceback import install
 install()
 
 # Theme
-langur_theme = Theme({
+monkee_theme = Theme({
     "title": "bold deep_sky_blue3",
 
     # Global
@@ -36,8 +36,8 @@ langur_theme = Theme({
 })
 
 # Create consoles
-console = Console(theme=langur_theme)
-err_console = Console(theme=langur_theme, stderr=True)
+console = Console(theme=monkee_theme)
+err_console = Console(theme=monkee_theme, stderr=True)
 
 def newline():
     console.print()

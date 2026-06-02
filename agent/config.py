@@ -2,7 +2,7 @@
 
 Uses a singleton pattern to keep configuration in memory.
 Follows XDG Base Directory spec:
-- Config: ~/.config/langur-agent/config.yaml
+- Config: ~/.config/wisemonkey/config.yaml
 - Fallback: if not found, copies ./config.yaml there
 - If neither exists, returns defaults
 """
@@ -17,7 +17,7 @@ from xdg_base_dirs import xdg_config_home
 from dotenv import load_dotenv
 
 DEFAULT_CONFIG = Path(__file__).parent.parent / "config.yaml"
-XDG_CONFIG_DIR = xdg_config_home() / "langur-agent"
+XDG_CONFIG_DIR = xdg_config_home() / "wisemonkey"
 XDG_CONFIG_FILE = XDG_CONFIG_DIR / "config.yaml"
 
 # Load .env:

@@ -1,8 +1,8 @@
-<h3 align="center"><img src="icon.png" alt="Langur Agent" width="130px"><br>Langur Agent - <i>A dead simple CLI agent for Linux and macOS</i></h3>
+<h3 align="center"><img src="icon.png" alt="Wisemonkey" width="130px"><br>Wisemonkey - <i>A dead simple CLI agent for Linux and macOS</i></h3>
 
 ---
 
-Langur Agent is a simple, open, and hackable AI agent for the Linux and macOS terminal. It connects to any service providing an OpenAI-compatible endpoint. It features:
+Wisemonkey is a simple, open, and hackable AI agent for the Linux and macOS terminal. It connects to any service providing an OpenAI-compatible endpoint. It features:
 
 - session management
 - memory management
@@ -32,7 +32,7 @@ The sections of this document are:
 
 ## Quickstart
 
-Langur Agent has been tested on Linux and macOS only.
+Wisemonkey has been tested to work on Linux and macOS.
 
 ### Requirements
 
@@ -44,7 +44,7 @@ Langur Agent has been tested on Linux and macOS only.
 Install the agent with:
 
 ```bash
-curl -fsSL https://codeberg.org/langurmonkey/langur-agent/raw/branch/master/install.sh | bash
+curl -fsSL https://codeberg.org/langurmonkey/wisemonkey/raw/branch/master/install.sh | bash
 ```
 
 ### Running
@@ -52,13 +52,13 @@ curl -fsSL https://codeberg.org/langurmonkey/langur-agent/raw/branch/master/inst
 Run the agent with the default session:
 
 ```bash
-langur-agent
+wisemonkey
 ```
 
-If you need an API key to access the endpoint, put it in the `.env` file. Langur Agent looks for the `.env` file in the following locations, in order:
+If you need an API key to access the endpoint, put it in the `.env` file. Wisemonkey looks for the `.env` file in the following locations, in order:
 
 - Current directory, `./.env`
-- Config directory, `$XDG_CONFIG_HOME/langur-agent/.env`
+- Config directory, `$XDG_CONFIG_HOME/wisemonkey/.env`
 - Home directory, `$HOME/.env`
 
 Create the `.env` file with the API key:
@@ -78,17 +78,17 @@ uv build
 # Set API key:
 export OPENAI_API_KEY=your-api-key
 # Run the agent:
-uv run langur-agent
+uv run wisemonkey
 ```
 
 ## Configuration
 
-On first run, the configuration is created in `$XDG_CONFIG_HOME/langur-agent/config.yaml`.
+On first run, the configuration is created in `$XDG_CONFIG_HOME/wisemonkey/config.yaml`.
 
 It works with any OpenAI-compatible endpoint, so LM Studio, Ollama, OpenWebUI, or any other service you configure. Here are the default values:
 
 ```yaml
-# Langur Agent Configuration
+# Wisemonkey Configuration
 model:
   # Model name
   name: qwen/qwen3.6-35b-a3b
@@ -130,40 +130,41 @@ During inference, you can cancel the turn and return to the input prompt with <k
 
 ### Sessions
 
-Internally, Langur Agent uses sessions to separate different memory histories. Sessions are **named** by the user. By default, the agent uses the `default` session. You can start in a different session (either create a new one, or restore it if it exists) with the `--session` argument:
+Internally, Wisemonkey uses sessions to separate different memory histories. Sessions are **named** by the user. By default, the agent uses the `default` session. You can start in a different session (either create a new one, or restore it if it exists) with the `--session` argument:
 
 ```bash
 # Start in a specific session
-langur-agent --session my-project
+wisemonkey --session my-project
 ```
 
 The default session's name is `default`, so the following two commands are equivalent:
 ```bash
 # These two commands start the default session
-langur-agent
-langur-agent --session default
+wisemonkey
+wisemonkey --session default
 ```
 
 You can also list the existing sessions with `-ls`:
 
 ```bash
 # List sessions
-uv run langur-agent --ls           
+wisemonkey --ls           
 Sessions:
-- my-project - ~/.local/share/langur-agent/sessions/my-project
-- default - ~/.local/share/langur-agent/sessions/default
+- my-project - ~/.local/share/wisemonkey/sessions/my-project
+- default - ~/.local/share/wisemonkey/sessions/default
 ```
 
 Sessions contain:
 
 - The input history
 - Chat memory (see [chat memory](#chat-memory))
+- Vector store (see [document embedding](#document-embedding))
 - Notes (see [session memory](#session-memory))
 - User profile (see [session memory](#session-memory))
 
 For now, the configuration file is the same for all sessions.
 
-> Sessions are matched by the directory name in the sessions location (`~/.local/share/langur-agent/sessions`). You can rename a session by just renaming the directory! 
+> Sessions are matched by the directory name in the sessions location (`~/.local/share/wisemonkey/sessions`). You can rename a session by just renaming the directory! 
 
 ### `vi` mode
 
@@ -177,7 +178,7 @@ There are a few commands available to use in the agent loop. You can list them w
 
 ## Session memory
 
-Persistent memory follows XDG Base Directory spec in `~/.local/share/langur-agent/session/$SESSION_NAME`:
+Persistent memory follows XDG Base Directory spec in `~/.local/share/wisemonkey/session/$SESSION_NAME`:
 
 - `user_profile.json`---User information
 - `notes.json`---Persistent notes (added via `save_note` tool)
@@ -190,7 +191,7 @@ Persistent memory follows XDG Base Directory spec in `~/.local/share/langur-agen
 
 ## Document embedding
 
-Langur Agent can embed documents into a per-session vector store, allowing the agent to search and reference their contents during conversation. Use `/embed` to add a document:
+Wisemonkey can embed documents into a per-session vector store, allowing the agent to search and reference their contents during conversation. Use `/embed` to add a document:
 
 ```bash
 /embed ~/documents/research_paper.pdf
@@ -211,7 +212,7 @@ In addition to persistent memory, the agent maintains a **chat history** of rece
 - The agent displays the last 10 exchanges, with long messages truncated
 
 **Persistence:**
-- Chat history is persisted to `~/.local/share/langur-agent/session/$SESSION_NAME/chat_history.json`
+- Chat history is persisted to `~/.local/share/wisemonkey/session/$SESSION_NAME/chat_history.json`
 - Automatically loaded on startup
 - Saved after every exchange (user input or assistant response)
 - Compacted history is also persisted to disk
@@ -224,7 +225,7 @@ agent:
 
 ## Extend the agent
 
-Langur Agent can be easily customized and extended by adding new tools, commands, and skills.
+Wisemonkey can be easily customized and extended by adding new tools, commands, and skills.
 
 If you create a cool new tool, skill, or slash command, consider contributing it via a pull request!
 
@@ -234,7 +235,7 @@ Create a file in `tools/` or use one of the existing ones. To create a tool,
 create a method and decorate it with `@tool(name, description, params)`:
 
 ```python
-from langur.tools import tool
+from agent.tools import tool
 
 @tool(
     name="my_tool",

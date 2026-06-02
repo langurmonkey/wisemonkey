@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Langur Agent - entry point.
+Wisemonkey - entry point.
 
-Langur Agent is a simple but powerful AI agent for the Linux and macOS terminal.
+Wisemonkey is a simple but powerful AI agent for the Linux and macOS terminal.
 It features sessions, memory management, tools, skills, slash commands, and more.
 """
 
@@ -13,9 +13,10 @@ import traceback
 import subprocess
 
 from importlib.metadata import version as get_version
+from importlib.metadata import metadata
 from rich.prompt import Confirm
 from pathlib import Path
-from xdg_base_dirs import xdg_data_home, xdg_config_home
+from xdg_base_dirs import xdg_data_home
 
 from agent import Agent
 from agent.utils import contractuser
@@ -31,14 +32,18 @@ if str(project_root) not in sys.path:
 def main():
     """Run the agent interactively or as a one-shot query."""
     try:
-        pkg_version = get_version("langur-agent")
+        pkg_version = get_version("wisemonkey")
+        pkg_name = metadata("wisemonkey")['Name'].capitalize()
+        pkg_summary = metadata("wisemonkey")['Summary']
     except Exception:
         # Fallback for development/uninstalled cases
         from agent import __version__
         pkg_version = __version__
+        pkg_name = "Wisemonkey"
+        pkg_summary = "Simple and hackable AI agent"
 
     parser = argparse.ArgumentParser(
-        description="Langur Agent - A simple and hackable AI agent for the Linux and macOS terminal",
+        description=f"{pkg_name} - {pkg_summary}",
     )
     parser.add_argument(
         "-c", "--config",
@@ -57,7 +62,7 @@ def main():
     parser.add_argument(
         '-u', '--update',
         action='store_true',
-        help='Update langur-agent from upstream and reinstall',
+        help='Update wisemonkey from upstream and reinstall',
     )
     parser.add_argument(
         '-s', '--session',
@@ -77,17 +82,17 @@ def main():
     )
     args = parser.parse_args()
 
-    SESSIONS_DIR = xdg_data_home() / "langur-agent" / "sessions"
+    SESSIONS_DIR = xdg_data_home() / "wisemonkey" / "sessions"
 
     # Handle --update
     if args.update:
         XDG_DATA = xdg_data_home() or str(Path.home() / ".local" / "share")
-        install_dir = f"{XDG_DATA}/langur-agent/repository"
+        install_dir = f"{XDG_DATA}/wisemonkey/repository"
         if not Path(install_dir).exists():
-            print(f"langur-agent not installed. Installing to {install_dir}...")
-            subprocess.run(['bash', '-c', f'BRANCH=main INSTALL_DIR="{install_dir}" curl -fsSL https://codeberg.org/langurmonkey/langur-agent/raw/branch/main/install.sh | bash'], check=True)
+            print(f"wisemonkey not installed. Installing to {install_dir}...")
+            subprocess.run(['bash', '-c', f'BRANCH=main INSTALL_DIR="{install_dir}" curl -fsSL https://codeberg.org/langurmonkey/wisemonkey/raw/branch/main/install.sh | bash'], check=True)
         else:
-            print(f"Updating langur-agent in {install_dir}...")
+            print(f"Updating wisemonkey in {install_dir}...")
             subprocess.run(['git', 'pull'], cwd=install_dir, check=True)
             print("Update complete.")
         return

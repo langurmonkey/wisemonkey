@@ -1,7 +1,7 @@
 [project]
-name = "langur-agent"
-version = "2026.05.19"
-description = "A dead-simple, extensible AI agent for local workflows"
+name = "wisemonkey"
+version = "2026.06.02"
+description = "A simple, extensible, and hackable AI agent for the Linux and macOS terminal"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-langur-agent = "agent.__main__:main"
+wisemonkey = "agent.__main__:main"
 
 [build-system]
 requires = ["hatchling"]
