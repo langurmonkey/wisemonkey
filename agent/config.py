@@ -11,6 +11,7 @@ import shutil
 import yaml
 import json
 import os
+
 from pathlib import Path
 from xdg_base_dirs import xdg_config_home
 from dotenv import load_dotenv
@@ -222,3 +223,11 @@ def log_config():
     path = config.config_path
     content = json.dumps(config.to_dict(), indent=4, sort_keys=True, default=str)
     return f"[bold]Config file[/bold]: [blue]{path}[/blue]\n{content}"
+
+def edit_config_visual():
+    """Edit the configuration file with $EDITOR or $VISUAL."""
+    import subprocess
+
+    config = get_config()
+    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "nano"
+    return subprocess.run([editor, str(config.config_path)])

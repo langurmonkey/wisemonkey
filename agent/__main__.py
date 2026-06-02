@@ -94,9 +94,8 @@ def main():
 
     # Edit configuration
     if args.edit_config:
-        editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "nano"
-        config_path = xdg_config_home() / "langur-agent" / "config.yaml"
-        subprocess.run([editor, str(config_path)])
+        from agent.config import edit_config_visual
+        edit_config_visual()
         return
 
     # List sessions

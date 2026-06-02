@@ -508,6 +508,22 @@ def _cmd_config_show(core, params):
     return True, None, log_config(), None
 
 @cmd(
+      "/config-edit",
+       "Edit the configuration file with $EDITOR or $VISUAL",
+)
+def _cmd_config_edit(core, params):
+    if params:
+        return False, no_params_error, None, None
+
+    from agent.config import edit_config_visual
+    result = edit_config_visual()
+    ok = result.returncode == 0
+    if ok:
+        return ok, "Configuration edited successfully", None, None
+    else:
+        return ok, result.stderr, None, None
+
+@cmd(
     "/config",
     "Configure the agent interactively",
     aliases = ["/configure"],
