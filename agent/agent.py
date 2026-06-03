@@ -5,6 +5,7 @@ handling to the core.
 """
 
 import os
+import subprocess
 import time
 from pathlib import Path
 from functools import partial
@@ -296,10 +297,75 @@ class Agent:
         created = self.core.memory.session_created
         accessed = self.core.memory.session_accessed
         console.rule(style="weak")
+
+        # Print build/version and update
+        from importlib.metadata import version, PackageNotFoundError
+        try:
+            pkg_version = version("wisemonkey")
+        except PackageNotFoundError:
+            pkg_version = "0.0.0-dev"
+
+        # Determine the repository directory (where this source file lives, or the installed package)
+        # Prefer the source tree over the installed package location
+        agent_dir = Path(__file__).resolve().parent
+        repo_dir = agent_dir.parent  # ~/Projects/wisemonkey/
+        git_dir = repo_dir / ".git"
+
+        commit_hash = None
+        updates_available = False
+        if git_dir.exists():
+            try:
+                # Get current HEAD commit short hash
+                result = subprocess.run(
+                    ["git", "-C", str(repo_dir), "rev-parse", "--short", "HEAD"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0:
+                    commit_hash = result.stdout.strip()
+
+                # Check if there are remote updates by fetching (quiet) and comparing
+                # Only do this if we have a remote configured
+                result = subprocess.run(
+                    ["git", "-C", str(repo_dir), "remote"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    # Fetch quietly (suppress stderr to avoid cluttering output)
+                    subprocess.run(
+                        ["git", "-C", str(repo_dir), "fetch", "--quiet"],
+                        capture_output=True, timeout=15
+                    )
+                    # Check if HEAD differs from tracking branch
+                    result = subprocess.run(
+                        ["git", "-C", str(repo_dir), "rev-list", "--count", "HEAD..@{upstream}"],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if result.returncode == 0:
+                        try:
+                            behind_count = int(result.stdout.strip())
+                            updates_available = behind_count > 0
+                        except ValueError:
+                            pass
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                pass
+
+        version_str = f"[accent]Wisemonkey[/accent] [dim]v{pkg_version}[/dim]"
+        if commit_hash:
+            version_str += f"  [dim]commit: {commit_hash}[/dim]"
+        info(f"{version_str}")
+        if updates_available:
+            print("   [warn]⟳ Updates available![/warn]")
+            print("     [weak]run [accent]wisemonkey -u[/accent] to update[/weak]")
+        elif commit_hash:
+            print("   [dim]✓ Up to date[/dim]")
+
+        newline()
+
+        # Print session
         if new_session:
-            info(f"Session created: [accent-bold]{self.core.memory.session}[/accent-bold]")
+            info(f"Session created: [accent-bold]'{self.core.memory.session}'[/accent-bold]")
         else:
-            info(f"Session restored: [accent-bold]{self.core.memory.session}[/accent-bold]")
+            info(f"Session restored: [accent-bold]'{self.core.memory.session}'[/accent-bold]")
         print(f"[dim]   location:      {contractuser(session_dir)}[/dim]")
         print(f"[dim]   working dir:   {working_dir}[/dim]")
         print(f"[dim]   created:       {created}[/dim]")
