@@ -33,9 +33,6 @@ DANGEROUS_PATTERNS = [
     r'\bwipefs\b',
     r'\bblkdiscard\b',
 
-    # Directory changes
-    r'\bcd\b',
-
     # Permission / ownership changes
     r'\bchmod\s+-R\s*777\b',
     r'\bchown\s+-R\b',
