@@ -2,21 +2,7 @@
 
 ---
 
-Wisemonkey is a simple, open, and hackable AI agent for the Linux and macOS terminal. It connects to any service providing an OpenAI-compatible endpoint. It features:
-
-- session management
-- memory management
-    - persistent memory
-    - memory compaction
-    - vector store for documents
-- tools
-    - native
-    - MCP
-- skills
-- autocompletion
-- interactive configuration
-- visual candy
-- and much more
+Wisemonkey is a simple, open, and hackable AI agent for the Linux and macOS terminal. It connects to any service providing an OpenAI, Anthropic, or Ollama-compatible endpoint. It features **session management**, **persistent memory management**, **vector store** for document embedding, native and MCP **tools**, **skills**, and much more.
 
 <p align="center">
 <a href="https://asciinema.org/a/8cTlvnN0qFeyflLH" target="_blank"><img src="https://asciinema.org/a/8cTlvnN0qFeyflLH.svg" width="60%"/></a>
@@ -67,9 +53,11 @@ Create the `.env` file with the API key:
 
 ```bash
 echo "OPENAI_API_KEY=your-api-key-here" > .env
+echo "ANTHROPIC_API_KEY=your-api-key-here" > .env
+echo "OLLAMA_API_KEY=your-api-key-here" > .env
 ```
 
-> The agent uses `python-dotenv` to load `.env` at startup. The `openai` package reads `OPENAI_API_KEY` from the environment automatically. You can also set `OPENAI_API_KEY` in your shell profile.
+> The agent uses `python-dotenv` to load `.env` at startup. The `openai` package reads `OPENAI_API_KEY` from the environment automatically. You can also set `OPENAI_API_KEY` in your shell profile. Same goes for `ANTHROPIC_API_KEY` and `OLLAMA_API_KEY`.
 
 
 ## Run from source
@@ -92,6 +80,8 @@ It works with any OpenAI-compatible endpoint, so LM Studio, Ollama, OpenWebUI, o
 ```yaml
 # Wisemonkey Configuration
 model:
+  # openai, anthropic, ollama, lmstudio, or generic
+  provider: generic
   # Model name
   name: qwen/qwen3.6-35b-a3b
   # URL of OpenAI endpoint
