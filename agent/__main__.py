@@ -99,8 +99,8 @@ def main():
 
     # Edit configuration
     if args.edit_config:
-        from agent.config import edit_config_visual
-        edit_config_visual()
+        from agent.config import edit_base_config_visual
+        edit_base_config_visual()
         return
 
     # List sessions
