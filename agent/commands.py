@@ -338,12 +338,20 @@ def _cmd_session_agent(core, params) -> (bool, str, str, str):
 @cmd(
       "/session-chat",
       "Show the session chat memory contents",
+      examples=[
+          "/session chat     # Print entire session chat",
+          "/session chat 2   # Print last 2 interactions"
+      ]
 )
 def _cmd_session_chat(core, params) -> (bool, str, str, str):
+    n = 0
     if params:
-        return False, no_params_error, None, None
+        try:
+            n = int(params[0])
+        except ValueError:
+            return False, "Parameter must be integer: {params[0]}", None, None
 
-    mem = core.memory.get_chat_formatted()
+    mem = core.memory.get_chat_formatted(num_exchanges=n)
     chars, max, rate = core.memory.get_chat_stats()
     stats = f"Memory status: {chars}/{max} ({rate:.2f}%)"
     # Format in Markdown
