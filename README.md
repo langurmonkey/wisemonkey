@@ -249,6 +249,7 @@ wisemonkey/
 │   ├── core.py             # Core agent functions, like API connection and tool calls.
 │   ├── mcp.py              # MCP server support.
 │   ├── memory.py           # Session memory, paste file creation.
+│   ├── router.py           # API router implementation for OpenAI, Ollama, and Anthropic.
 │   ├── skills.py           # Skill loading and management.
 │   ├── tools.py            # Tool definitions.
 │   ├── utils.py            # Utility functions.

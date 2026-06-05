@@ -70,8 +70,10 @@ def _get_defaults():
             "name": "qwen/qwen3.6-35b-a3b",
             "base_url": "",
             "temperature": 0.8,
-            "reasoning_effort": "medium",
-            "reasoning_visible": False,
+            "thinking": {
+                "effort": "medium",
+                "display": False,
+            }
         },
         "embedding": {
             "name": "text-embedding-qwen3-embedding-0.6b",

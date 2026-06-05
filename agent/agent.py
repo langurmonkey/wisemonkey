@@ -45,7 +45,7 @@ except ImportError:
 
 # Constants
 txt_goodbye = "\n[accent-bold]Goodbye![/accent-bold]"
-PASTE_THRESHOLD = 100
+PASTE_THRESHOLD = 1500
 
 class Agent:
     def __init__(self, config_path=None, session='default'):
@@ -244,7 +244,7 @@ class Agent:
 
         # Toolbar
         def prompt_toolbar():
-            return HTML("  <kbd>Shift</kbd>+<kbd>Enter</kbd>: new line | <kbd>Enter</kbd>: submit | <kbd>Ctrl</kbd>+<kbd>C</kbd>: clear / double-tap to quit")
+            return HTML("  <kbd>Alt</kbd>+<kbd>↵</kbd>: new line | <kbd>↵</kbd>: submit | <kbd>Ctrl</kbd>+<kbd>C</kbd>: clear / double-tap to quit")
 
         model = self.core.config.get("model.name")
         self._session = PromptSession(

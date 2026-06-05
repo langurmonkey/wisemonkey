@@ -10,7 +10,6 @@ The core:
 import json
 import time
 import tiktoken
-import openai
 
 from enum import Enum
 
@@ -18,6 +17,7 @@ from agent.config import get_config, get_mcp_config_path
 from agent.memory import Memory
 from agent.skills import SkillLoader
 from agent.mcp import MCPClient
+from agent.router import ModelRouter
 from agent.tools import get_tool_schemas, execute_tool
 
 class TurnCancelled(Exception):
@@ -36,10 +36,10 @@ class Core:
         self.config = get_config()
         self.config.load(config_path)
 
-        # Initialize client
-        ok, msg = self.initialize_client()
+        # Initialize API router
+        ok, msg = self.initialize_router()
         if not ok:
-            raise Exception(msg)
+            raise RuntimeError(msg)
 
         # Agent settings
         self.system_prompt = self.config.get("agent.system_prompt", "You are a helpful assistant, expert in many areas of science. Respond concisely and to the point. No fluff.")
@@ -70,26 +70,10 @@ class Core:
         except Exception as e:
             raise Exception(f"Error loading tokenizer: {e}")
 
-    def initialize_client(self):
-        """Initializes the client given the current configuration.
-            Returns:
-            - A boolean with the state (True=ok, False=error)
-            - An optional message
-        """
-
-        # The openai package reads OPENAI_API_KEY from the environment automatically.
-        # dotenv has already loaded .env into os.environ at this point (in config.py).
-        base_url = self.config.get("model.base_url", "http://127.0.0.1:1234/v1")
-        # Auto-append /v1 for LM Studio / local API servers
-        if base_url and not base_url.endswith("/v1"):
-            base_url = base_url.rstrip("/") + "/v1"
-        
-        try:
-            self.client = openai.OpenAI(base_url=base_url or None)
-        except openai.OpenAIError as err:
-            return False, f"OpenAI endpoint creation: {err}"
-
-        return True, None
+    def initialize_router(self):
+        """Initialize the model router."""
+        self.router = ModelRouter(self.config)
+        return self.router.initialize()
 
     def shutdown(self):
         """Shutdown the agent core."""
@@ -132,6 +116,7 @@ class Core:
         thinking_end = False
         prompt_stopped = False
 
+        thinking_display = self.config.get("model.thinking.display", False)
 
         for chunk in response:
             # Stop prompt spinner
@@ -146,7 +131,6 @@ class Core:
             if first_chunk_time is None:
                 first_chunk_time = now
 
-            reasoning_visible = self.config.get("model.reasoning_visible", False)
             # Thinking
             if (
                 hasattr(delta, 'reasoning_content')
@@ -155,12 +139,12 @@ class Core:
             
                 if not self.thinking:
                     if reasoning_callback:
-                        reasoning_callback(Stage.START, None, reasoning_visible)
+                        reasoning_callback(Stage.START, None, thinking_display)
 
                 self.thinking_buffer += delta.reasoning_content
 
                 if reasoning_callback:
-                    reasoning_callback(Stage.PROCESS, delta.reasoning_content, reasoning_visible)
+                    reasoning_callback(Stage.PROCESS, delta.reasoning_content, thinking_display)
 
                 self.thinking = True
 
@@ -171,7 +155,7 @@ class Core:
                     self.thinking = False
                     thinking_end = True
                     if reasoning_callback:
-                        reasoning_callback(Stage.STOP, None, reasoning_visible)
+                        reasoning_callback(Stage.STOP, None, thinking_display)
                 
                 self.response_buffer += delta.content
                 if content_callback:
@@ -192,7 +176,14 @@ class Core:
                     if tc.function.name:
                         tool_calls[idx]["function"]["name"] += tc.function.name
                     if tc.function.arguments:
-                        tool_calls[idx]["function"]["arguments"] += tc.function.arguments
+                        existing = tool_calls[idx]["function"]["arguments"]
+                        incoming = tc.function.arguments
+                        if isinstance(incoming, dict):
+                            # Ollama delivers the full dict in one chunk
+                            tool_calls[idx]["function"]["arguments"] = json.dumps(incoming)
+                        else:
+                            # OpenAI/Anthropic stream partial JSON strings
+                            tool_calls[idx]["function"]["arguments"] = existing + incoming
 
         return (first_chunk_time, tool_calls)
 
@@ -204,21 +195,17 @@ class Core:
         """
         
         model_name = self.config.get("model.name", "qwen/qwen3.6-35b-a3b")
-        temp = self.config.get("model.temperature", 0.8)
         try:
-            return self.client.chat.completions.create(
-                model=model_name,
+            return self.router.chat(
                 messages=messages,
-                temperature=temp,
-                tools=None,
-                tool_choice="auto",
                 stream=False,
+                tools=None,
             )
         except Exception as e:
             if error_callback:
-                error_callback(e, f"API connection error. Please, check the endpoint (model={model_name}, base_url={self.client.base_url}): {e}")
+                error_callback(e, f"API connection error. Please, check the endpoint (model={model_name}, base_url={self.router._base_url}): {e}")
             else:
-                raise RuntimeError(f"API connection error. Please, check the endpoint (model={model_name}, base_url={self.client.base_url}): {e}") from e
+                raise RuntimeError(f"API connection error. Please, check the endpoint (model={model_name}, base_url={self.router._base_url}): {e}") from e
                 
 
     def _cancel_prompts(self,
@@ -241,29 +228,23 @@ class Core:
         tools = get_tool_schemas()
         start = time.time()
         model_name = self.config.get("model.name", "qwen/qwen3.6-35b-a3b")
-        reasoning_effort = self.config.get("model.reasoning_effort", "medium")
-        temp = self.config.get("model.temperature", 0.8)
         try:
 
             if prompt_callback:
                 prompt_callback(Stage.START)
                 
-            response = self.client.chat.completions.create(
-                model=model_name,
+            response = self.router.chat(
                 messages=self.messages,
-                temperature=temp,
-                reasoning_effort=reasoning_effort,
-                tools=tools if tools else None,
-                tool_choice="auto",
                 stream=True,
+                tools=tools if tools else None,
             )
         except Exception as e:
             self._cancel_prompts(prompt_callback, reasoning_callback)
             
             if error_callback:
-                error_callback(e, f"API connection error. Please, check the endpoint (model={model_name}, base_url={self.client.base_url}): {e}")
+                error_callback(e, f"API connection error. Please, check the endpoint (model={model_name}, base_url={self.router._base_url}): {e}")
             else:
-                raise RuntimeError(f"API connection error. Please, check the endpoint (model={model_name}, base_url={self.client.base_url}): {e}") from e
+                raise RuntimeError(f"API connection error. Please, check the endpoint (model={model_name}, base_url={self.router._base_url}): {e}") from e
 
         try:
             (first_chunk_time, tool_calls) = self._stream_handler(response,
@@ -433,7 +414,7 @@ class Core:
             self.messages.append({
                 "role": "tool",
                 "tool_call_id": tc["id"],
-                "content": result,
+                "content": result if isinstance(result, str) else json.dumps(result),
             })
 
         return n_tools
@@ -445,8 +426,8 @@ class Core:
     def get_models(self):
         """Gets a list with all the available models."""
         try:
-            models =  self.client.models.list()
-            models = sorted(models, key=lambda model: model.id)
+            models =  self.router.list_models()
+            models = sorted(models, key=lambda model: model['id'])
             return models
         except Exception as e:
             print(e)
@@ -456,9 +437,9 @@ class Core:
         """Sets the model to use."""
         models = self.get_models()
         for model in models:
-            if model_name == model.id:
+            if model_name == model['id']:
                 # Match, set and return
-                self.config.set("model.name", model_name)
+                self.router.model_name = model_name
                 return True
 
         raise NameError(f"the model '{model_name}' does not exist")

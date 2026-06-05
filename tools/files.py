@@ -241,8 +241,8 @@ def patch_file_handler(args):
         return {"error": f"The path is not a file: {path}"}
     
     print(f"  [weak]Patching[/weak] [path]{path}[/path]")
-    print(f"  [patch-remove]{indent(old_string, '  - ')}[/patch-remove]")
-    print(f"  [patch-add]{indent(new_string, '  + ')}[/patch-add]")
+    print(f"[patch-remove]{indent(old_string, '  - ')}[/patch-remove]")
+    print(f"[patch-add]{indent(new_string, '  + ')}[/patch-add]")
 
     with open(path, "r") as f:
         file_content = f.read()

@@ -201,14 +201,14 @@ def _cmd_quit(core, params) -> (bool, str, str, str):
        "Configure model reasoning",
 )
 def _cmd_reasoning(core, params) -> (bool, str, str, str):
-    from agent.config import get_config
 
     if params:
         return False, no_params_error, None, None
 
-    try:
-        config = get_config()
+    from agent.config import get_config
+    config = get_config()
 
+    try:
         # Reasoning effort
         opts = [
             ("high", "High"),
@@ -216,7 +216,7 @@ def _cmd_reasoning(core, params) -> (bool, str, str, str):
             ("low","Low"),
             ("none", "Disable model reasoning"),
             ]
-        defa = config.get("model.reasoning_effort", "medium")
+        defa = core.router.thinking_effort
 
         effort = choice(
             message="Choose the reasoning effort:",
@@ -226,11 +226,11 @@ def _cmd_reasoning(core, params) -> (bool, str, str, str):
                 " <b>↑</b>/<b>↓</b>: select | <b>Enter</b>: accept"
             ),
         )
-        config.set("model.reasoning_effort", effort)
+        core.router.thinking_effort = effort
 
-        # Reasoning visible
+        # Reasoning display
         opts = [("true", "Yes"), ("false", "No")]
-        defa = config.get("model.reasoning_visible")
+        defa = config.get("model.thinking.display")
 
         visible = choice(
             message="Display reasoning:",
@@ -241,7 +241,7 @@ def _cmd_reasoning(core, params) -> (bool, str, str, str):
             ),
         )
         visible_bool = visible == "true"
-        config.set("model.reasoning_visible", visible_bool)
+        config.set("model.thinking.display", visible_bool)
     except Exception as e:
         err(e)
 
@@ -466,13 +466,47 @@ def _cmd_skills(core, params) -> (bool, str, str, str):
       aliases=["/models"]
 )
 def _cmd_models(core, params) -> (bool, str, str, str):
+    from agent.config import get_config
+    from agent.router import Provider
+    config = get_config()
+
+    # Provider selection
+    current_provider = config.get("model.provider", "")
+    provider_opts = [
+        (Provider.OPENAI.value, "OpenAI"),
+        (Provider.ANTHROPIC.value, "Anthropic"),
+        (Provider.OLLAMA.value, "Ollama"),
+        (Provider.LMSTUDIO.value, "LM Studio"),
+        (Provider.GENERIC.value, "Generic (OpenAI-compatible)"),
+    ]
+
+    selected_provider = choice(
+        message="Choose a provider:",
+        options=provider_opts,
+        default=current_provider if current_provider else Provider.GENERIC.value,
+        bottom_toolbar=HTML(
+            " <b>↑</b>/<b>↓</b>: select | <b>Enter</b>: accept"
+        ),
+    )
+    config.set("model.provider", selected_provider)
+
+    # Reinitialize router with new provider
+    ok, msg = core.initialize_router()
+    if not ok:
+        return False, f"Failed to initialize {selected_provider}: {msg}", None, None
+
+
+    # Model selection
     try:
         models = core.get_models()
     except Exception as e:
         return False, f"{e}", None, None
-        
-    opts = [(f"{model.id}", f"{model.id}") for (_, model) in enumerate(models)]
-    defa = models[0].id
+
+    if not models:
+        return True, f"Provider set to {selected_provider} (no models listed)", None, None
+
+    opts = [(m["id"], m["id"]) for m in models]
+    defa = core.router.model_name
 
     result = choice(
         message="Choose a model:",
@@ -487,11 +521,12 @@ def _cmd_models(core, params) -> (bool, str, str, str):
         success = core.set_model(result)
         if success:
             pub.sendMessage("prompt-update")
-            return True, f"Model: {result}", None, None
+            return True, f"Provider: {selected_provider} — Model: {result}", None, None
         else:
             return False, "Model could not be set", None, None
     except NameError as e:
         return False, f"{e}", None, None
+
         
         
 @cmd(
@@ -510,7 +545,7 @@ def _cmd_url(core, params) -> (bool, str, str, str):
 
     config.set("model.base_url", new_url)
 
-    ok, msg = core.initialize_client()
+    ok, msg = core.initialize_router()
     if not ok:
         return False, f"{msg}", None, None
 
@@ -540,6 +575,7 @@ def _cmd_config_edit(core, params) -> (bool, str, str, str):
     result = edit_base_config_visual()
     ok = result.returncode == 0
     if ok:
+        ok, msg = core.initialize_router()
         return ok, "Configuration edited successfully", None, None
     else:
         return ok, result.stderr, None, None
@@ -615,17 +651,11 @@ def _cmd_temperature(core, params) -> (bool, str, str, str):
     if params:
         return False, no_params_error, None, None
 
-    from agent.config import get_config
-    config = get_config()
-    
-    current_temp = config.get("model.temperature")
-
-    new_temp = FloatPrompt.ask(" Enter the temperature [0..2]", default=current_temp)
-
+    new_temp = FloatPrompt.ask(" Enter the temperature [0..2]", default=core.router.temperature)
     if new_temp < 0 or new_temp > 2:
         return False, f"Temperature out of [0..2] range: {new_temp}", None, None
 
-    config.set("model.temperature", new_temp)
+    core.router.temperature = new_temp
 
     return True, f"Temperature: {new_temp}", None, None
     
