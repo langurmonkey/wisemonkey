@@ -65,7 +65,7 @@ def fetch_url_handler(args):
     if not url:
         return {"error": "No URL provided"}
     try:
-        print(f"  [weak]Accessing[/weak] [path]{url}[/path]")
+        print(f"  [weak]Accessing[/weak] [link]{url}[/link]")
         req = urllib.request.Request(url, headers={'User-Agent': 'Wisemonkey/1.0'})
         with urllib.request.urlopen(req, timeout=10) as response:
             html = _decode_response(response)

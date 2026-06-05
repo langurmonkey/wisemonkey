@@ -27,6 +27,7 @@ monkee_theme = Theme({
     "prompt": "gold1 bold",
     "weak": "grey39",
     "kbd": "grey69 bold on grey15", 
+    "link": "deep_sky_blue1 underline",
 
     # Patching
     "patch-add": "green",
