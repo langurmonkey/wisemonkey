@@ -136,11 +136,11 @@ def _requires_extra_confirmation(command: str, timeout: int) -> bool:
 
 def _prompt_user(command: str, reason: str) -> bool:
     """Ask the user to confirm (or reject) a command."""
-    print()
+    newline()
     print("⚠️ [warn]Command requires confirmation[/warn]")
     print(f"  [weak]Reason[/weak]: {reason}")
-    print(f"  [path][bold]$[/bold] {command} [/path]")
-    print()
+    print(f"  [prompt]$[/prompt] [cmd]{command}[/cmd]")
+    newline()
 
     confirmed = RichConfirm.ask("[bold]Run this command?[/bold]", default=False)
 

@@ -22,6 +22,9 @@ monkee_theme = Theme({
     "tool": "steel_blue3",
     "status": "white on grey15",
     "path": "#999999 on #252525",
+    "cmd": "red3",
+    "code": "light_pink3",
+    "prompt": "gold1 bold",
     "weak": "grey39",
     "kbd": "grey69 bold on grey15", 
 
