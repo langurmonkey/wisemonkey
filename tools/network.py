@@ -60,7 +60,10 @@ def _decode_response(response):
         "required": ["url"],
     },
 )
-def fetch_url_handler(url):
+def fetch_url_handler(args):
+    url = args.get("url", "")
+    if not url:
+        return {"error": "No URL provided"}
     try:
         print(f"  [weak]Accessing[/weak] [path]{url}[/path]")
         req = urllib.request.Request(url, headers={'User-Agent': 'Wisemonkey/1.0'})
