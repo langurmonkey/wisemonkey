@@ -349,7 +349,7 @@ def _cmd_session_chat(core, params) -> (bool, str, str, str):
         try:
             n = int(params[0])
         except ValueError:
-            return False, "Parameter must be integer: {params[0]}", None, None
+            return False, f"Parameter must be integer: {params[0]}", None, None
 
     mem = core.memory.get_chat_formatted(num_exchanges=n)
     chars, max, rate = core.memory.get_chat_stats()
