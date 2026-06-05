@@ -351,7 +351,7 @@ def _cmd_session_chat(core, params) -> (bool, str, str, str):
         except ValueError:
             return False, f"Parameter must be integer: {params[0]}", None, None
 
-    mem = core.memory.get_chat_formatted(num_exchanges=n)
+    mem = core.memory.get_chat_formatted(num_exchanges=n, timestamps=True)
     chars, max, rate = core.memory.get_chat_stats()
     stats = f"Memory status: {chars}/{max} ({rate:.2f}%)"
     # Format in Markdown
