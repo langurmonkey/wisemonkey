@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Wisemonkey - entry point.
+Wisemonkey main.
 
-Wisemonkey is a simple but powerful AI agent for the Linux and macOS terminal.
-It features sessions, memory management, tools, skills, slash commands, and more.
+This file contains the main, which parses the CLI arguments and routes the actions to
+the proper modules. It also creates the actual agent and runs it.
 """
 
 import argparse

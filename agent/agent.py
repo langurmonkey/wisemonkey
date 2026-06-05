@@ -1,4 +1,4 @@
-"""The agent loop.
+"""The agent loop of Wisemonkey.
 
 The agent orchestrates the 'user-assistant' turns and delegates the actual turn
 handling to the core.

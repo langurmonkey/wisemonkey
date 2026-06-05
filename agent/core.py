@@ -1,8 +1,8 @@
-"""Core logic of the agent.
+"""Core logic of the Wisemonkey agent.
 
 The core:
 1. Builds a system prompt (personality + skills + tools + memory)
-2. Sends messages to the LLM
+2. Sends messages to the LLM using the router
 3. Handles tool calls or returns the final text response
 4. Loops until max turns or a text response
 """
