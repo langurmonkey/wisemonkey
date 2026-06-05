@@ -338,22 +338,24 @@ class ModelRouter:
             "temperature": temp,
             "stream": stream,
         }
+        
+        kwargs["extra_headers"] = {
+            "HTTP-Referer": "https://wisemonkey.ai", # Must be a full URL
+            "X-Title": "Wisemonkey Agent",
+        }
 
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
         # Extra body params (reasoning_effort, etc.)
-        extra = {}
-        if thinking and thinking != "none":
-            if self.provider == Provider.OPENAI:
-                extra["reasoning_effort"] = thinking
-            else:
-                extra["reasoning_effort"] = thinking
-        if extra:
-            kwargs["extra_body"] = extra
+        kwargs["extra_body"] = {
+            "reasoning_effort": thinking
+        }
 
         return self._openai_client.chat.completions.create(**kwargs)
+
+
 
     # ------------------------------------------------------------------
     # Anthropic
