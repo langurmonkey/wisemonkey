@@ -7,6 +7,7 @@ import os
 import tempfile
 from textwrap import indent
 
+from agent.utils import contractuser
 from agent.tools import tool
 from agent.console import print
 
@@ -55,13 +56,13 @@ def read_file_handler(args):
     path = os.path.abspath(path)
 
     if not os.path.exists(path):
-        return {"error": f"The file does not exist: {path}"}
+        return {"error": f"The file does not exist: {contractuser(path)}"}
 
     if not os.path.isfile(path):
-        return {"error": f"The path exists but does not point to a file: {path}"}
+        return {"error": f"The path exists but does not point to a file: {contractuser(path)}"}
 
     with open(path, "r") as file:
-        print(f"  [weak]Reading[/weak] [path]{path}[/path]")
+        print(f"  [weak]Reading[/weak] [path]{contractuser(path)}[/path]")
         content = file.read()
 
     # Optionally add line numbers
@@ -112,12 +113,12 @@ def list_dir_handler(args):
     path = os.path.abspath(path)
 
     if not os.path.exists(path):
-        return {"error": f"The directory does not exist: {path}"}
+        return {"error": f"The directory does not exist: {contractuser(path)}"}
 
     if os.path.isfile(path):
-        return {"error": f"The path exists but does not point to a directory: {path}"}
+        return {"error": f"The path exists but does not point to a directory: {contractuser(path)}"}
 
-    print(f"  [weak]Listing[/weak] [path]{path}[/path]")
+    print(f"  [weak]Listing[/weak] [path]{contractuser(path)}[/path]")
 
     content = os.listdir(path)
     # Format as a readable listing
@@ -188,9 +189,9 @@ def write_file_handler(args):
         os.close(fd)
     os.replace(tmp_path, path)
 
-    print(f"  [weak]Wrote[/weak] [path]{path}[/path] ({len(content)} chars)")
+    print(f"  [weak]Wrote[/weak] [path]{contractuser(path)}[/path] ({len(content)} chars)")
 
-    return {"path": path, "success": True, "message": f"Wrote {len(content)} bytes to {path}"}
+    return {"path": path, "success": True, "message": f"Wrote {len(content)} bytes to {contractuser(path)}"}
 
 
 @tool(
@@ -236,11 +237,11 @@ def patch_file_handler(args):
     path = os.path.abspath(path)
 
     if not os.path.exists(path):
-        return {"error": f"The file does not exist: {path}"}
+        return {"error": f"The file does not exist: {contractuser(path)}"}
     if not os.path.isfile(path):
-        return {"error": f"The path is not a file: {path}"}
+        return {"error": f"The path is not a file: {contractuser(path)}"}
     
-    print(f"  [weak]Patching[/weak] [path]{path}[/path]")
+    print(f"  [weak]Patching[/weak] [path]{contractuser(path)}[/path]")
     print(f"[patch-remove]{indent(old_string, '  - ')}[/patch-remove]")
     print(f"[patch-add]{indent(new_string, '  + ')}[/patch-add]")
 
@@ -251,7 +252,7 @@ def patch_file_handler(args):
 
     if count == 0:
         return {"error": (
-            f"old_string not found in {path}. "
+            f"old_string not found in {contractuser(path)}. "
             f"Use 'read_file' to check current contents and copy exact text."
         )}
 
@@ -275,5 +276,5 @@ def patch_file_handler(args):
     return {
         "path": path,
         "success": True,
-        "message": f"Replaced text in {path}",
+        "message": f"Replaced text in {contractuser(path)}",
     }
