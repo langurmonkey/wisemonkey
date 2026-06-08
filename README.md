@@ -35,6 +35,12 @@ Install the agent with:
 curl -fsSL https://codeberg.org/langurmonkey/wisemonkey/raw/branch/master/install.sh | bash
 ```
 
+Launch the onboarding process to configure the agent interactively:
+
+```bash
+wisemonkey --onboard
+```
+
 ### Running
 
 Run the agent with the default session:
@@ -73,7 +79,9 @@ uv run wisemonkey
 
 ## Configuration
 
-On first run, the configuration is created in `$XDG_CONFIG_HOME/wisemonkey/config.yaml`.
+You can configure the agent interactively before the first run with `wisemonkey --onboard`.
+
+In any case, the configuration is created on first run in `$XDG_CONFIG_HOME/wisemonkey/config.yaml`.
 
 It works with any OpenAI-compatible endpoint, so LM Studio, Ollama, OpenWebUI, or any other service you configure. Here are the default values:
 

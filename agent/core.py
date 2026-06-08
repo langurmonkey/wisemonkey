@@ -32,7 +32,7 @@ class Stage(Enum):
 class Core:
     """Agent core, which manages tools, skills, memory, and API communication."""
 
-    def __init__(self, config_path=None, session='default'):
+    def __init__(self, config_path=None, session='default', full_startup=True):
         self.config = get_config()
         self.config.load(config_path)
 
@@ -44,31 +44,33 @@ class Core:
         # Agent settings
         self.system_prompt = self.config.get("agent.system_prompt", "You are a helpful assistant, expert in many areas of science. Respond concisely and to the point. No fluff.")
 
-        # Initialize MCP
-        self.mcp = MCPClient()
-        self.mcp.load_config(get_mcp_config_path())
-        self.mcp.start_all()
+        # In case of onboarding we do not need a full startup
+        if full_startup:
+            # Initialize MCP
+            self.mcp = MCPClient()
+            self.mcp.load_config(get_mcp_config_path())
+            self.mcp.start_all()
 
-        # Initialize memory
-        max_chat_history = self.config.get("max_chat_history", 128000)
-        self.memory = Memory(max_chat_history=max_chat_history, session=session)
+            # Initialize memory
+            max_chat_history = self.config.get("max_chat_history", 128000)
+            self.memory = Memory(max_chat_history=max_chat_history, session=session)
 
-        # Initialize skills
-        self.skills = SkillLoader()
+            # Initialize skills
+            self.skills = SkillLoader()
 
-        # Conversation history
-        self.messages = []
+            # Conversation history
+            self.messages = []
 
-        # Status
-        self.thinking = False
-        self.generating = False
+            # Status
+            self.thinking = False
+            self.generating = False
 
-        # Initialize tokenizer for token-counting
-        encoding_name = "cl100k_base"
-        try:
-            self.encoding = tiktoken.get_encoding(encoding_name)
-        except Exception as e:
-            raise Exception(f"Error loading tokenizer: {e}")
+            # Initialize tokenizer for token-counting
+            encoding_name = "cl100k_base"
+            try:
+                self.encoding = tiktoken.get_encoding(encoding_name)
+            except Exception as e:
+                raise Exception(f"Error loading tokenizer: {e}")
 
     def initialize_router(self):
         """Initialize the model router."""

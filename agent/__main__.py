@@ -20,7 +20,7 @@ from xdg_base_dirs import xdg_data_home
 
 from agent import Agent
 from agent.utils import contractuser
-from agent.console import print, err, ok, console
+from agent.console import print, err, ok, console, newline
 
 # Ensure the project root (parent of agent/) is on the path
 # This handles both pip-installed and direct execution
@@ -50,6 +50,11 @@ def main():
         type=str,
         metavar="PATH",
         help="Path to the configuration file",
+    )
+    parser.add_argument(
+        "-o", "--onboard",
+        action='store_true',
+        help="Interactively configure the agent",
     )
     parser.add_argument(
         "--edit-config",
@@ -96,6 +101,28 @@ def main():
             subprocess.run(['git', 'pull'], cwd=install_dir, check=True)
             print("Update complete.")
         return
+
+    # Handle --onboard
+    if args.onboard:
+        newline()
+        console.rule(f"[accent-bold]{pkg_name.upper()}[/accent-bold] ONBOARDING")
+        newline()
+        # Load configuration
+        from agent.core import Core
+        core = Core(args.config, args.session, full_startup=False)
+
+        from agent.commands import registry
+        cool, msg, _, _, _ = registry.run_command(core, "/config")
+        if cool:
+            ok(msg)
+            newline()
+            print("Start the agent with [accent-bold]wisemonkey \\[--session session-name][/accent-bold]")
+        else:
+            err(msg)
+
+        return
+        
+        
 
     # Edit configuration
     if args.edit_config:
