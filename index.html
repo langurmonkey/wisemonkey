@@ -466,6 +466,7 @@
 
   .quickstart-comment {
     color: var(--text-muted);
+    opacity: 0.5;
   }
 
   .copy-btn {
@@ -999,14 +1000,34 @@
       <div class="quickstart-body">
         <div class="quickstart-tab-content active" id="qs-install">
           <div class="quickstart-line">
+            <span class="quickstart-comment"># One-line installation</span>
+          </div>
+          <div class="quickstart-line">
             <span class="quickstart-prompt">$</span>
             <span class="quickstart-cmd">curl -fsSL https://codeberg.org/langurmonkey/wisemonkey/raw/branch/master/install.sh | bash</span>
+            <button class="copy-btn" onclick="copyCommand(this)">Copy</button>
+          </div>
+          <div class="quickstart-line">
+            <span class="quickstart-comment"># Interactive configuration</span>
+          </div>
+          <div class="quickstart-line">
+            <span class="quickstart-prompt">$</span>
+            <span class="quickstart-cmd">wisemonkey --onboard</span>
+            <button class="copy-btn" onclick="copyCommand(this)">Copy</button>
+          </div>
+          <div class="quickstart-line">
+            <span class="quickstart-comment"># Run the agent</span>
+          </div>
+          <div class="quickstart-line">
             <span class="quickstart-prompt">$</span>
             <span class="quickstart-cmd">wisemonkey</span>
             <button class="copy-btn" onclick="copyCommand(this)">Copy</button>
           </div>
         </div>
         <div class="quickstart-tab-content" id="qs-source">
+          <div class="quickstart-line">
+            <span class="quickstart-comment"># Clone repository</span>
+          </div>
           <div class="quickstart-line">
             <span class="quickstart-prompt">$</span>
             <span class="quickstart-cmd">git clone https://github.com/wisemonkey/wisemonkey.git</span>
@@ -1015,6 +1036,17 @@
           <div class="quickstart-line">
             <span class="quickstart-prompt">$</span>
             <span class="quickstart-cmd">cd wisemonkey</span>
+          </div>
+          <div class="quickstart-line">
+            <span class="quickstart-comment"># Interactive configuration</span>
+          </div>
+          <div class="quickstart-line">
+            <span class="quickstart-prompt">$</span>
+            <span class="quickstart-cmd">uv run wisemonkey --onboard</span>
+            <button class="copy-btn" onclick="copyCommand(this)">Copy</button>
+          </div>
+          <div class="quickstart-line">
+            <span class="quickstart-comment"># Run the agent</span>
           </div>
           <div class="quickstart-line">
             <span class="quickstart-prompt">$</span>
@@ -1249,7 +1281,7 @@
   (() => {
     const el = document.getElementById('typewriter');
     const phrases = [
-      '/config   #Interactive configuration',
+      '/onboard  # Interactive configuration',
       'Search my notes for the project\'s API docs...',
       '/embed ~/projects/papers/article001.pdf',
       'Read the latest paper and extract the key findings',
