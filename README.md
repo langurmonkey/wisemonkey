@@ -2,7 +2,7 @@
 
 ---
 
-Wisemonkey is a simple, open, and hackable AI agent for the Linux and macOS terminal. It connects to any service providing an OpenAI, Anthropic, or Ollama-compatible endpoint. It features **session management**, **persistent memory management**, **vector store** for document embedding, native and MCP **tools**, **skills**, and much more.
+[Wisemonkey](https://tonisagrista.com/projects/wisemonkey) is a simple, open, and hackable AI agent for the Linux and macOS terminal. It connects to any service providing an OpenAI, Anthropic, or Ollama-compatible endpoint. It features **session management**, **persistent memory management**, **vector store** for document embedding, native and MCP **tools**, **skills**, and much more.
 
 <p align="center">
 <a href="https://asciinema.org/a/8cTlvnN0qFeyflLH" target="_blank"><img src="https://asciinema.org/a/8cTlvnN0qFeyflLH.svg" width="60%"/></a>
