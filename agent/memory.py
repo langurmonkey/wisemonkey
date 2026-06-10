@@ -40,13 +40,13 @@ class Memory:
     state is shared between the agent and tool handlers.
     """
 
-    def __new__(cls, max_chat_history=128000, session_dir=None, session='default'):
+    def __new__(cls, max_chat_history=300000, session_dir=None, session='default'):
         global _instance
         if _instance is None:
             _instance = super().__new__(cls)
         return _instance
 
-    def __init__(self, max_chat_history=128000, session_dir=None, session='default'):
+    def __init__(self, max_chat_history=300000, session_dir=None, session='default'):
         # Only initialize on first creation
         if hasattr(self, "_initialized"):
             return
@@ -245,7 +245,7 @@ class ChatMemory:
     when the window is exceeded. Persisted to disk.
     """
     
-    def __init__(self, session_dir, max_chars=320000):
+    def __init__(self, session_dir, max_chars=300000):
         """Initialize chat memory.
         
         Args:
