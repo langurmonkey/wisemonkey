@@ -64,30 +64,14 @@ def _ensure_mcp_config():
     return MCP_CONFIG_FILE
 
 def _get_defaults():
-    """Return default configuration."""
-    return {
-        "model": {
-            "name": "qwen/qwen3.6-35b-a3b",
-            "base_url": "",
-            "temperature": 0.8,
-            "thinking": {
-                "effort": "medium",
-                "display": False,
-            }
-        },
-        "embedding": {
-            "name": "text-embedding-qwen3-embedding-0.6b",
-            "base_url": "",
-        },
-        "agent": {
-            "max_turns": 50,
-            "system_prompt": "You are a helpful assistant.",
-            "markdown": False,
-            "max_chat_history": 128000,
-            "context_files": ["AGENTS.md"],
-            "vi_mode": False,
-        },
-    }
+    """Loads the default config from wisemonkey/config.yaml"""
+    repo_config = Path(__file__).parent.parent / "config.yaml"
+    if repo_config.exists():
+        with open(repo_config, "r") as f:
+            file_config = yaml.safe_load(f)
+            if file_config:
+                return file_config
+    return {}
 
 
 class Config:
@@ -133,7 +117,9 @@ class Config:
                 if file_config:
                     self._config = file_config
         else:
-            self._config = _get_defaults()
+            agent_dir = Path(__file__).resolve().parent
+            repo_dir = agent_dir.parent
+            self.load(repo_dir / "config.yaml")
 
     def save(self):
         """Persist current configuration to the file."""
@@ -151,6 +137,16 @@ class Config:
             key: Dot-separated key (e.g., "model.temperature")
             value: Value to set
         """
+        self.set_no_save(key, value)
+        self.save()
+
+    def set_no_save(self, key: str, value):
+        """Set a configuration value using dot notation, but does not persist it.
+
+        Args:
+            key: Dot-separated key (e.g., "model.temperature")
+            value: Value to set
+        """
         keys = key.split(".")
         config = self._config
 
@@ -160,7 +156,6 @@ class Config:
             config = config[k]
 
         config[keys[-1]] = value
-        self.save()
 
     def get(self, key: str, default=None):
         """Get a configuration value using dot notation.
@@ -209,7 +204,7 @@ class Config:
         return copy.deepcopy(self._config)
 
     def reset(self):
-        """Reset configuration to defaults."""
+        """Reset configuration to defaults from repo config.yaml."""
         self._config = _get_defaults()
         self._config_path = None
 

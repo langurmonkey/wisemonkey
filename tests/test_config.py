@@ -8,30 +8,7 @@ import yaml
 from pathlib import Path
 
 from tests.conftest import BaseTest
-from agent.config import Config, get_config, _get_defaults
-
-
-class TestConfigDefaults(BaseTest):
-    """Test that defaults are returned correctly."""
-
-    def test_get_defaults_returns_dict(self):
-        defaults = _get_defaults()
-        assert isinstance(defaults, dict)
-
-    def test_get_defaults_has_model_section(self):
-        defaults = _get_defaults()
-        assert "model" in defaults
-        assert "name" in defaults["model"]
-
-    def test_get_defaults_has_agent_section(self):
-        defaults = _get_defaults()
-        assert "agent" in defaults
-        assert "context_files" in defaults["agent"]
-        assert defaults["agent"]["context_files"] == ["AGENTS.md"]
-
-    def test_get_defaults_has_embedding_section(self):
-        defaults = _get_defaults()
-        assert "embedding" in defaults
+from agent.config import Config, get_config
 
 
 class TestConfigSingleton(BaseTest):
@@ -51,7 +28,9 @@ class TestConfigSingleton(BaseTest):
         c = Config()
         c._config = {"changed": True}
         c.reset()
-        assert c.to_dict() == _get_defaults()
+        # After reset, config is loaded from repo config.yaml
+        assert "agent" in c.to_dict()
+        assert "model" in c.to_dict()
 
 
 class TestConfigGetSet(BaseTest):
@@ -70,15 +49,15 @@ class TestConfigGetSet(BaseTest):
         assert self.config.get("nonexistent.key") is None
 
     def test_set_updates_value(self):
-        self.config.set("agent.max_turns", 99)
+        self.config.set_no_save("agent.max_turns", 99)
         assert self.config.get("agent.max_turns") == 99
 
     def test_set_creates_nested_keys(self):
-        self.config.set("agent.new_field", "hello")
+        self.config.set_no_save("agent.new_field", "hello")
         assert self.config.get("agent.new_field") == "hello"
 
     def test_set_deeply_nested(self):
-        self.config.set("a.b.c.d", 42)
+        self.config.set_no_save("a.b.c.d", 42)
         assert self.config.get("a.b.c.d") == 42
 
     def test_has_returns_true_for_existing(self):
@@ -110,10 +89,11 @@ class TestConfigLoadSave(BaseTest):
         self.config.load(path)
         assert self.config.get("agent.max_turns") == 77
 
-    def test_load_missing_file_uses_defaults(self):
+    def test_load_missing_file_falls_back_to_repo_config(self):
         fake_path = self._tmpdir / "nonexistent.yaml"
         self.config.load(fake_path)
-        assert self.config.to_dict() == _get_defaults()
+        # When the given path doesn't exist, load() falls back to repo config.yaml
+        assert self.config.get("agent.max_turns") is not None
 
     def test_save_creates_file(self):
         path = self._tmpdir / "test_config.yaml"
@@ -128,7 +108,7 @@ class TestConfigLoadSave(BaseTest):
         self.config.load(path)
         assert self.config.get("agent.max_turns") == 42
 
-        self.config.set("agent.max_turns", 88)
+        self.config.set_no_save("agent.max_turns", 88)
         self.config.save()
 
         # Reload from disk

@@ -350,7 +350,7 @@ class Agent:
         # Determine the repository directory (where this source file lives, or the installed package)
         # Prefer the source tree over the installed package location
         agent_dir = Path(__file__).resolve().parent
-        repo_dir = agent_dir.parent  # ~/Projects/wisemonkey/
+        repo_dir = agent_dir.parent
         git_dir = repo_dir / ".git"
 
         updates_available, commit_hash = self._check_updates(git_dir, repo_dir)
@@ -493,6 +493,9 @@ class Agent:
                 except Exception as e:
                     self._cancel_all_spinners()
                     err(f"Error sending prompt: {e}")
+                    # The turn's partial conversation has already been persisted
+                    # by core.run_turn(), so we just continue to the next prompt.
+                    print("  [dim]Partial response was saved to chat history.[/dim]")
                     
 
         # Persist memory and shut down core on session exit

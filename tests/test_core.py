@@ -45,7 +45,7 @@ class TestFindWorkspaceRoot(BaseTest):
 
     def test_custom_context_files(self):
         """Uses custom file names from config."""
-        self.config.set("agent.context_files", ["CUSTOM.md"])
+        self.config.set_no_save("agent.context_files", ["CUSTOM.md"])
         (self._tmpdir / "CUSTOM.md").write_text("# Custom", encoding="utf-8")
         result = self._call_find_workspace_root(self._tmpdir)
         assert result == self._tmpdir
@@ -93,7 +93,7 @@ class TestLoadContextFiles(BaseTest):
         assert "## Workspace Instructions (AGENTS.md)" in result
 
     def test_loads_multiple_files(self):
-        self.config.set("agent.context_files", ["AGENTS.md", "CUSTOM.md"])
+        self.config.set_no_save("agent.context_files", ["AGENTS.md", "CUSTOM.md"])
         (self._tmpdir / "AGENTS.md").write_text("# Agents", encoding="utf-8")
         (self._tmpdir / "CUSTOM.md").write_text("# Custom", encoding="utf-8")
         result = self._call_load_context_files(self._tmpdir)
@@ -103,14 +103,14 @@ class TestLoadContextFiles(BaseTest):
         assert "## Workspace Instructions (CUSTOM.md)" in result
 
     def test_missing_file_skipped_gracefully(self):
-        self.config.set("agent.context_files", ["AGENTS.md", "MISSING.md"])
+        self.config.set_no_save("agent.context_files", ["AGENTS.md", "MISSING.md"])
         (self._tmpdir / "AGENTS.md").write_text("# Agents", encoding="utf-8")
         result = self._call_load_context_files(self._tmpdir)
         assert "# Agents" in result
         assert "MISSING" not in result
 
     def test_empty_string_when_no_files(self):
-        self.config.set("agent.context_files", ["NONEXISTENT.md"])
+        self.config.set_no_save("agent.context_files", ["NONEXISTENT.md"])
         result = self._call_load_context_files(self._tmpdir)
         assert result == ""
 

@@ -47,6 +47,8 @@ class Core:
 
         # In case of onboarding we do not need a full startup
         if full_startup:
+            # Response buffer
+            self.response_buffer = ""
             # Initialize MCP
             self.mcp = MCPClient()
             self.mcp.load_config(get_mcp_config_path())
@@ -163,77 +165,84 @@ class Core:
         first_chunk_time = None
         thinking_end = False
         prompt_stopped = False
+        stream_error: Exception | None = None
 
         thinking_display = self.config.get("model.thinking.display", False)
 
-        for chunk in response:
-            # Stop prompt spinner
-            if not prompt_stopped and prompt_callback:
-                prompt_callback(Stage.STOP)
-                prompt_stopped = True
+        try:
+            for chunk in response:
+                # Stop prompt spinner
+                if not prompt_stopped and prompt_callback:
+                    prompt_callback(Stage.STOP)
+                    prompt_stopped = True
 
-            delta = chunk.choices[0].delta
-            now = time.time()
+                delta = chunk.choices[0].delta
+                now = time.time()
 
-            # Track when first chunk arrives (excludes request send time)
-            if first_chunk_time is None:
-                first_chunk_time = now
+                # Track when first chunk arrives (excludes request send time)
+                if first_chunk_time is None:
+                    first_chunk_time = now
 
-            # Thinking
-            if (
-                hasattr(delta, 'reasoning_content')
-                and delta.reasoning_content
-            ):
-            
-                if not self.thinking:
-                    if reasoning_callback:
-                        reasoning_callback(Stage.START, None, thinking_display)
-
-                self.thinking_buffer += delta.reasoning_content
-
-                if reasoning_callback:
-                    reasoning_callback(Stage.PROCESS, delta.reasoning_content, thinking_display)
-
-                self.thinking = True
-
-            # Collect response text
-            if delta.content:
-                if self.thinking and not thinking_end:
-                    # End thinking
-                    self.thinking = False
-                    thinking_end = True
-                    if reasoning_callback:
-                        reasoning_callback(Stage.STOP, None, thinking_display)
+                # Thinking
+                if (
+                    hasattr(delta, 'reasoning_content')
+                    and delta.reasoning_content
+                ):
                 
-                self.response_buffer += delta.content
-                if content_callback:
-                    content_callback(delta.content)
+                    if not self.thinking:
+                        if reasoning_callback:
+                            reasoning_callback(Stage.START, None, thinking_display)
 
-                self.generating = True
+                    self.thinking_buffer += delta.reasoning_content
 
-            # Collect tool calls
-            if delta.tool_calls:
-                for tc in delta.tool_calls:
-                    idx = tc.index
-                    if idx not in tool_calls:
-                        tool_calls[idx] = {
-                            "id": tc.id,
-                            "type": tc.type,
-                            "function": {"name": "", "arguments": ""},
-                        }
-                    if tc.function.name:
-                        tool_calls[idx]["function"]["name"] += tc.function.name
-                    if tc.function.arguments:
-                        existing = tool_calls[idx]["function"]["arguments"]
-                        incoming = tc.function.arguments
-                        if isinstance(incoming, dict):
-                            # Ollama delivers the full dict in one chunk
-                            tool_calls[idx]["function"]["arguments"] = json.dumps(incoming)
-                        else:
-                            # OpenAI/Anthropic stream partial JSON strings
-                            tool_calls[idx]["function"]["arguments"] = existing + incoming
+                    if reasoning_callback:
+                        reasoning_callback(Stage.PROCESS, delta.reasoning_content, thinking_display)
 
-        return (first_chunk_time, tool_calls)
+                    self.thinking = True
+
+                # Collect response text
+                if delta.content:
+                    if self.thinking and not thinking_end:
+                        # End thinking
+                        self.thinking = False
+                        thinking_end = True
+                        if reasoning_callback:
+                            reasoning_callback(Stage.STOP, None, thinking_display)
+                    
+                    self.response_buffer += delta.content
+                    if content_callback:
+                        content_callback(delta.content)
+
+                    self.generating = True
+
+                # Collect tool calls
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        idx = tc.index
+                        if idx not in tool_calls:
+                            tool_calls[idx] = {
+                                "id": tc.id,
+                                "type": tc.type,
+                                "function": {"name": "", "arguments": ""},
+                            }
+                        if tc.function.name:
+                            tool_calls[idx]["function"]["name"] += tc.function.name
+                        if tc.function.arguments:
+                            existing = tool_calls[idx]["function"]["arguments"]
+                            incoming = tc.function.arguments
+                            if isinstance(incoming, dict):
+                                # Ollama delivers the full dict in one chunk
+                                tool_calls[idx]["function"]["arguments"] = json.dumps(incoming)
+                            else:
+                                # OpenAI/Anthropic stream partial JSON strings
+                                tool_calls[idx]["function"]["arguments"] = existing + incoming
+
+        except Exception as e:
+            # Malformed SSE chunk (e.g. "JSON error injected into SSE stream").
+            # Store the error so we can still return whatever we collected.
+            stream_error = e
+
+        return (first_chunk_time, tool_calls, stream_error)
 
     def llm_chat_raw(self,
                     messages,
@@ -295,21 +304,22 @@ class Core:
                 raise RuntimeError(f"API connection error. Please, check the endpoint (model={model_name}, base_url={self.router._base_url}): {e}") from e
 
         try:
-            (first_chunk_time, tool_calls) = self._stream_handler(response,
-                                                                  prompt_callback,
-                                                                  reasoning_callback,
-                                                                  content_callback,
-                                                                  error_callback)
+            (first_chunk_time, tool_calls, stream_error) = self._stream_handler(response,
+                                                                                prompt_callback,
+                                                                                reasoning_callback,
+                                                                                content_callback,
+                                                                                error_callback)
         except KeyboardInterrupt as e:
             # Close the response stream to stop the API call
             response.close()
             self._cancel_prompts(prompt_callback, reasoning_callback)
             if cancel_callback:
                 cancel_callback(e)
+            stream_error = None
 
-        return self._finish_inference(start, first_chunk_time, tool_calls)
+        return self._finish_inference(start, first_chunk_time, tool_calls, stream_error)
 
-    def _finish_inference(self, start, first_chunk_time, tool_calls):
+    def _finish_inference(self, start, first_chunk_time, tool_calls, stream_error=None):
         self.thinking = False
         self.generating = False
         now = time.time()
@@ -330,7 +340,7 @@ class Core:
         # Convert indexed dict to list
         tc_list = list(tool_calls.values()) if tool_calls else None
         
-        return ({"text": self.response_buffer, "tool_calls": tc_list}, tokens, gen_elapsed)
+        return ({"text": self.response_buffer, "tool_calls": tc_list}, tokens, gen_elapsed, stream_error)
 
 
     def run_turn(self,
@@ -355,9 +365,8 @@ class Core:
             error_callback: Callback on error.
 
         Returns:
-            The final text response from the LLM.
+            The final text response from the LLM, or "[Error]" on failure.
         """
-
 
         # Initialize with system prompt
         self.messages = [
@@ -371,71 +380,121 @@ class Core:
         total_gen_time = 0
         # Number of tool calls
         n_tools = 0
-        for turn in range(self.config.get("agent.max_turns", 50)):
-            # Send to LLM
-            try:
-                (result, tokens, gen_elapsed) = self._send_to_llm(prompt_callback,
-                                                                  reasoning_callback,
-                                                                  content_callback,
-                                                                  cancel_callback,
-                                                                  error_callback)
-            except TurnCancelled:
-                # User canceled turn: don't persist anything, return immediately
-                return ("[Canceled]", 0, 0, 0.0)
+        try:
+            for turn in range(self.config.get("agent.max_turns", 50)):
+                # Send to LLM
+                try:
+                    (result, tokens, gen_elapsed, stream_error) = self._send_to_llm(prompt_callback,
+                                                                                    reasoning_callback,
+                                                                                    content_callback,
+                                                                                    cancel_callback,
+                                                                                    error_callback)
+                except TurnCancelled:
+                    # User canceled turn: don't persist anything, return immediately
+                    return ("[Canceled]", 0, 0, 0.0)
 
-            total_tokens += tokens
-            total_gen_time += gen_elapsed
+                total_tokens += tokens
+                total_gen_time += gen_elapsed
 
-            # Normalize tool calls from both streaming (plain dicts) and
-            # non-streaming (OpenAI API objects) into a common format
-            if isinstance(result, dict):
-                # Streaming mode: result is {"text": ..., "tool_calls": ...}
-                response_text = result.get("text", "")
-                raw_tool_calls = result.get("tool_calls")
-            else:
-                # Non-streaming mode: result is a message object
-                response_text = result.content or ""
-                raw_tool_calls = result.tool_calls
+                # Normalize tool calls from both streaming (plain dicts) and
+                # non-streaming (OpenAI API objects) into a common format
+                if isinstance(result, dict):
+                    # Streaming mode: result is {"text": ..., "tool_calls": ...}
+                    response_text = result.get("text", "")
+                    raw_tool_calls = result.get("tool_calls")
+                else:
+                    # Non-streaming mode: result is a message object
+                    response_text = result.content or ""
+                    raw_tool_calls = result.tool_calls
 
-            # Normalize tool calls to plain dicts
-            tool_calls = []
-            if raw_tool_calls:
-                for tc in raw_tool_calls:
-                    if isinstance(tc, dict):
-                        # Already a plain dict from streaming
-                        tool_calls.append(tc)
-                    else:
-                        # OpenAI API object — convert to dict
-                        tool_calls.append({
-                            "id": tc.id,
-                            "type": tc.type,
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments,
-                            },
-                        })
+                # Normalize tool calls to plain dicts
+                tool_calls = []
+                if raw_tool_calls:
+                    for tc in raw_tool_calls:
+                        if isinstance(tc, dict):
+                            # Already a plain dict from streaming
+                            tool_calls.append(tc)
+                        else:
+                            # OpenAI API object — convert to dict
+                            tool_calls.append({
+                                "id": tc.id,
+                                "type": tc.type,
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments,
+                                },
+                            })
 
-            # Handle tool calls
-            if tool_calls:
-                n_tools += self._tool_calls(tool_calls, tool_callback)
-                continue  # Loop back to LLM with tool results
+                # Handle tool calls
+                if tool_calls:
+                    n_tools += self._tool_calls(tool_calls, tool_callback)
+                    continue  # Loop back to LLM with tool results
 
-            # No tool calls - this is the final response
-            self.messages.append({"role": "assistant", "content": response_text})
-            
-            # Record exchange to chat history
-            self.memory.add_chat_exchange(self, "user", user_input)
-            self.memory.add_chat_exchange(self, "assistant", response_text)
+                # No tool calls - this is the final response
+                self.messages.append({"role": "assistant", "content": response_text})
 
+                # Record exchange to chat history
+                self.memory.add_chat_exchange(self, "user", user_input)
+                self.memory.add_chat_exchange(self, "assistant", response_text)
+
+                # Persist memory
+                self.memory.save()
+
+                # If the stream had a partial error (e.g. malformed SSE), raise
+                # it now so the caller can inform the user — but the turn's
+                # content has already been persisted above.
+                if stream_error is not None:
+                    raise stream_error
+
+                return (response_text, total_tokens, n_tools, total_gen_time)
+
+            # Max turns reached!
             # Persist memory
             self.memory.save()
-            
-            return (response_text, total_tokens, n_tools, total_gen_time)
+            return "I've reached the maximum number of turns. Please rephrase your request."
 
-        # Max turns reached!
-        # Persist memory
+        except Exception:
+            # An error occurred mid-turn (e.g. SSE/JSON parse error from provider).
+            # Persist whatever we have so the partial conversation is not lost.
+            self._persist_partial_turn(user_input)
+            raise
+
+    def _persist_partial_turn(self, user_input: str) -> None:
+        """Persist a partially completed turn to chat history and save memory.
+
+        Called when an error (e.g. malformed SSE JSON) interrupts a turn
+        mid-way.  This ensures that whatever exchanges have already been
+        appended to ``self.messages`` — plus any partial streaming response
+        still in the buffer — are not lost.
+
+        We check the existing chat history to avoid duplicating exchanges
+        that were already recorded in previous successful turns.
+        """
+        # Check whether this user message has already been saved to chat history
+        # (e.g. if the error happened during a later tool-call round).
+        history = self.memory.get_chat_unformatted()
+        last_exchange = history[-1] if history else None
+        if not last_exchange or last_exchange.get("role") != "user" or last_exchange.get("content") != user_input:
+            self.memory.add_chat_exchange(self, "user", user_input)
+
+        # Check whether the last assistant message in self.messages has content
+        # that was already appended during the turn (e.g. after a tool call round).
+        for msg in reversed(self.messages):
+            if msg.get("role") == "assistant" and msg.get("content"):
+                last_exchange = history[-1] if history else None
+                if not last_exchange or last_exchange.get("content") != msg["content"]:
+                    self.memory.add_chat_exchange(self, "assistant", msg["content"])
+                break
+
+        # If the error happened during streaming, the partial response text is
+        # in self.response_buffer but was never appended to self.messages.
+        # Save it so the user can see what was generated before the error.
+        if self.response_buffer:
+            last_exchange = history[-1] if history else None
+            if not last_exchange or last_exchange.get("content") != self.response_buffer:
+                self.memory.add_chat_exchange(self, "assistant", self.response_buffer)
+
         self.memory.save()
-        return "I've reached the maximum number of turns. Please rephrase your request."
 
     def _tool_calls(self, tool_calls, tool_callback=None):
         """Handle tool calls"""
