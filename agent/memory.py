@@ -30,6 +30,8 @@ def _load_vectorstore(session_dir):
 SESSIONS_DIR = xdg_data_home() / "wisemonkey" / "sessions"
 SESSION_METADATA_FILE = ".session-metadata"
 
+
+
 # Singleton instance
 _instance = None
 
@@ -60,6 +62,7 @@ class Memory:
         self.session_dir = Path(session_dir) if session_dir else  SESSIONS_DIR / session
         self.session_is_new = not os.path.exists(self.session_dir)
         self.session_dir.mkdir(parents=True, exist_ok=True)
+        # Update session metadata file
         self.metadata_file = self.session_dir / SESSION_METADATA_FILE
         metadata_exists = os.path.exists(self.metadata_file)
         now = datetime.datetime.now()
@@ -68,27 +71,30 @@ class Memory:
             self.session_created = now
             self.session_accessed = now
             # Write 'created' and 'accessed'
-            with open(self.metadata_file, 'w') as file:
-                file.write(f"created: {now.isoformat()}\naccessed: {now.isoformat()}")
+            md = {
+                "created": now.isoformat(),
+                "accessed": now.isoformat()
+            }
+            self._write_metadata(md)
 
         elif metadata_exists:
             # Restored session
             # Read 'created' and 'accessed'
-            with open(self.metadata_file, 'r') as file:
-                try:
-                    lines = [line for line in file]
-                    created = lines[0].split()[1]
-                    accessed = lines[1].split()[1]
-                    self.session_created = datetime.datetime.fromisoformat(created)
-                    self.session_accessed = datetime.datetime.fromisoformat(accessed)
-                except Exception:
-                    self.session_created = None
-                    self.session_accessed = None
+            md = self._read_metadata()
+            if md and 'created' in md:
+                self.session_created = datetime.datetime.fromisoformat(md['created'])
+            else:
+                self.session_created = None
+            if md and 'accessed' in md:
+                self.session_accessed = datetime.datetime.fromisoformat(md['accessed'])
+            else:
+                self.session_accessed = None
+
             # Update 'accessed'
             if self.session_created:
                 # Write 'created' and 'accessed'
-                with open(self.metadata_file, 'w') as file:
-                    file.write(f"created: {self.session_created.isoformat()}\naccessed: {now.isoformat()}")
+                md['accessed'] = now.isoformat()
+                self._write_metadata(md)
         else:
             raise RuntimeError("Invalid session state: new session but metadata already exists?")
             
@@ -106,6 +112,28 @@ class Memory:
         self._user_profile = self._load_json(self._user_profile_path, {})
         self._notes = self._load_json(self._notes_path, [])
         self._initialized = True
+
+    def _read_metadata(self):
+        """Read a .session-metadata file as a dict, or return empty dict."""
+        metadata = {}
+        if self.metadata_file.exists():
+            try:
+                with open(self.metadata_file, "r") as f:
+                    for line in f:
+                        line = line.strip()
+                        if ":" in line:
+                            key, _, value = line.partition(":")
+                            metadata[key.strip()] = value.strip()
+            except OSError:
+                pass
+        return metadata
+
+
+    def _write_metadata(self, metadata):
+        """Write a dict to a .session-metadata file in key: value format."""
+        with open(self.metadata_file, "w") as f:
+            for key, value in metadata.items():
+                f.write(f"{key}: {value}\n")
 
     def _load_json(self, path, default):
         """Load JSON from file, returning default if not found or invalid."""

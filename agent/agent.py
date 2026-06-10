@@ -266,6 +266,23 @@ class Agent:
         )
 
     def _check_updates(self, git_dir, repo_dir):
+        from datetime import datetime, timedelta
+
+        # Check if enough time has passed since last update check
+        metadata = self.core.memory._read_metadata()
+        last_check_str = metadata.get("last_update_check")
+        now = datetime.now()
+        if last_check_str:
+            try:
+                last_check = datetime.fromisoformat(last_check_str)
+                if now - last_check < timedelta(days=2):
+                    # Less than 2 days: skip the check, just return cached commit hash
+                    commit_hash = metadata.get("commit_hash")
+                    updates_available = metadata.get("updates_available") == "true"
+                    return updates_available, commit_hash
+            except (ValueError, TypeError):
+                pass
+
         commit_hash = None
         updates_available = False
         if git_dir.exists():
@@ -303,6 +320,13 @@ class Agent:
                             pass
             except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
                 pass
+
+        # Persist the check time and results
+        metadata["last_update_check"] = now.isoformat()
+        if commit_hash:
+            metadata["commit_hash"] = commit_hash
+        metadata["updates_available"] = "true" if updates_available else "false"
+        self.core.memory._write_metadata(metadata)
 
         return updates_available, commit_hash
         
