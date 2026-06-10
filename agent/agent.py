@@ -264,6 +264,48 @@ class Agent:
                     lexer=PygmentsLexer(MarkdownLexer),
                     bottom_toolbar=prompt_toolbar,
         )
+
+    def _check_updates(self, git_dir, repo_dir):
+        commit_hash = None
+        updates_available = False
+        if git_dir.exists():
+            try:
+                # Get current HEAD commit short hash
+                result = subprocess.run(
+                    ["git", "-C", str(repo_dir), "rev-parse", "--short", "HEAD"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0:
+                    commit_hash = result.stdout.strip()
+
+                # Check if there are remote updates by fetching (quiet) and comparing
+                # Only do this if we have a remote configured
+                result = subprocess.run(
+                    ["git", "-C", str(repo_dir), "remote"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    # Fetch quietly (suppress stderr to avoid cluttering output)
+                    subprocess.run(
+                        ["git", "-C", str(repo_dir), "fetch", "--quiet"],
+                        capture_output=True, timeout=15
+                    )
+                    # Check if HEAD differs from tracking branch
+                    result = subprocess.run(
+                        ["git", "-C", str(repo_dir), "rev-list", "--count", "HEAD..@{upstream}"],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if result.returncode == 0:
+                        try:
+                            behind_count = int(result.stdout.strip())
+                            updates_available = behind_count > 0
+                        except ValueError:
+                            pass
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                pass
+
+        return updates_available, commit_hash
+        
         
     def run_interactive(self):
         """Run the agent in interactive mode."""
@@ -311,43 +353,7 @@ class Agent:
         repo_dir = agent_dir.parent  # ~/Projects/wisemonkey/
         git_dir = repo_dir / ".git"
 
-        commit_hash = None
-        updates_available = False
-        if git_dir.exists():
-            try:
-                # Get current HEAD commit short hash
-                result = subprocess.run(
-                    ["git", "-C", str(repo_dir), "rev-parse", "--short", "HEAD"],
-                    capture_output=True, text=True, timeout=5
-                )
-                if result.returncode == 0:
-                    commit_hash = result.stdout.strip()
-
-                # Check if there are remote updates by fetching (quiet) and comparing
-                # Only do this if we have a remote configured
-                result = subprocess.run(
-                    ["git", "-C", str(repo_dir), "remote"],
-                    capture_output=True, text=True, timeout=5
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    # Fetch quietly (suppress stderr to avoid cluttering output)
-                    subprocess.run(
-                        ["git", "-C", str(repo_dir), "fetch", "--quiet"],
-                        capture_output=True, timeout=15
-                    )
-                    # Check if HEAD differs from tracking branch
-                    result = subprocess.run(
-                        ["git", "-C", str(repo_dir), "rev-list", "--count", "HEAD..@{upstream}"],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    if result.returncode == 0:
-                        try:
-                            behind_count = int(result.stdout.strip())
-                            updates_available = behind_count > 0
-                        except ValueError:
-                            pass
-            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-                pass
+        updates_available, commit_hash = self._check_updates(git_dir, repo_dir)
 
         version_str = f"[accent]Wisemonkey[/accent] [dim]v{pkg_version}[/dim]"
         if commit_hash:
