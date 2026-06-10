@@ -204,8 +204,9 @@ class Config:
         
 
     def to_dict(self):
-        """Return the full configuration as a dictionary."""
-        return self._config.copy()
+        """Return the full configuration as a dictionary (deep copy)."""
+        import copy
+        return copy.deepcopy(self._config)
 
     def reset(self):
         """Reset configuration to defaults."""

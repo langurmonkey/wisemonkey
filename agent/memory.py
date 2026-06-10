@@ -138,7 +138,7 @@ class Memory:
     def set_user_profile(self, data):
         """Update the in-memory user profile. Call save() to persist."""
         if isinstance(data, dict):
-            self._user_profile = data
+            self._user_profile = {**self._user_profile, **data}
         else:
             self._user_profile = {**self._user_profile, **data}
 
@@ -279,6 +279,7 @@ class ChatMemory:
     
     def save(self):
         """Persist in-memory state to disk."""
+        self._chat_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self._chat_path, "w") as f:
             json.dump({"exchanges": self._exchanges}, f, indent=2)
     
