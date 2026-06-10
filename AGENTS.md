@@ -108,6 +108,46 @@ Run `wisemonkey --onboard` for interactive configuration.
 - Build: `uv build`
 - Entry point: `agent.__main__:main` → `wisemonkey` CLI command
 
+## Testing
+
+Tests use the standard library `unittest` framework. Test files live in `tests/` at the project root, each mirroring the source module it tests.
+
+### Test Structure
+
+```
+tests/
+├── __init__.py
+├── conftest.py          # Shared fixtures (mock config, temp dirs, singleton resets)
+├── test_config.py       # Config singleton, load/save, dot-notation get/set
+├── test_core.py         # Workspace root finding, context file loading, prompt building
+├── test_memory.py       # Memory, ChatMemory persistence and trimming
+├── test_skills.py       # SkillLoader frontmatter parsing, load_all
+└── test_tools.py        # Tool registration, discovery, execution
+```
+
+### Running Tests
+
+```bash
+# Run all tests
+python -m unittest discover -s tests -v
+
+# Run a specific test file
+python -m unittest tests.test_core -v
+
+# Run a specific test class
+python -m unittest tests.test_core.TestFindWorkspaceRoot -v
+
+# Run a single test
+python -m unittest tests.test_core.TestFindWorkspaceRoot.test_finds_agents_md_in_parent -v
+```
+
+### Key Patterns
+
+- **Reset singletons** — `Config` and `Memory` are singletons; reset them in `setUp`/`tearDown` or via fixtures (`Config._instance = None`, `Memory._instance = None`).
+- **Use `tempfile.mkdtemp()`** — each test gets its own session directory for isolation.
+- **Mock the LLM router** — never hit real API endpoints in tests.
+- **`conftest.py`** — place shared fixtures here (temp dirs, mock config, singleton resets).
+
 ## Conventions
 
 - Use `pathlib.Path` for filesystem operations
