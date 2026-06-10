@@ -12,6 +12,7 @@ import time
 import tiktoken
 
 from enum import Enum
+from pathlib import Path
 
 from agent.config import get_config, get_mcp_config_path
 from agent.memory import Memory
@@ -82,9 +83,43 @@ class Core:
         if self.mcp:
             self.mcp.stop_all()
 
+    def _find_agents_md(self, start: Path | None = None) -> Path | None:
+        """Search for AGENTS.md starting from start (or cwd) and walking up.
+
+        Returns the path to AGENTS.md if found, or None if the filesystem
+        root is reached without finding one.
+        """
+        current = (start or Path.cwd()).resolve()
+        for parent in [current, *current.parents]:
+            candidate = parent / "AGENTS.md"
+            if candidate.is_file():
+                return candidate
+        return None
+
+    def _load_agents_md(self) -> str:
+        """Load and cache AGENTS.md content.
+
+        Returns the file content as a string, or an empty string if not found.
+        """
+        if not hasattr(self, "_agents_md_cache"):
+            path = self._find_agents_md()
+            if path:
+                try:
+                    self._agents_md_cache = path.read_text(encoding="utf-8")
+                except OSError:
+                    self._agents_md_cache = ""
+            else:
+                self._agents_md_cache = ""
+        return self._agents_md_cache
+
     def _build_system_prompt(self):
         """Build the system prompt with personality, skills, and memory."""
         parts = [self.system_prompt]
+
+        # Add AGENTS.md workspace instructions
+        agents_md = self._load_agents_md()
+        if agents_md:
+            parts.append(f"## Workspace Instructions (AGENTS.md)\n{agents_md}")
 
         # Add formatted memory
         # Only user profile, no notes
