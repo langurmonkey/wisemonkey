@@ -122,7 +122,10 @@ agent:
   # Display formatted output at the end of generation
   markdown: false
   # Length of chat history kept for context, in characters
-  max_chat_history: 128000
+  max_chat_history: 320000
+  # Context files to load into the system prompt (relative to workspace root)
+  context_files:
+    - AGENTS.md
   # Enable vi mode input
   vi_mode: false
 ```
