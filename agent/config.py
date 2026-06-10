@@ -84,6 +84,7 @@ def _get_defaults():
             "system_prompt": "You are a helpful assistant.",
             "markdown": False,
             "max_chat_history": 128000,
+            "context_files": ["AGENTS.md"],
             "vi_mode": False,
         },
     }

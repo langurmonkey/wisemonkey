@@ -83,43 +83,54 @@ class Core:
         if self.mcp:
             self.mcp.stop_all()
 
-    def _find_agents_md(self, start: Path | None = None) -> Path | None:
-        """Search for AGENTS.md starting from start (or cwd) and walking up.
+    def _find_workspace_root(self, start: Path | None = None) -> Path:
+        """Search for context files starting from start (or cwd) and walking up.
 
-        Returns the path to AGENTS.md if found, or None if the filesystem
-        root is reached without finding one.
+        Returns the deepest directory that contains at least one configured
+        context file, or ``start`` (or cwd) if none are found.
         """
+        context_files = self.config.get("agent.context_files", ["AGENTS.md"])
         current = (start or Path.cwd()).resolve()
         for parent in [current, *current.parents]:
-            candidate = parent / "AGENTS.md"
-            if candidate.is_file():
-                return candidate
-        return None
+            for name in context_files:
+                if (parent / name).is_file():
+                    return parent
+        return current
 
-    def _load_agents_md(self) -> str:
-        """Load and cache AGENTS.md content.
+    def _load_context_files(self) -> str:
+        """Load and cache the contents of all configured context files.
 
-        Returns the file content as a string, or an empty string if not found.
+        Returns the concatenated file contents separated by headings, or an
+        empty string if none are found.
         """
-        if not hasattr(self, "_agents_md_cache"):
-            path = self._find_agents_md()
-            if path:
+        if hasattr(self, "_context_files_cache"):
+            return self._context_files_cache
+
+        context_files = self.config.get("agent.context_files", ["AGENTS.md"])
+        workspace_root = self._find_workspace_root()
+
+        parts: list[str] = []
+        for name in context_files:
+            path = workspace_root / name
+            if path.is_file():
                 try:
-                    self._agents_md_cache = path.read_text(encoding="utf-8")
+                    content = path.read_text(encoding="utf-8")
                 except OSError:
-                    self._agents_md_cache = ""
-            else:
-                self._agents_md_cache = ""
-        return self._agents_md_cache
+                    continue
+                if content:
+                    parts.append(f"## Workspace Instructions ({name})\n{content}")
+
+        self._context_files_cache = "\n\n".join(parts) if parts else ""
+        return self._context_files_cache
 
     def _build_system_prompt(self):
         """Build the system prompt with personality, skills, and memory."""
         parts = [self.system_prompt]
 
-        # Add AGENTS.md workspace instructions
-        agents_md = self._load_agents_md()
-        if agents_md:
-            parts.append(f"## Workspace Instructions (AGENTS.md)\n{agents_md}")
+        # Add workspace context files
+        context = self._load_context_files()
+        if context:
+            parts.append(context)
 
         # Add formatted memory
         # Only user profile, no notes
