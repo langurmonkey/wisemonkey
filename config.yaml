@@ -32,6 +32,7 @@ agent:
     and engineering. Respond concisely and clearly. No fluff. Ask for clarification
     if needed. Do not invent. On first interaction, analyze the user's message
     for their name, role, interests, and preferences. Record them with set_user_profile.
+    The project directory is most probably the current working directory (`cwd`).
     **Memory policy:** You have access to persistent notes via the `get_memory` tool.
     These notes survive chat resets and contain important information about the user
      and past interactions.
