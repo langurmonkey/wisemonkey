@@ -59,3 +59,44 @@ def collapse_none_dicts(obj):
         # Single leaf: keep as dict so NestedCompleter works.
 
     return collapsed
+
+def pretty_timedelta(delta):
+    """
+    Pretty printing a `timedelta` object form `datetime` Python module
+        
+    Acknowledgements: 
+    @thatalextaylor for his earlier version:
+    https://gist.github.com/thatalextaylor/7408395
+    That I used to modify the script.
+    Args:
+        delta -- `datatime` Python time delta object
+    Returns:
+        None -- just a printing function -- works better with Jupyter Notebook
+    """
+    timedelta_seconds = delta.total_seconds()
+    
+    # Seconds will be int-s, timedelta_seconds stores also decimal places
+    seconds = timedelta_seconds
+    
+    # Can be negative
+    sign_string = '-' if seconds < 0 else ''
+    
+    seconds = abs(int(seconds))
+ 
+    days, seconds = divmod(seconds, 86400)
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+    # Skipping seconds, as the next divmod is 1, so the
+    # seconds stay the same.
+    _, seconds_decimal = divmod(timedelta_seconds, 1)
+    milliseconds = '%.2f' % float(seconds_decimal*1000)
+    if days > 0:
+        return '%s%dd %dh %dm %ds' % (sign_string, days, hours, minutes, seconds)
+    elif hours > 0:
+        return '%s%dh %dm %ds' % (sign_string, hours, minutes, seconds)
+    elif minutes > 0:
+        return '%s%dm %ds' % (sign_string, minutes, seconds)
+    elif seconds > 0:
+        return '%s%ds %sms' % (sign_string, seconds, milliseconds)
+    elif milliseconds > 0:
+        return '%s%ds' % (sign_string, milliseconds)

@@ -6,6 +6,7 @@ handling to the core.
 
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 from functools import partial
 
@@ -19,7 +20,7 @@ from pubsub import pub
 
 from agent.core import Core, Stage, TurnCancelled
 from agent.commands import registry
-from agent.utils import contractuser, add_command, collapse_none_dicts
+from agent.utils import contractuser, add_command, collapse_none_dicts, pretty_timedelta
 from agent.console import print, err, ok, info, newline, console
 
 # Try to import prompt_toolkit for rich input; fall back to plain input.
@@ -30,7 +31,7 @@ try:
     from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
     from prompt_toolkit.styles import Style
     from prompt_toolkit.completion import NestedCompleter, PathCompleter, Completer
-    from prompt_toolkit.clipboard import InMemoryClipboard, ClipboardData
+    from prompt_toolkit.clipboard import InMemoryClipboard
     from prompt_toolkit.formatted_text import HTML
     from prompt_toolkit.keys import Keys
     from prompt_toolkit.lexers import PygmentsLexer
@@ -312,33 +313,37 @@ class Agent:
 
         # Determine the repository directory (where this source file lives, or the installed package)
         # Prefer the source tree over the installed package location
+        now = datetime.now()
         agent_dir = Path(__file__).resolve().parent
         repo_dir = agent_dir.parent
 
-        updates_available, commit_hash = self._check_updates(repo_dir)
+        updates_available, commit_hash, last_check = self._check_updates(repo_dir)
+        d_check = pretty_timedelta(now - last_check)
 
         version_str = f"[accent]Wisemonkey[/accent] [dim]v{pkg_version}[/dim]"
         if commit_hash:
             version_str += f"  [dim]commit: {commit_hash}[/dim]"
         info(f"{version_str}")
         if updates_available:
-            print("   [warn]⟳ Updates available![/warn]")
+            print(f"   [warn]⟳ Updates available![/warn] [weak](last check: {d_check} ago)[/weak]")
             print("     [weak]run [accent]wisemonkey -u[/accent] to update[/weak]")
         elif commit_hash:
-            print("   [dim]✓ Up to date[/dim]")
+            print(f"   [dim]✓ Up to date[/dim] [weak](last check: {d_check} ago)[/weak]")
 
         newline()
 
         # Print session
+        d_created = pretty_timedelta(now - created)
+        d_accessed = pretty_timedelta(now - accessed)
         if new_session:
             info(f"Session created: [accent-bold]'{self.core.memory.session}'[/accent-bold]")
         else:
             info(f"Session restored: [accent-bold]'{self.core.memory.session}'[/accent-bold]")
         print(f"[dim]   location:      {contractuser(session_dir)}[/dim]")
         print(f"[dim]   working dir:   {working_dir}[/dim]")
-        print(f"[dim]   created:       {created}[/dim]")
+        print(f"[dim]   created:       {d_created} ago[/dim]")
         if not new_session:
-            print(f"[dim]   last accessed: {accessed}[/dim]")
+            print(f"[dim]   last accessed: {d_accessed} ago[/dim]")
         console.rule(style="weak")
 
         # Print history

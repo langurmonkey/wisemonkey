@@ -11,7 +11,10 @@ from pathlib import Path
 
 from agent.config import BASE_CONFIG_DIR
 
+# Update metadata file
 UPDATES_FILE = BASE_CONFIG_DIR / ".updates.yml"
+# Update check interval in days
+UPDATE_CHECK_INTERVAL = 2
 
 
 class UpdatesManager:
@@ -71,10 +74,10 @@ class UpdatesManager:
         """
         now = datetime.now()
 
-        # Skip the fetch check if we've checked within the last 2 days
+        # Skip the fetch check if we've checked within the last $UPDATE_CHECK_INTERVAL days
         last_check = self.get_last_check()
-        if last_check and now - last_check < timedelta(days=2):
-            return self.get_updates_available(), self.get_commit_hash()
+        if last_check and now - last_check < timedelta(days=UPDATE_CHECK_INTERVAL):
+            return self.get_updates_available(), self.get_commit_hash(), last_check
 
         git_dir = Path(repo_dir) / ".git"
         commit_hash = None
@@ -115,13 +118,14 @@ class UpdatesManager:
                 pass
 
         # Persist results globally
+        last_check = now.isoformat()
         self._data["last_update_check"] = now.isoformat()
         if commit_hash:
             self._data["commit_hash"] = commit_hash
         self._data["updates_available"] = updates_available
         self._save()
 
-        return updates_available, commit_hash
+        return updates_available, commit_hash, last_check
 
     def perform_update(self):
         """Pull the latest code from upstream and reinstall.
