@@ -1,7 +1,7 @@
 import re
 from pathlib import Path
 
-def contractuser(path_str: str) -> str:
+def contractuser(path_str: str | Path) -> str:
     """
     Contracts the user home directory in a string to ~
     """
@@ -89,7 +89,7 @@ def pretty_timedelta(delta):
     # Skipping seconds, as the next divmod is 1, so the
     # seconds stay the same.
     _, seconds_decimal = divmod(timedelta_seconds, 1)
-    milliseconds = '%.2f' % float(seconds_decimal*1000)
+    milliseconds = float(seconds_decimal*1000)
     if days > 0:
         return '%s%dd %dh %dm %ds' % (sign_string, days, hours, minutes, seconds)
     elif hours > 0:

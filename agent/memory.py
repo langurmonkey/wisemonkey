@@ -42,6 +42,11 @@ class Memory:
     state is shared between the agent and tool handlers.
     """
 
+    metadata_file = Path()
+    _user_profile_path = Path()
+    _notes_path = Path()
+    _notes = {}
+
     def __new__(cls, max_chat_history=300000, session_dir=None, session='default'):
         global _instance
         if _instance is None:

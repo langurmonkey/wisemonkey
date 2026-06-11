@@ -71,7 +71,7 @@ class Agent:
             case _:
                 raise RuntimeError(f"Prompt callback only has Start and Stop stages: {stage}")
 
-    def reasoning_callback(self, stage:Stage, content:str=None, reasoning_visible:bool=True):
+    def reasoning_callback(self, stage:Stage, content:str="", reasoning_visible:bool=True):
         """Called when starting, processing, and ending the reasoning stage."""
         match stage.value:
             case Stage.START.value:
@@ -91,7 +91,7 @@ class Agent:
                     self.spinner_thinking = None
                 ok("💡 Done thinking\n")
 
-    def content_callback(self, content: str = None):
+    def content_callback(self, content:str=""):
         """Called when new chunks arrive in streaming mode."""
         print(escape(content), end="")
 
@@ -141,7 +141,7 @@ class Agent:
             if buffer.text:
                 # First press with text: clear the buffer
                 buffer.reset()
-                self._last_ctrl_c_time = now
+                self._last_ctrl_c_time = int(now)
             else:
                 # Buffer is empty: check for double-tap
                 if now - self._last_ctrl_c_time < 1.0:
@@ -150,7 +150,7 @@ class Agent:
                 else:
                     # Single press on empty: just reset and record time
                     buffer.reset()
-                    self._last_ctrl_c_time = now
+                    self._last_ctrl_c_time = int(now)
         def _handle_paste(text):
             """Intercept large pastes and save them to a file."""
             if len(text) > PASTE_THRESHOLD:
@@ -197,12 +197,12 @@ class Agent:
                 self.slash_completer = slash_comp
                 self.path_completer = path_comp
 
-            def get_completions(self, document, completion_context):
+            def get_completions(self, document, complete_event):
                 text = document.text_before_cursor
 
                 # Slash commands: always check first when line starts with '/'
                 if text.startswith('/'):
-                    cmds = list(self.slash_completer.get_completions(document, completion_context))
+                    cmds = list(self.slash_completer.get_completions(document, complete_event))
                     if cmds:
                         return cmds
                     # If no slash completions match, fall through to path check below
@@ -222,7 +222,7 @@ class Agent:
                         text=last_word_stripped,
                         cursor_position=len(last_word_stripped),
                     )
-                    path_completions = list(self.path_completer.get_completions(fake_doc, completion_context))
+                    path_completions = list(self.path_completer.get_completions(fake_doc, complete_event))
                     if path_completions:
                         offset = len(text) - len(last_word_stripped)
                         for c in path_completions:
@@ -231,10 +231,10 @@ class Agent:
 
                 # If the whole line starts with a path prefix (no command), use PathCompleter
                 if text.startswith('~') or text.startswith('.') or text.startswith('..'):
-                    return self.path_completer.get_completions(document, completion_context)
+                    return self.path_completer.get_completions(document, complete_event)
 
                 # Fall back to path completer
-                return self.path_completer.get_completions(document, completion_context)
+                return self.path_completer.get_completions(document, complete_event)
 
         completer = HybridCompleter(slash_completer, path_completer)
 
@@ -294,7 +294,10 @@ class Agent:
  ▀██▀██▀  ██ █████▀ ██▄▄▄▄ ██    ██ ▀████▀ ██   ██ ██ ▀█▄ ██▄▄▄▄   ██   
             '''
         title = Align.center(f"[title]{monkee}{wisemonkey}[/title]", vertical='middle')
-        print(Panel(title, box=box.HEAVY, border_style="title", subtitle="Monkee at your service!"))
+        print(Panel(title,
+                    box=box.HEAVY,
+                    border_style="title",
+                    subtitle="Monkee at your service!"))
         newline()
 
         new_session = self.core.memory.session_is_new
@@ -333,8 +336,8 @@ class Agent:
         newline()
 
         # Print session
-        d_created = pretty_timedelta(now - created)
-        d_accessed = pretty_timedelta(now - accessed)
+        d_created = pretty_timedelta(now - created) if created else None
+        d_accessed = pretty_timedelta(now - accessed) if accessed else None
         if new_session:
             info(f"Session created: [accent-bold]'{self.core.memory.session}'[/accent-bold]")
         else:
@@ -413,10 +416,10 @@ class Agent:
 
                             cont = content if content else Markdown(md)
                             print(Panel(cont,
-                                                border_style="output-frame",
-                                                title=f"{command.name} {param_list}",
-                                                subtitle=f"{command.name} {param_list}",
-                                                highlight=True))
+                                        border_style="output-frame",
+                                        title=f"{command.name} {param_list}",
+                                        subtitle=f"{command.name} {param_list}",
+                                        highlight=True))
 
                         # Short status message
                         if msg:

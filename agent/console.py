@@ -51,27 +51,37 @@ err_console = Console(theme=monkee_theme, stderr=True)
 def newline():
     console.print()
 
-def print(msg:str=None, end:str='\n', justify:str=None):
+def print(msg,
+            end='\n',
+            justify=None):
     console.print(msg,
                   end=end,
                   justify=justify)
 
-def err(msg:str, end:str='\n', justify:str=None):
+def err(msg,
+            end='\n',
+            justify=None):
     err_console.print(f"[err]⨯[/err] {msg}",
                       end=end,
                       justify=justify)
 
-def ok(msg:str, end:str='\n', justify:str=None):
+def ok(msg,
+            end='\n',
+            justify=None):
     console.print(f"[ok]✓[/ok] {msg}",
                   end=end,
                   justify=justify)
 
-def info(msg:str, end:str='\n', justify:str=None):
+def info(msg,
+            end='\n',
+            justify=None):
     console.print(f"[info]⇨[/info] {msg}",
                   end=end,
                   justify=justify)
 
-def warn(msg:str, end:str='\n', justify:str=None):
+def warn(msg,
+            end='\n',
+            justify=None):
     err_console.print(f"[warn]⚠[/warn] {msg}",
                       end=end,
                       justify=justify)
