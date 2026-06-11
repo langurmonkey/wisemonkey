@@ -5,7 +5,6 @@ handling to the core.
 """
 
 import os
-import subprocess
 import time
 from pathlib import Path
 from functools import partial
@@ -265,70 +264,10 @@ class Agent:
                     bottom_toolbar=prompt_toolbar,
         )
 
-    def _check_updates(self, git_dir, repo_dir):
-        from datetime import datetime, timedelta
-
-        # Check if enough time has passed since last update check
-        metadata = self.core.memory._read_metadata()
-        last_check_str = metadata.get("last_update_check")
-        now = datetime.now()
-        if last_check_str:
-            try:
-                last_check = datetime.fromisoformat(last_check_str)
-                if now - last_check < timedelta(days=2):
-                    # Less than 2 days: skip the check, just return cached commit hash
-                    commit_hash = metadata.get("commit_hash")
-                    updates_available = metadata.get("updates_available") == "true"
-                    return updates_available, commit_hash
-            except (ValueError, TypeError):
-                pass
-
-        commit_hash = None
-        updates_available = False
-        if git_dir.exists():
-            try:
-                # Get current HEAD commit short hash
-                result = subprocess.run(
-                    ["git", "-C", str(repo_dir), "rev-parse", "--short", "HEAD"],
-                    capture_output=True, text=True, timeout=5
-                )
-                if result.returncode == 0:
-                    commit_hash = result.stdout.strip()
-
-                # Check if there are remote updates by fetching (quiet) and comparing
-                # Only do this if we have a remote configured
-                result = subprocess.run(
-                    ["git", "-C", str(repo_dir), "remote"],
-                    capture_output=True, text=True, timeout=5
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    # Fetch quietly (suppress stderr to avoid cluttering output)
-                    subprocess.run(
-                        ["git", "-C", str(repo_dir), "fetch", "--quiet"],
-                        capture_output=True, timeout=15
-                    )
-                    # Check if HEAD differs from tracking branch
-                    result = subprocess.run(
-                        ["git", "-C", str(repo_dir), "rev-list", "--count", "HEAD..@{upstream}"],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    if result.returncode == 0:
-                        try:
-                            behind_count = int(result.stdout.strip())
-                            updates_available = behind_count > 0
-                        except ValueError:
-                            pass
-            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-                pass
-
-        # Persist the check time and results
-        metadata["last_update_check"] = now.isoformat()
-        if commit_hash:
-            metadata["commit_hash"] = commit_hash
-        metadata["updates_available"] = "true" if updates_available else "false"
-        self.core.memory._write_metadata(metadata)
-
-        return updates_available, commit_hash
+    def _check_updates(self, repo_dir):
+        from agent.update import UpdatesManager
+        um = UpdatesManager()
+        return um.check_updates(repo_dir)
         
         
     def run_interactive(self):
@@ -375,9 +314,8 @@ class Agent:
         # Prefer the source tree over the installed package location
         agent_dir = Path(__file__).resolve().parent
         repo_dir = agent_dir.parent
-        git_dir = repo_dir / ".git"
 
-        updates_available, commit_hash = self._check_updates(git_dir, repo_dir)
+        updates_available, commit_hash = self._check_updates(repo_dir)
 
         version_str = f"[accent]Wisemonkey[/accent] [dim]v{pkg_version}[/dim]"
         if commit_hash:

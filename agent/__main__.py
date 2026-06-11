@@ -10,7 +10,6 @@ import argparse
 import sys
 import os
 import traceback
-import subprocess
 
 from importlib.metadata import version as get_version
 from importlib.metadata import metadata
@@ -91,15 +90,8 @@ def main():
 
     # Handle --update
     if args.update:
-        XDG_DATA = xdg_data_home() or str(Path.home() / ".local" / "share")
-        install_dir = f"{XDG_DATA}/wisemonkey/repository"
-        if not Path(install_dir).exists():
-            print(f"wisemonkey not installed. Installing to {install_dir}...")
-            subprocess.run(['bash', '-c', f'BRANCH=main INSTALL_DIR="{install_dir}" curl -fsSL https://codeberg.org/langurmonkey/wisemonkey/raw/branch/main/install.sh | bash'], check=True)
-        else:
-            print(f"Updating wisemonkey in {install_dir}...")
-            subprocess.run(['git', 'pull'], cwd=install_dir, check=True)
-            print("Update complete.")
+        from agent.update import UpdatesManager
+        UpdatesManager().perform_update()
         return
 
     # Handle --onboard
