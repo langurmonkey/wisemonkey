@@ -8,34 +8,37 @@ Wisemonkey is a simple, extensible CLI AI agent for Linux and macOS terminals. I
 
 ```
 wisemonkey/
-├── agent/                  # Core agent code
-│   ├── __main__.py         # CLI entry point, argument parsing
-│   ├── agent.py            # Main agent loop, prompt handling, key bindings
-│   ├── commands.py         # Slash commands (/embed, /quit, /config, etc.)
-│   ├── config.py           # Configuration loading and handling
-│   ├── console.py          # Rich console output with themed formatting
-│   ├── core.py             # Core logic: system prompt, LLM calls, tool dispatch
-│   ├── mcp.py              # MCP server support
-│   ├── memory.py           # Session memory (user profile, notes, chat history)
-│   ├── router.py           # API router (OpenAI, Ollama, Anthropic)
-│   ├── skills.py           # Skill loading from markdown files
-│   ├── tools.py            # Tool definitions and registration
-│   ├── utils.py            # Utility functions
-│   └── vectorstore.py      # Vector store wrapper
-├── tools/                  # Tool implementations available to the model
-│   ├── basic.py            # Basic/example tools
-│   ├── files.py            # File read/write tools
-│   ├── memory.py            # search_knowledge tool
-│   ├── network.py          # URL fetching
-│   ├── terminal.py         # Shell command execution
-│   └── vectorstore.py      # Vector store tool handler
-├── skills/                 # Skill definitions (.md files with YAML frontmatter)
+├── agent/                  # Core agent code.
+│   ├── agent.py            # Main agent loop, prompt handling, key bindings.
+│   ├── commands.py         # Slash commands (e.g. /embed, /quit).
+│   ├── config.py           # Configuration loading and handling.
+│   ├── console.py          # Rich console output with themed formatting.
+│   ├── core.py             # Core agent functions, like API connection and tool calls.
+│   ├── mcp.py              # MCP server support.
+│   ├── memory.py           # Session memory, paste file creation.
+│   ├── router.py           # API router implementation for OpenAI, Ollama, and Anthropic.
+│   ├── skills.py           # Skill loading and management.
+│   ├── tools.py            # Tool definitions.
+│   ├── update.py           # Update management.
+│   ├── utils.py            # Utility functions.
+│   └── vectorstore.py      # Vector store wrapper.
+├── tools/                  # Tool implementations available to the model.
+│   ├── basic.py            # Basic and example tools.
+│   ├── files.py            # File read/write tools.
+│   ├── memory.py            # search_knowledge tool.
+│   ├── network.py          # URL fetching.
+│   ├── terminal.py         # Shell command execution.
+│   └── vectorstore.py      # Vector store tool handler.
+├── skills/                 # Skill definitions. Add new skills here.
 │   ├── example.md
 │   └── rolldice.md
-├── config.yaml             # Default configuration file
-├── pyproject.toml          # Project metadata and dependencies
-├── install.sh              # One-line installer script
-└── .env.example            # Example environment variables
+├── tests/                  # Contains all `unittest` tests.
+│   └── [...]
+├── config.yaml             # Default config file.
+├── README.md
+├── pyproject.toml
+├── install.sh              # Installer script.
+└── .env.example
 ```
 
 ## Key Architectural Patterns

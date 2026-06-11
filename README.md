@@ -88,47 +88,9 @@ uv run wisemonkey
 
 ## Configuration
 
-You can configure the agent interactively before the first run with `wisemonkey --onboard`.
+You can configure the agent interactively before the first run with `wisemonkey --onboard`. On first run, the configuration file is created in `$XDG_CONFIG_HOME/wisemonkey/config.yaml` from the default configuration (`config.yaml`) in the root of this repository.
 
-In any case, the configuration is created on first run in `$XDG_CONFIG_HOME/wisemonkey/config.yaml`.
-
-It works with any OpenAI-compatible endpoint, so LM Studio, Ollama, OpenWebUI, or any other service you configure. Here are the default values:
-
-```yaml
-# Wisemonkey Configuration
-model:
-  # openai, anthropic, ollama, lmstudio, or generic
-  provider: generic
-  # Model name
-  name: qwen/qwen3.6-35b-a3b
-  # URL of OpenAI endpoint
-  base_url: http://127.0.0.1:1234/v1
-  # Temperature setting for inference
-  temperature: 0.8
-  # The reasoning effort. 'none' to disable reasoning
-  reasoning_effort: medium
-  # Show the model internal thinking
-  reasoning_visible: False
-
-embedding:
-  # Embedding model name
-  name: qwen/qwen3-embedding-0.6b-gguf
-  # URL of the OpenAI endpoint for embeddings
-  base_url: http://127.0.0.1:1234/v1
-
-agent:
-  max_turns: 50
-  system_prompt: You are a helpful assistant, expert in many domains of science and engineering. Respond concisely and clearly. No fluff. Ask for clarification if needed. Do not invent. On first interaction, analyze the user's message for their name, role, interests, and preferences. Record them with set_user_profile.
-  # Display formatted output at the end of generation
-  markdown: false
-  # Length of chat history kept for context, in characters
-  max_chat_history: 320000
-  # Context files to load into the system prompt (relative to workspace root)
-  context_files:
-    - AGENTS.md
-  # Enable vi mode input
-  vi_mode: false
-```
+Additionally, the configuration directory holds the `mcp.json` (see next section), and the `.updates.yml`, which holds information about the last update time and status.
 
 ### Model Context Protocol (MCP)
 
@@ -262,6 +224,7 @@ wisemonkey/
 │   ├── router.py           # API router implementation for OpenAI, Ollama, and Anthropic.
 │   ├── skills.py           # Skill loading and management.
 │   ├── tools.py            # Tool definitions.
+│   ├── update.py           # Update management.
 │   ├── utils.py            # Utility functions.
 │   └── vectorstore.py      # Vector store wrapper.
 ├── tools/                  # Tool implementations available to the model.
@@ -274,6 +237,8 @@ wisemonkey/
 ├── skills/                 # Skill definitions. Add new skills here.
 │   ├── example.md
 │   └── rolldice.md
+├── tests/                  # Contains all `unittest` tests.
+│   └── [...]
 ├── config.yaml             # Default config file.
 ├── README.md
 ├── pyproject.toml
