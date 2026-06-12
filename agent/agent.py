@@ -95,7 +95,7 @@ class Agent:
         """Called when new chunks arrive in streaming mode."""
         print(escape(content), end="")
 
-    def tool_callback(self, tool_name: str):
+    def tool_callback(self, tool_name: str, tool_args):
         newline()
         info(f"🛠️ [weak]Activating tool:[/weak]  [tool]{tool_name}[/tool]")
 
