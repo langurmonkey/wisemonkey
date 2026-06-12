@@ -1,12 +1,5 @@
 """Tests for agent/config.py — Config singleton, get/set, load/save, defaults."""
 
-import os
-import shutil
-import tempfile
-import yaml
-
-from pathlib import Path
-
 from tests.conftest import BaseTest
 from agent.config import Config, get_config
 

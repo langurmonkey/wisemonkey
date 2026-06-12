@@ -436,6 +436,9 @@ class ModelRouter:
         # Accumulate tool call inputs per block index as they stream in
         tool_input_buffers: dict[int, dict] = {}  # index -> {id, name, json_buf}
 
+        if self._anthropic_client is None:
+            raise RuntimeError("Anthropic client not initialised")
+
         with self._anthropic_client.messages.stream(**kwargs) as stream:
             for event in stream:
                 event_type = getattr(event, "type", None)
@@ -443,6 +446,9 @@ class ModelRouter:
                 # --- Thinking delta ---
                 if event_type == "content_block_delta":
                     delta = getattr(event, "delta", None)
+                    if not delta:
+                        continue
+
                     delta_type = getattr(delta, "type", None)
 
                     if delta_type == "thinking_delta":
@@ -474,6 +480,9 @@ class ModelRouter:
                 # --- Track tool block openings so we know id/name ---
                 elif event_type == "content_block_start":
                     block = getattr(event, "content_block", None)
+                    if not block:
+                        continue
+
                     if getattr(block, "type", None) == "tool_use":
                         tool_input_buffers[event.index] = {
                             "id": block.id,
@@ -515,6 +524,9 @@ class ModelRouter:
 
     def _anthropic_non_stream(self, kwargs):
         """Non-streaming call to Anthropic, returns _Response."""
+        if self._anthropic_client is None:
+            raise RuntimeError("Anthropic client not initialised")
+
         message = self._anthropic_client.messages.create(**kwargs)
         text = ""
         thinking_text = ""
@@ -587,6 +599,9 @@ class ModelRouter:
 
     def _ollama_stream(self, **kwargs):
         """Stream from Ollama, yielding _StreamChunk objects."""
+        if self._ollama_client is None:
+            raise RuntimeError("Ollama client not initialised")
+
         response = self._ollama_client.chat(stream=True, **kwargs)
         for part in response:
             delta = {}
@@ -633,6 +648,9 @@ class ModelRouter:
 
     def _ollama_non_stream(self, **kwargs):
         """Non-streaming call to Ollama, returns _Response."""
+        if self._ollama_client is None:
+            raise RuntimeError("Ollama client not initialised")
+
         response = self._ollama_client.chat(stream=False, **kwargs)
         msg = response.get("message", {})
         content = msg.get("content", "")
@@ -708,6 +726,9 @@ class ModelRouter:
                 ]
 
             elif self.provider == Provider.OLLAMA:
+                if self._ollama_client is None:
+                    raise RuntimeError("Ollama client not initialised")
+
                 models_raw = self._ollama_client.list()
                 models = []
                 for m in models_raw.get("models", []):
@@ -716,6 +737,9 @@ class ModelRouter:
                         models.append({"id": name})
 
             else:
+                if self._openai_client is None:
+                    raise RuntimeError("OpenAI client not initialised")
+
                 # OpenAI, LM Studio, Generic
                 response = self._openai_client.models.list()
                 models = [{"id": m.id} for m in response]

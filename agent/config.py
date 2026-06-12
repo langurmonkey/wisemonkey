@@ -80,6 +80,8 @@ class Config:
     Keeps configuration in memory with optional file persistence.
     """
 
+    _instance: "Config"
+
     def __new__(cls):
         if not hasattr(cls, "_instance"):
             cls._instance = super().__new__(cls)
@@ -215,11 +217,10 @@ class Config:
 # Module-level singleton access
 _config_instance = None
 
-
 def get_config():
     """Get the singleton Config instance."""
     global _config_instance
-    if _config_instance is None:
+    if not _config_instance:
         _config_instance = Config()
     return _config_instance
 

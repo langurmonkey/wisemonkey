@@ -30,12 +30,15 @@ def smart_cast(value, target_type):
         return ast.literal_eval(value)   # 'False' → False
     return target_type(value)            # '42' → 42, '3.14' → float, etc.
 
+def empty():
+    pass
+
 @dataclass(frozen=True)
 class Command:
     """A single slash command definition."""
     name: str
     description: str = ""
-    handler: Callable = None  # (agent, params: list[str]) -> str | None
+    handler: Callable = empty # (agent, params: list[str]) -> str | None
     aliases: list[str] = field(default_factory=list)
     examples: list[str] = field(default_factory=list)
 
@@ -52,13 +55,14 @@ class CommandRegistry:
         for alias in cmd.aliases:
             self._commands[alias] = cmd  # alias points to same Command
 
-    def lookup(self, tokens: list[str]) -> (Command, list[str]):
+    def lookup(self, tokens: list[str]) -> tuple[Command | None, list[str] | None]:
         """
         Look up a command by name or alias (case-insensitive).
 
         Returns:
-        - command: Command     - command instance
-        - tokens: list[str]    - command arguments as a token list
+        - command: Command or None     - command instance
+        - tokens: list[str] or None    - command arguments as a token list
+        -
         """
         if not tokens:
             return None, None
@@ -72,7 +76,7 @@ class CommandRegistry:
 
         return None, None
 
-    def execute(self, core, cmd: Command, params: list[str]) -> (bool, str, str, str, bool):
+    def execute(self, core, cmd: Command, params: list[str] | None) -> tuple[bool, str | None, str | None, str | None, bool]:
         """
         Execute a command.
 
@@ -93,7 +97,7 @@ class CommandRegistry:
         should_exit = msg in ("EXIT", "exit")
         return ok, msg, content, markdown, should_exit
 
-    def run_command(self, core, command: str) -> (bool, str, str, str, bool):
+    def run_command(self, core, command: str) -> tuple[bool, str | None, str | None, str | None, bool]:
         """
         Shortcut to run a command from a string.
 
@@ -192,7 +196,7 @@ def cmd(name: str,
       "Exit the agent",
       aliases=["/exit", "/q"]
 )
-def _cmd_quit(core, params) -> (bool, str, str, str):
+def _cmd_quit(core, params) -> tuple[bool, str | None, str | None, str | None]:
     return True, "EXIT", None, None
 
 
@@ -200,7 +204,7 @@ def _cmd_quit(core, params) -> (bool, str, str, str):
       "/reasoning",
        "Configure model reasoning",
 )
-def _cmd_reasoning(core, params) -> (bool, str, str, str):
+def _cmd_reasoning(core, params) -> tuple[bool, str | None, str | None, str | None]:
 
     if params:
         return False, no_params_error, None, None
@@ -252,7 +256,7 @@ def _cmd_reasoning(core, params) -> (bool, str, str, str):
       "/notes",
       "List all notes",
 )
-def _cmd_notes(core, params) -> (bool, str, str, str):
+def _cmd_notes(core, params) -> tuple[bool, str | None, str | None, str | None]:
     notes = core.memory.get_notes()
     buff = ""
     for note in notes:
@@ -267,7 +271,7 @@ def _cmd_notes(core, params) -> (bool, str, str, str):
           "/notes add This is my note   # Add a new note",
       ]
 )
-def _cmd_notes_add(core, params) -> (bool, str, str, str):
+def _cmd_notes_add(core, params) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         core.memory.add_note(" ".join(params))
         return True, "note added successfully", None, None
@@ -278,7 +282,7 @@ def _cmd_notes_add(core, params) -> (bool, str, str, str):
     "/session",
     "Print session information",
 )
-def _cmd_session(core, params) -> (bool, str, str, str):
+def _cmd_session(core, params) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
@@ -306,7 +310,7 @@ def _cmd_session(core, params) -> (bool, str, str, str):
         "/session clear 10     # Clear the 10 oldest chat exchanges of this session",
     ]
 )
-def _cmd_session_clear(core, params) -> (bool, str, str, str):
+def _cmd_session_clear(core, params) -> tuple[bool, str | None, str | None, str | None]:
     n = 0
     if params:
         try:
@@ -324,7 +328,7 @@ def _chat_memory(core, max_exchanges):
       "/session-agent",
       "Show the session agent memory contents (user profile and notes)",
 )
-def _cmd_session_agent(core, params) -> (bool, str, str, str):
+def _cmd_session_agent(core, params) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
@@ -343,7 +347,7 @@ def _cmd_session_agent(core, params) -> (bool, str, str, str):
           "/session chat 2   # Print last 2 interactions"
       ]
 )
-def _cmd_session_chat(core, params) -> (bool, str, str, str):
+def _cmd_session_chat(core, params) -> tuple[bool, str | None, str | None, str | None]:
     n = 0
     if params:
         try:
@@ -361,7 +365,7 @@ def _cmd_session_chat(core, params) -> (bool, str, str, str):
     "/session-compact",
     "Compact the session chat history by summarizing it into a shorter form."   
 )
-def _cmd_session_compact(core, params) -> (bool, str, str, str):
+def _cmd_session_compact(core, params) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
@@ -410,7 +414,7 @@ def _cmd_session_compact(core, params) -> (bool, str, str, str):
         "/embed ./notes.md",
     ]
 )
-def _cmd_embed(core, params) -> (bool, str, str, str):
+def _cmd_embed(core, params) -> tuple[bool, str | None, str | None, str | None]:
     if not params:
         return False, "please provide a file path", None, None
     
@@ -441,7 +445,7 @@ def _cmd_embed(core, params) -> (bool, str, str, str):
       "/tools",
       "List all available tools ⚙",
 )
-def _cmd_tools(core, params) -> (bool, str, str, str):
+def _cmd_tools(core, params) -> tuple[bool, str | None, str | None, str | None]:
     from agent.tools import get_tools_str
     return True, None, get_tools_str(), None
 
@@ -449,7 +453,7 @@ def _cmd_tools(core, params) -> (bool, str, str, str):
       "/tools-native",
       "List native tools ⚙",
 )
-def _cmd_tools_native(core, params) -> (bool, str, str, str):
+def _cmd_tools_native(core, params) -> tuple[bool, str | None, str | None, str | None]:
     from agent.tools import get_tools_str
     return True, None, get_tools_str(prefix="mcp_", contains=False), None
 
@@ -457,7 +461,7 @@ def _cmd_tools_native(core, params) -> (bool, str, str, str):
       "/tools-mcp",
       "List MCP tools ⚙",
 )
-def _cmd_tools_mcp(core, params) -> (bool, str, str, str):
+def _cmd_tools_mcp(core, params) -> tuple[bool, str | None, str | None, str | None]:
     from agent.tools import get_tools_str
     return True, None, get_tools_str(prefix="mcp_", contains=True), None
 
@@ -465,7 +469,7 @@ def _cmd_tools_mcp(core, params) -> (bool, str, str, str):
       "/skills",
       "List loaded skills ⚔",
 )
-def _cmd_skills(core, params) -> (bool, str, str, str):
+def _cmd_skills(core, params) -> tuple[bool, str | None, str | None, str | None]:
     return True, None, core.skills.get_skills_str(), None
 
 @cmd(
@@ -473,7 +477,7 @@ def _cmd_skills(core, params) -> (bool, str, str, str):
       "Configure the model to use",
       aliases=["/models"]
 )
-def _cmd_models(core, params) -> (bool, str, str, str):
+def _cmd_models(core, params) -> tuple[bool, str | None, str | None, str | None]:
     from agent.config import get_config
     from agent.router import Provider
     config = get_config()
@@ -541,7 +545,7 @@ def _cmd_models(core, params) -> (bool, str, str, str):
       "/url",
       "Configure the base URL",
 )
-def _cmd_url(core, params) -> (bool, str, str, str):
+def _cmd_url(core, params) -> tuple[bool, str | None, str | None, str | None]:
     from agent.config import get_config
     if params:
         return False, no_params_error, None, None
@@ -564,7 +568,7 @@ def _cmd_url(core, params) -> (bool, str, str, str):
       "/config-show",
        "Show current configuration",
 )
-def _cmd_config_show(core, params) -> (bool, str, str, str):
+def _cmd_config_show(core, params) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
@@ -575,7 +579,7 @@ def _cmd_config_show(core, params) -> (bool, str, str, str):
       "/config-edit",
        "Edit the configuration file with $EDITOR or $VISUAL",
 )
-def _cmd_config_edit(core, params) -> (bool, str, str, str):
+def _cmd_config_edit(core, params) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
@@ -593,7 +597,7 @@ def _cmd_config_edit(core, params) -> (bool, str, str, str):
     "Configure the agent interactively",
     aliases = ["/configure"],
 )
-def _cmd_config(core, params) -> (bool, str, str, str):
+def _cmd_config(core, params) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
@@ -611,7 +615,7 @@ def _cmd_config(core, params) -> (bool, str, str, str):
       "/mcp-edit",
        "Edit the mcp.json configuration file with $EDITOR or $VISUAL",
 )
-def _cmd_mcp_edit(core, params) -> (bool, str, str, str):
+def _cmd_mcp_edit(core, params) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
@@ -628,7 +632,7 @@ def _cmd_mcp_edit(core, params) -> (bool, str, str, str):
       "Show the current MCP configuration file",
       aliases = ["/mcp-show"],
 )
-def _cmd_mcp_show(core, params) -> (bool, str, str, str):
+def _cmd_mcp_show(core, params) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
@@ -646,7 +650,7 @@ def _cmd_mcp_show(core, params) -> (bool, str, str, str):
       "/mcp-tools",
       "List MCP tools ⚙",
 )
-def _cmd_mcp_tools(core, params) -> (bool, str, str, str):
+def _cmd_mcp_tools(core, params) -> tuple[bool, str | None, str | None, str | None]:
     from agent.tools import get_tools_str
     return True, None, get_tools_str(prefix="mcp_", contains=True), None
 
@@ -655,7 +659,7 @@ def _cmd_mcp_tools(core, params) -> (bool, str, str, str):
     "Set the inference temperature parameter in 0..2",
     aliases=["/temp", "/t"],
 )            
-def _cmd_temperature(core, params) -> (bool, str, str, str):
+def _cmd_temperature(core, params) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
@@ -671,7 +675,7 @@ def _cmd_temperature(core, params) -> (bool, str, str, str):
       "/vi",
        "Enable/disable vi input mode",
 )
-def _cmd_vi(core, params) -> (bool, str, str, str):
+def _cmd_vi(core, params) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
@@ -700,6 +704,6 @@ def _cmd_vi(core, params) -> (bool, str, str, str):
     "Show command help",
     aliases=["/commands"],
 )
-def _cmd_help(core, params) -> (bool, str, str, str):
+def _cmd_help(core, params) -> tuple[bool, str | None, str | None, str | None]:
     return True, None, registry.get_commands_str(), None
 

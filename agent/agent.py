@@ -52,7 +52,7 @@ class Agent:
         self.core = Core(config_path, session)
         self.spinner_prompt = None
         self.spinner_thinking = None
-        self._last_ctrl_c_time = 0  # Timestamp of last Ctrl+C for double-tap detection
+        self._last_ctrl_c_time = 0  # Timestamp of last Control+C for double-tap detection
         pub.subscribe(self._create_prompt_session, "prompt-update")
 
     def prompt_callback(self, stage:Stage):
@@ -95,12 +95,12 @@ class Agent:
         """Called when new chunks arrive in streaming mode."""
         print(escape(content), end="")
 
-    def tool_callback(self, tool_name: str, tool_args):
+    def tool_callback(self, tool_name: str):
         newline()
         info(f"🛠️ [weak]Activating tool:[/weak]  [tool]{tool_name}[/tool]")
 
     def cancel_callback(self, e: KeyboardInterrupt):
-        """Handles the Ctrl+c during inference, as a keyboard interrupt"""
+        """Handles the Control+c during inference, as a keyboard interrupt"""
         print("[warn]⏹  Turn cancelled by user  ⏹[/warn]")
         raise TurnCancelled() from e
 
@@ -134,7 +134,7 @@ class Agent:
             event.current_buffer.insert_text('\n')
         @kb.add('c-c')
         def _(event):
-            """Ctrl+C: first press clears input, second press (within 1s) quits."""
+            """Control+C: first press clears input, second press (within 1s) quits."""
             buffer = event.current_buffer
             now = time.time()
 
@@ -145,7 +145,7 @@ class Agent:
             else:
                 # Buffer is empty: check for double-tap
                 if now - self._last_ctrl_c_time < 1.0:
-                    # Double Ctrl+C: quit
+                    # Double Control+C: quit
                     raise KeyboardInterrupt
                 else:
                     # Single press on empty: just reset and record time
@@ -158,7 +158,7 @@ class Agent:
                 return f"*Pasted file: {file_path}*\n"
             return text
         # Bracketed paste: catches middle-click, Shift+Insert, and
-        # Ctrl+Shift+V (terminals wrap pasted text in \x1b[200~...\x1b[201~)
+        # Control+Shift+V
         @kb.add(Keys.BracketedPaste)
         def _(event):
             """Bracketed paste: intercept large pastes from any paste method."""
@@ -414,7 +414,10 @@ class Agent:
                             else:
                                 param_list = ''
 
-                            cont = content if content else Markdown(md)
+                            if content:
+                                cont = content
+                            elif md:
+                                cont = Markdown(md)
                             print(Panel(cont,
                                         border_style="output-frame",
                                         title=f"{command.name} {param_list}",

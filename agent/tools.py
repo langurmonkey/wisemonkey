@@ -10,7 +10,7 @@ Tools are discovered from the tools/ directory on startup.
 """
 
 import json
-import importlib
+from importlib import util
 from pathlib import Path
 
 from agent.console import warn
@@ -61,7 +61,7 @@ def get_tool_schemas():
     return schemas
 
 
-def execute_tool(name, arguments) -> dict:
+def execute_tool(name, arguments) -> str:
     """Execute a registered tool by name with parsed arguments."""
     if name not in _registry:
         return json.dumps({"error": f"Unknown tool: {name}"})
@@ -81,7 +81,7 @@ def _tool_str(name, tool):
     result += f"[list-desc]{tool['description']}[/]\n"
     return result
 
-def get_tools_str(prefix:str = None, contains:bool = True):
+def get_tools_str(prefix: str | None = None, contains: bool = True):
     """
     Auto-discover tools and log them to terminal
     Parameters:
@@ -132,8 +132,12 @@ def discover_tools(tools_dir=None):
         if py_file.name.startswith("_"):
             continue
         try:
-            spec = importlib.util.spec_from_file_location(py_file.stem, py_file)
-            module = importlib.util.module_from_spec(spec)
+            spec = util.spec_from_file_location(py_file.stem, py_file)
+            if spec is None or spec.loader is None:
+                warn(f"Could not load spec for tool {py_file.name}")
+                continue
+
+            module = util.module_from_spec(spec)
             spec.loader.exec_module(module)
         except Exception as e:
             warn(f"Failed to load tool {py_file.name}: {e}")

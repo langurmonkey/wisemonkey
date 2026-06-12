@@ -1,7 +1,6 @@
 """Tests for agent/tools.py — tool registration, discovery, schema generation, execution."""
 
 import json
-from unittest.mock import patch
 
 from tests.conftest import BaseTest
 from agent.tools import (

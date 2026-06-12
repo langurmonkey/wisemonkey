@@ -19,6 +19,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from typing import Any
 
 from agent.console import print, warn
 from agent.tools import register_tool
@@ -94,10 +95,10 @@ class MCPServerConnection:
 
     def _send_request(self, method: str, params: dict | None = None) -> dict | None:
         """Send a JSON-RPC request and return the response."""
-        if not self.process or self.process.stdin is None:
+        if not self.process or self.process.stdin is None or self.process.stdout is None:
             return None
 
-        request = {
+        request: dict[str, Any] = {
             "jsonrpc": "2.0",
             "id": self._next_id(),
             "method": method,
@@ -184,7 +185,7 @@ class MCPClient:
         self.servers: dict[str, MCPServerConnection] = {}
         self._tool_to_server: dict[str, str] = {}  # tool_name -> server_name
 
-    def load_config(self, config: Path = None):
+    def load_config(self, config: Path | None = None):
         """Load MCP server definitions from config dict."""
         if config and os.path.exists(config):
             with open(config, 'r') as mcp_config:

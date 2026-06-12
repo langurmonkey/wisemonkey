@@ -150,6 +150,7 @@ def main():
         agent = Agent(config_path=args.config, session=args.session)
     except Exception as e:
         err(f"Agent creation failed: {e}")
+        traceback.print_exc()
         sys.exit(1)
 
     # Interactive mode

@@ -8,6 +8,8 @@ Embeddings use OpenAI-compatible API (configurable `base_url`).
 import tiktoken
 import chromadb
 import fitz
+from typing import Any
+from chromadb.api.types import Metadata
 
 from pathlib import Path
 from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
@@ -17,7 +19,7 @@ from agent.config import get_config
 class VectorStore:
     """Persistent vector store scoped to a session directory."""
 
-    def __init__(self, session_dir: Path, embedding_model: str = None, base_url: str = None):
+    def __init__(self, session_dir: Path, embedding_model: str | None = None, base_url: str | None = None):
         """Initialize vector store.
 
         Args:
@@ -38,7 +40,7 @@ class VectorStore:
 
         # Embedding function
         openai_api_key = ""  # Read from env by openai package
-        self.embedding_fn = OpenAIEmbeddingFunction(
+        self.embedding_fn: Any = OpenAIEmbeddingFunction(
             api_key=openai_api_key,
             model_name=embedding_model,
             api_base=base_url if base_url else None,
@@ -78,7 +80,7 @@ class VectorStore:
 
         # Upsert into ChromaDB
         ids = [f"{path.name}_{i}" for i in range(len(chunks))]
-        metadatas = [
+        metadatas: list[Metadata] = [
             {
                 "source": str(path.name),
                 "chunk_index": i,
@@ -112,7 +114,7 @@ class VectorStore:
         )
 
         output = []
-        if results["documents"]:
+        if results["documents"] and results["metadatas"]:
             for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
                 output.append({
                     "content": doc,
