@@ -118,7 +118,7 @@ class UpdatesManager:
                 pass
 
         # Persist results globally
-        last_check = now.isoformat()
+        last_check = now
         self._data["last_update_check"] = now.isoformat()
         if commit_hash:
             self._data["commit_hash"] = commit_hash
