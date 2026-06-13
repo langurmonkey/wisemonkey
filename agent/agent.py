@@ -358,7 +358,7 @@ class Agent:
             curr, max, rate = self.core.memory.get_chat_stats()
             print(Panel(Markdown(chat_history),
                             border_style="output-frame",
-                            title="Previous conversation (summary)",
+                            title="Previous conversation (last 3 exchanges, truncated)",
                             subtitle=f"Previous conversation stats: {curr}/{max} - {rate:.2f}%"))
 
         newline()
