@@ -1,10 +1,13 @@
-"""File listing, reading, and writing tools.
+"""File listing, reading, writing, and search tools.
 
-Allows the agent to operate with files and directories in the file system.
+Allows the agent to operate with files and directories in the file system,
+including searching by name and content.
 """
 
+import fnmatch
 import os
 import tempfile
+from pathlib import Path
 from textwrap import indent
 
 from agent.utils import contractuser
@@ -277,4 +280,258 @@ def patch_file_handler(args):
         "path": path,
         "success": True,
         "message": f"Replaced text in {contractuser(path)}",
+    }
+
+
+@tool(
+    name="find_files",
+    description=(
+        "Find files by name using glob/wildcard patterns. "
+        "Recursively searches a directory for files whose names match the given pattern. "
+        "Use this instead of the shell 'find' command. "
+        "Examples: '*.py' finds all Python files, '*.md' finds all Markdown files. "
+        "Returns file paths relative to the search root."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "root": {
+                "type": "string",
+                "description": "The directory to search in (e.g., '/home/user/projects')",
+            },
+            "pattern": {
+                "type": "string",
+                "description": "Glob pattern to match filenames (e.g., '*.py', 'test_*', '*.{txt,md}'). Uses Unix shell-style wildcards.",
+            },
+            "max_depth": {
+                "type": "integer",
+                "description": "Maximum recursion depth. Default: unlimited (-1). Use 0 for root only, 1 for immediate children, etc.",
+            },
+        },
+        "required": ["root", "pattern"],
+    },
+)
+def find_files_handler(args):
+    """Recursively find files by name pattern."""
+    root = args.get("root", "")
+    pattern = args.get("pattern", "")
+    max_depth = args.get("max_depth", -1)
+
+    if not root or not pattern:
+        return {"error": "Both 'root' and 'pattern' are required"}
+
+    root = os.path.expanduser(root)
+    root = os.path.abspath(root)
+
+    if not os.path.isdir(root):
+        return {"error": f"Directory does not exist: {contractuser(root)}"}
+
+    print(f"  [weak]Searching for[/weak] [path]{pattern}[/path] [weak]in[/weak] [path]{contractuser(root)}[/path]")
+
+    matches = []
+    root_path = Path(root)
+
+    for current_root, dirs, files in os.walk(root):
+        # Compute current depth
+        rel_path = Path(current_root).relative_to(root_path)
+        depth = 0 if rel_path == Path(".") else len(rel_path.parts)
+
+        if max_depth >= 0 and depth > max_depth:
+            # Prevent os.walk from going deeper
+            dirs.clear()
+            continue
+
+        for f in files:
+            if fnmatch.fnmatch(f, pattern):
+                full_path = os.path.join(current_root, f)
+                rel = os.path.relpath(full_path, root)
+                matches.append(rel)
+
+    matches.sort()
+
+    # Source of truth for format in description
+    result_lines = [f"Found {len(matches)} file(s) matching '{pattern}' in {contractuser(root)}:"]
+    if not matches:
+        result_lines = [f"No files matching '{pattern}' in {contractuser(root)}"]
+    else:
+        for m in matches:
+            result_lines.append(f"  - {m}")
+
+    return {
+        "root": root,
+        "pattern": pattern,
+        "count": len(matches),
+        "files": matches,
+        "content": "\n".join(result_lines),
+    }
+
+
+@tool(
+    name="search_content",
+    description=(
+        "Search file contents for a text string. "
+        "Recursively searches all text files in a directory for lines containing the given query string. "
+        "Use this instead of the shell 'grep' command. "
+        "Returns matching file paths with line numbers and context. "
+        "Binary files are automatically skipped."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "root": {
+                "type": "string",
+                "description": "The directory to search in (e.g., '/home/user/projects')",
+            },
+            "query": {
+                "type": "string",
+                "description": "The text to search for in file contents.",
+            },
+            "case_sensitive": {
+                "type": "boolean",
+                "description": "If True, search is case-sensitive. Default: False.",
+            },
+            "context_lines": {
+                "type": "integer",
+                "description": "Number of context lines to show before and after each match. Default: 0.",
+            },
+            "max_depth": {
+                "type": "integer",
+                "description": "Maximum recursion depth. Default: unlimited (-1).",
+            },
+            "include_patterns": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional list of glob patterns to filter files by name (e.g., ['*.py', '*.md']). If not provided, all text files are searched.",
+            },
+        },
+        "required": ["root", "query"],
+    },
+)
+def search_content_handler(args):
+    """Recursively search file contents for a text string."""
+    root = args.get("root", "")
+    query = args.get("query", "")
+    case_sensitive = args.get("case_sensitive", False)
+    context_lines = args.get("context_lines", 0)
+    max_depth = args.get("max_depth", -1)
+    include_patterns = args.get("include_patterns", None)
+
+    if not root or not query:
+        return {"error": "Both 'root' and 'query' are required"}
+
+    root = os.path.expanduser(root)
+    root = os.path.abspath(root)
+
+    if not os.path.isdir(root):
+        return {"error": f"Directory does not exist: {contractuser(root)}"}
+
+    print(f"  [weak]Searching for[/weak] [path]'{query}'[/path] [weak]in[/weak] [path]{contractuser(root)}[/path]")
+
+    root_path = Path(root)
+    matches = []  # list of {"file": str, "line": int, "line_content": str, "context": list[str]}
+
+    # Common binary extensions/text extensions heuristic
+    _text_extensions = {
+        ".py", ".js", ".ts", ".jsx", ".tsx", ".md", ".txt", ".rst", ".html",
+        ".css", ".scss", ".less", ".json", ".yaml", ".yml", ".toml", ".ini",
+        ".cfg", ".conf", ".xml", ".svg", ".sh", ".bash", ".zsh", ".fish",
+        ".c", ".h", ".cpp", ".hpp", ".cc", ".cxx", ".java", ".kt", ".go",
+        ".rs", ".rb", ".php", ".pl", ".lua", ".r", ".sql", ".env", ".gitignore",
+        ".dockerfile", ".editorconfig", ".prettierrc", ".eslintrc",
+    }
+
+    def is_text_file(path_str):
+        """Heuristic: known extension or sniff first few bytes."""
+        ext = os.path.splitext(path_str)[1].lower()
+        if ext in _text_extensions:
+            return True
+        # Try reading a small chunk
+        try:
+            with open(path_str, "rb") as f:
+                chunk = f.read(8192)
+            # If no null bytes, likely text
+            return b"\0" not in chunk
+        except Exception:
+            return False
+
+    def should_include(filename):
+        if not include_patterns:
+            return True
+        for pat in include_patterns:
+            if fnmatch.fnmatch(filename, pat):
+                return True
+        return False
+
+    for current_root, dirs, files in os.walk(root):
+        rel_path = Path(current_root).relative_to(root_path)
+        depth = 0 if rel_path == Path(".") else len(rel_path.parts)
+
+        if max_depth >= 0 and depth > max_depth:
+            dirs.clear()
+            continue
+
+        for f in files:
+            if not should_include(f):
+                continue
+
+            full_path = os.path.join(current_root, f)
+
+            if not is_text_file(full_path):
+                continue
+
+            try:
+                with open(full_path, "r", errors="replace") as fh:
+                    lines = fh.readlines()
+            except Exception:
+                continue
+
+            for i, line in enumerate(lines, start=1):
+                check_line = line if case_sensitive else line.lower()
+                check_query = query if case_sensitive else query.lower()
+
+                if check_query in check_line:
+                    file_rel = os.path.relpath(full_path, root)
+                    entry: dict[str, str | int | list[str]] = {
+                        "file": file_rel,
+                        "line": i,
+                        "line_content": line.rstrip("\n"),
+                        "context": [],
+                    }
+
+                    if context_lines > 0:
+                        ctx: list[str] = []
+                        start_ctx = max(0, i - 1 - context_lines)
+                        end_ctx = min(len(lines), i + context_lines)
+                        for ci in range(start_ctx, end_ctx):
+                            prefix = ">" if ci == i - 1 else " "
+                            ctx.append(f"{prefix} {ci + 1}: {lines[ci].rstrip(chr(10))}")
+                        entry["context"] = ctx
+
+                    matches.append(entry)
+
+    # Build output
+    if not matches:
+        result_lines = [f"No matches for '{query}' in {contractuser(root)}"]
+    else:
+        result_lines = [
+            f"Found {len(matches)} match(es) for '{query}' in {contractuser(root)}:"
+        ]
+        current_file = None
+        for m in matches:
+            if m["file"] != current_file:
+                current_file = m["file"]
+                result_lines.append("")
+                result_lines.append(f"  {current_file}:")
+            result_lines.append(f"    {m['line']}: {m['line_content']}")
+            context = m.get("context")
+            if isinstance(context, list):
+                for ctx_line in context:
+                    result_lines.append(f"      {ctx_line}")
+
+    return {
+        "root": root,
+        "query": query,
+        "count": len(matches),
+        "results": matches[:500],  # cap results
+        "content": "\n".join(result_lines),
     }
