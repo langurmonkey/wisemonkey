@@ -27,7 +27,6 @@ project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-
 def main():
     """Run the agent interactively or as a one-shot query."""
     try:
@@ -48,6 +47,7 @@ def main():
         "session",
         type=str,
         default="default",
+        nargs='?',
         help="Name of the session to create or continue",
     )
     parser.add_argument(
@@ -108,7 +108,7 @@ def main():
         if cool:
             ok(msg)
             newline()
-            print("Start the agent with [accent-bold]wisemonkey \\[--session session-name][/accent-bold]")
+            print("Start the agent with [accent-bold]wisemonkey \\[session-name][/accent-bold]")
         else:
             err(msg)
 

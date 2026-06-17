@@ -82,7 +82,7 @@ echo "OLLAMA_API_KEY=your-api-key-here" > .env
 uv build
 # Set API key:
 export OPENAI_API_KEY=your-api-key
-# Run the agent:
+# Run the agent with the default session:
 uv run wisemonkey
 ```
 
@@ -114,18 +114,18 @@ During inference, you can cancel the turn and return to the input prompt with <k
 
 ### Sessions
 
-Internally, Wisemonkey uses sessions to separate different memory histories. Sessions are **named** by the user. By default, the agent uses the `default` session. You can start in a different session (either create a new one, or restore it if it exists) with the `--session` argument:
+Internally, Wisemonkey uses sessions to separate different memory histories. Sessions are **named by the user**. By default, the agent uses the `default` session. You can start in a different session (either create a new one, or restore it if it exists) by passing its name as a positional argument:
 
 ```bash
-# Start in a specific session
-wisemonkey --session my-project
+# Start in a specific session named 'my-project'
+wisemonkey my-project
 ```
 
 The default session's name is `default`, so the following two commands are equivalent:
 ```bash
-# These two commands start the default session
+# These two commands start the 'default' session
 wisemonkey
-wisemonkey --session default
+wisemonkey default
 ```
 
 You can also list the existing sessions with `-ls`:
