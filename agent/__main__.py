@@ -45,6 +45,12 @@ def main():
         description=f"{pkg_name} - {pkg_summary}",
     )
     parser.add_argument(
+        "session",
+        type=str,
+        default="default",
+        help="Name of the session to create or continue",
+    )
+    parser.add_argument(
         "-c", "--config",
         type=str,
         metavar="PATH",
@@ -67,12 +73,6 @@ def main():
         '-u', '--update',
         action='store_true',
         help='Update wisemonkey from upstream and reinstall',
-    )
-    parser.add_argument(
-        '-s', '--session',
-        type=str,
-        default='default',
-        help='Name of the session to create or continue',
     )
     parser.add_argument(
         '-ls', '--ls',
