@@ -156,8 +156,7 @@ class Core:
                         response,
                         prompt_callback=None,
                         reasoning_callback=None,
-                        content_callback=None,
-                        error_callback=None):
+                        content_callback=None):
         self.thinking_buffer = ""
         self.response_buffer = ""
 
@@ -285,6 +284,7 @@ class Core:
         tools = get_tool_schemas()
         start = time.time()
         model_name = self.config.get("model.name", "qwen/qwen3.6-35b-a3b")
+
         try:
 
             if prompt_callback:
@@ -295,6 +295,15 @@ class Core:
                 stream=True,
                 tools=tools if tools else None,
             )
+
+        except KeyboardInterrupt as e:
+            # Close the response stream to stop the API call
+            response.close()
+            response = None
+            self._cancel_prompts(prompt_callback, reasoning_callback)
+            if cancel_callback:
+                cancel_callback(e)
+
         except Exception as e:
             self._cancel_prompts(prompt_callback, reasoning_callback)
             
@@ -303,19 +312,19 @@ class Core:
             else:
                 raise RuntimeError(f"API connection error. Please, check the endpoint (model={model_name}, base_url={self.router._base_url}): {e}") from e
 
-        try:
-            (first_chunk_time, tool_calls, stream_error) = self._stream_handler(response,
-                                                                                prompt_callback,
-                                                                                reasoning_callback,
-                                                                                content_callback,
-                                                                                error_callback)
-        except KeyboardInterrupt as e:
-            # Close the response stream to stop the API call
-            response.close()
-            self._cancel_prompts(prompt_callback, reasoning_callback)
-            if cancel_callback:
-                cancel_callback(e)
-            stream_error = None
+        if response:
+            try:
+                (first_chunk_time, tool_calls, stream_error) = self._stream_handler(response,
+                                                                                    prompt_callback,
+                                                                                    reasoning_callback,
+                                                                                    content_callback)
+            except KeyboardInterrupt as e:
+                # Close the response stream to stop the API call
+                response.close()
+                self._cancel_prompts(prompt_callback, reasoning_callback)
+                if cancel_callback:
+                    cancel_callback(e)
+                stream_error = None
 
         return self._finish_inference(start, first_chunk_time, tool_calls, stream_error)
 
@@ -381,7 +390,7 @@ class Core:
         # Number of tool calls
         n_tools = 0
         try:
-            for turn in range(self.config.get("agent.max_turns", 50)):
+            for _ in range(self.config.get("agent.max_turns", 50)):
                 # Send to LLM
                 try:
                     (result, tokens, gen_elapsed, stream_error) = self._send_to_llm(prompt_callback,
