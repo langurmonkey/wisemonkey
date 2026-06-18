@@ -13,6 +13,7 @@ monkee_theme = Theme({
     "accent": "deep_sky_blue3",
     "accent-bold": "bold deep_sky_blue3",
     "output-frame": "gray39",
+    "time": "grey30 i",
 
     # Turns
     "agent": "medium_orchid",

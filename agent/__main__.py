@@ -124,10 +124,41 @@ def main():
 
     # List sessions
     if args.ls:
-        sessions = [f for f in os.listdir(SESSIONS_DIR) if os.path.isdir(os.path.join(SESSIONS_DIR, f))]
+        import datetime
+        from agent.utils import pretty_timedelta
+
+        sessions = []
+        for f in os.listdir(SESSIONS_DIR):
+            sdir = os.path.join(SESSIONS_DIR, f)
+            if not os.path.isdir(sdir):
+                continue
+            mdf = os.path.join(sdir, ".session-metadata")
+            last_access = ""
+            accessed_dt = None
+            if os.path.isfile(mdf):
+                try:
+                    with open(mdf, "r") as fh:
+                        for line in fh:
+                            line = line.strip()
+                            if line.startswith("accessed:"):
+                                raw = line.partition(":")[2].strip()
+                                accessed_dt = datetime.datetime.fromisoformat(raw)
+                                break
+                except (OSError, ValueError):
+                    pass
+            if accessed_dt:
+                delta = datetime.datetime.now() - accessed_dt
+                last_access = pretty_timedelta(delta) + " ago"
+            sessions.append((accessed_dt or datetime.datetime.min, f, sdir, last_access))
+
+        sessions.sort(key=lambda x: x[0], reverse=True)
+
         print("Sessions:")
-        for sess in sessions:
-            print(f"- [accent-bold]{sess}[/accent-bold] - [dim]{contractuser(os.path.join(SESSIONS_DIR, sess))}[/dim]")
+        for _, name, sdir, last_access in sessions:
+            line = f"- [accent-bold]{name}[/accent-bold] - [dim]{contractuser(sdir)}[/dim]"
+            if last_access:
+                line += f" [time]({last_access})[/time]"
+            print(line)
         return
 
     # Delete session

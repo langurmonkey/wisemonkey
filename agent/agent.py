@@ -328,10 +328,10 @@ class Agent:
             version_str += f"  [dim]commit: {commit_hash}[/dim]"
         info(f"{version_str}")
         if updates_available:
-            print(f"   [warn]⟳ Updates available![/warn] [weak](last check: {d_check} ago)[/weak]")
+            print(f"   [warn]⟳ Updates available![/warn] [time](last check: {d_check} ago)[/time]")
             print("     [weak]run [accent]wisemonkey -u[/accent] to update[/weak]")
         elif commit_hash:
-            print(f"   [dim]✓ Up to date[/dim] [weak](last check: {d_check} ago)[/weak]")
+            print(f"   [dim]✓ Up to date[/dim] [time](last check: {d_check} ago)[/time]")
 
         newline()
 
@@ -344,9 +344,9 @@ class Agent:
             info(f"Session restored: [accent-bold]'{self.core.memory.session}'[/accent-bold]")
         print(f"[dim]   location:      {contractuser(session_dir)}[/dim]")
         print(f"[dim]   working dir:   {working_dir}[/dim]")
-        print(f"[dim]   created:       {d_created} ago[/dim]")
+        print(f"[dim]   created:[/dim]       [time]{d_created} ago[/time]")
         if not new_session:
-            print(f"[dim]   last accessed: {d_accessed} ago[/dim]")
+            print(f"[dim]   last accessed:[/dim] [time]{d_accessed} ago[/time]")
         console.rule(style="weak")
 
         # Print history
