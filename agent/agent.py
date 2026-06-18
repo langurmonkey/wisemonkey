@@ -5,7 +5,6 @@ handling to the core.
 """
 
 import time
-from pathlib import Path
 from functools import partial
 
 from rich.prompt import Prompt
