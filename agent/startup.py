@@ -12,11 +12,17 @@ from agent.utils import contractuser, pretty_timedelta
 from agent.console import print, info, newline, console
 
 def check_updates(repo_dir):
+    """Check for updates"""
     from agent.update import UpdatesManager
     um = UpdatesManager()
     return um.check_updates(repo_dir)
 
 def startup_info(core: Core):
+    """ Prints startup information 
+
+    This method prints startup information when Wisemonkey boots. It provides the user with
+    information about the current session, the update status, the chat history, and more.
+    """
     import shutil
     term_size = shutil.get_terminal_size((80, 20))
     monkee = '''
