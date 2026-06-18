@@ -17,7 +17,6 @@ from rich.prompt import Confirm
 from pathlib import Path
 from xdg_base_dirs import xdg_data_home
 
-from agent import Agent
 from agent.utils import contractuser
 from agent.console import print, err, ok, console, newline
 
@@ -84,6 +83,11 @@ def main():
         type=str,
         help='Delete a session by name',
     )
+    parser.add_argument(
+        '--tui',
+        action='store_true',
+        help='Use the full-screen TUI interface (experimental)',
+    )
     args = parser.parse_args()
 
     SESSIONS_DIR = xdg_data_home() / "wisemonkey" / "sessions"
@@ -113,8 +117,6 @@ def main():
             err(msg)
 
         return
-        
-        
 
     # Edit configuration
     if args.edit_config:
@@ -175,10 +177,15 @@ def main():
             err(f"Session does not exist: [accent-bold]{args.rm}[/]")
 
         return
-            
 
+    # Create agent
     try:
-        agent = Agent(config_path=args.config, session=args.session)
+        if args.tui:
+            from agent.tui import TuiAgent
+            agent = TuiAgent(config_path=args.config, session=args.session)
+        else:
+            from agent import Agent
+            agent = Agent(config_path=args.config, session=args.session)
     except Exception as e:
         err(f"Agent creation failed: {e}")
         traceback.print_exc()
