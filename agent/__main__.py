@@ -26,6 +26,13 @@ project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+def running_under_uv() -> bool:
+    # Common env vars used by launchers (may vary by uv version)
+    uv_markers = ["UV", "UV_PROJECT_ENVIRONMENT", "UVX"]
+    if any(k in os.environ for k in uv_markers):
+        return True
+    return False
+
 def main():
     """Run the agent interactively or as a one-shot query."""
     try:
@@ -76,7 +83,7 @@ def main():
     parser.add_argument(
         '-t', '--tui',
         action='store_true',
-        help='Launch the Textual full-screen TUI',
+        help='WIP/EXPERIMENTAL! Launch the Textual full-screen TUI',
     )
     parser.add_argument(
         '-ls', '--ls',
@@ -92,8 +99,15 @@ def main():
 
     SESSIONS_DIR = xdg_data_home() / "wisemonkey" / "sessions"
 
+    # Check if program runs within the uvx environment
+    is_uv: bool = running_under_uv()
+
     # Handle --update
     if args.update:
+        if is_uv:
+            print("[accent]--update[/accent] flag not needed when running via [accent-bold]uv[/accent-bold]/[accent-bold]uvx[/accent-bold].")
+            return
+
         from agent.update import UpdatesManager
         UpdatesManager().perform_update()
         return
@@ -186,7 +200,6 @@ def main():
             app.run()
         except Exception as e:
             err(f"TUI launch failed: {e}")
-            import traceback
             traceback.print_exc()
             sys.exit(1)
         return
