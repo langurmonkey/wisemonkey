@@ -74,6 +74,11 @@ def main():
         help='Update wisemonkey from upstream and reinstall',
     )
     parser.add_argument(
+        '-t', '--tui',
+        action='store_true',
+        help='Launch the Textual full-screen TUI',
+    )
+    parser.add_argument(
         '-ls', '--ls',
         action='store_true',
         help='List existing sessions',
@@ -171,6 +176,19 @@ def main():
         else:
             err(f"Session does not exist: [accent-bold]{args.rm}[/]")
 
+        return
+
+    # Launch TUI
+    if args.tui:
+        try:
+            from agent.tui import WisemonkeyTui
+            app = WisemonkeyTui(config_path=args.config, session=args.session)
+            app.run()
+        except Exception as e:
+            err(f"TUI launch failed: {e}")
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
         return
 
     # Create agent

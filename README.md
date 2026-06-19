@@ -38,13 +38,21 @@ Wisemonkey has been tested to work on Linux and macOS.
 
 ### Installation
 
-Install the agent with:
+On Linux or macOS, install `uv` and run the agent:
+
+```bash
+# Install uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# Run wisemonkey
+uvx wisemonkey
+```
+
+You can also install it with our script:
 
 ```bash
 curl -fsSL https://codeberg.org/langurmonkey/wisemonkey/raw/branch/master/install.sh | bash
 ```
-
-Launch the onboarding process to configure the agent interactively:
+This installs wisemonkey to `~/.local/share/wisemonkey/repository`. It adds a `wisemonkey` binary to `~/.local/bin/wisemonkey`. If you have `~/.local/bin` in your `$PATH`, you can launch the onboarding process to configure the agent interactively:
 
 ```bash
 wisemonkey --onboard
@@ -55,8 +63,12 @@ wisemonkey --onboard
 Run the agent with the default session:
 
 ```bash
+# Using uvx
+uvx wisemonkey
+# If installed, simply do
 wisemonkey
 ```
+For the rest of this document, we assume that `wisemonkey` is in your path. You can substitute it with `uvx wisemonkey` if you use the `uvx` method.
 
 If you need an API key to access the endpoint, put it in the `.env` file. Wisemonkey looks for the `.env` file in the following locations, in order:
 
