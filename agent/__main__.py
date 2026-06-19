@@ -83,11 +83,6 @@ def main():
         type=str,
         help='Delete a session by name',
     )
-    parser.add_argument(
-        '--tui',
-        action='store_true',
-        help='Use the full-screen TUI interface (experimental)',
-    )
     args = parser.parse_args()
 
     SESSIONS_DIR = xdg_data_home() / "wisemonkey" / "sessions"
@@ -180,12 +175,8 @@ def main():
 
     # Create agent
     try:
-        if args.tui:
-            from agent.tui import TuiAgent
-            agent = TuiAgent(config_path=args.config, session=args.session)
-        else:
-            from agent import Agent
-            agent = Agent(config_path=args.config, session=args.session)
+        from agent import Agent
+        agent = Agent(config_path=args.config, session=args.session)
     except Exception as e:
         err(f"Agent creation failed: {e}")
         traceback.print_exc()
