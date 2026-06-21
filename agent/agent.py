@@ -16,6 +16,7 @@ from pubsub import pub
 from agent.core import Core, Stage, TurnCancelled
 from agent.commands import registry
 from agent.utils import add_command, collapse_none_dicts
+from agent.prompt_ui import RichPromptUi
 from agent.console import print, err, ok, info, newline, console
 from agent.startup import startup_info, ConsoleStartupOutput
 
@@ -49,6 +50,7 @@ class Agent:
         self.spinner_prompt = None
         self.spinner_thinking = None
         self._last_ctrl_c_time = 0  # Timestamp of last Control+C for double-tap detection
+        self._prompt_ui = RichPromptUi()
         pub.subscribe(self._create_prompt_session, "prompt-update")
 
     def prompt_callback(self, stage:Stage):
@@ -299,7 +301,7 @@ class Agent:
                 command, params = registry.lookup(tokens)
 
                 if command:
-                    no_errors, msg, content, md, should_exit = registry.execute(self.core, command, params)
+                    no_errors, msg, content, md, should_exit = registry.execute(self.core, command, params, self._prompt_ui)
 
                     if should_exit:
                         print(txt_goodbye)

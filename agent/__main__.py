@@ -122,7 +122,8 @@ def main():
         core = Core(args.config, args.session, full_startup=False)
 
         from agent.commands import registry
-        cool, msg, _, _, _ = registry.run_command(core, "/config")
+        from agent.prompt_ui import RichPromptUi
+        cool, msg, _, _, _ = registry.run_command(core, "/config", RichPromptUi())
         if cool:
             ok(msg)
             newline()

@@ -26,6 +26,7 @@ from textual.binding import Binding
 
 from agent.core import Core, TurnCancelled
 from agent.commands import registry
+from agent.prompt_ui import TuiPromptUi as _TuiPromptUi
 from agent.startup import startup_info, StartupOutput
 
 # ---------------------------------------------------------------------------
@@ -201,6 +202,9 @@ class WisemonkeyTui(App):
         # Stream buffer: accumulate content until a newline is hit
         self._stream_buffer = ""
 
+        # Prompt UI for interactive commands
+        self._prompt_ui = _TuiPromptUi(self)
+
         # Focus the input field by default
         inp = self.query_one("#input", TextArea)
         inp.focus()
@@ -229,7 +233,11 @@ class WisemonkeyTui(App):
     # ---- input handling ----------------------------------------------------
 
     def _handle_command(self, user_input: str) -> None:
-        """Execute a slash command and print its result."""
+        """Execute a slash command and print its result.
+
+        Runs in a background thread so that TuiPromptUi can block waiting
+        for user input without freezing the Textual event loop.
+        """
         tokens = user_input.split()
         command, params = registry.lookup(tokens)
 
@@ -237,27 +245,32 @@ class WisemonkeyTui(App):
             self._write(f"[red]Command not found: {user_input}[/]")
             return
 
+        self._run_command_in_thread(command, params)
+
+    @work(thread=True, exit_on_error=False)
+    def _run_command_in_thread(self, command, params) -> None:
+        """Run a slash command on a worker thread."""
         ok_flag, msg, content, md, should_exit = registry.execute(
-            self.core, command, params
+            self.core, command, params, self._prompt_ui
         )
 
         if should_exit:
-            self._write("[bold]Goodbye![/bold]")
-            self.exit()
+            self.call_from_thread(self._write, "[bold]Goodbye![/bold]")
+            self.call_from_thread(self.exit)
             return
 
         if ok_flag:
             if content:
-                self._write(content)
+                self.call_from_thread(self._write, content)
             elif md:
-                self._write_rich(Markdown(md))
+                self.call_from_thread(self._write_rich, Markdown(md))
             if msg:
-                self._write(f"[green]✔[/green] {msg}")
+                self.call_from_thread(self._write, f"[green]✔[/green] {msg}")
         else:
             if msg:
-                self._write(f"[red]✗[/red] {msg}")
+                self.call_from_thread(self._write, f"[red]✗[/red] {msg}")
 
-        self._update_status()
+        self.call_from_thread(self._update_status)
 
     def _handle_prompt(self, user_input: str) -> None:
         """Send the user message to the LLM in a background thread."""
@@ -293,7 +306,12 @@ class WisemonkeyTui(App):
         if not text:
             return
         inp.text = ""
-        self._handle_user_input(text)
+        # If a prompt_ui request is pending, fulfil it instead of sending
+        # the text as a chat message.
+        if self._prompt_ui._pending_event is not None:
+            self._prompt_ui._submit(text)
+        else:
+            self._handle_user_input(text)
 
     def _handle_user_input(self, user_input: str) -> None:
         """Process a user message or slash command."""

@@ -1,44 +1,47 @@
+"""Utility functions for wisemonkey."""
+
+from __future__ import annotations
+
 import base64
 import re
 from io import BytesIO
 from pathlib import Path
+from typing import Protocol
+
+from PIL import Image
+
+
+# ---------------------------------------------------------------------------
+# Image helpers
+# ---------------------------------------------------------------------------
 
 def resize_image(image_bytes: bytes, max_dim: int = 1024, quality: int = 70) -> dict:
-    """Resize and compress an image to JPEG.
+    """Resize an image so its longest side is at most *max_dim* pixels and
+    encode as JPEG at the given *quality* (1-100).
 
-    Args:
-        image_bytes: Raw image bytes (PNG, JPEG, etc.).
-        max_dim: Maximum width or height (maintains aspect ratio). Default 1024.
-        quality: JPEG quality 1–100. Default 70.
-
-    Returns:
-        dict with keys:
-            - ``image_base64``: base64-encoded JPEG data
-            - ``mime_type``: always ``"image/jpeg"``
+    Returns a dict with ``image_base64`` (str) and ``mime_type`` (``"image/jpeg"``).
     """
-    from PIL import Image
-
     img = Image.open(BytesIO(image_bytes))
 
-    # Convert RGBA to RGB for JPEG
-    if img.mode == "RGBA":
-        img = img.convert("RGB")
-    elif img.mode == "P":
+    # Convert RGBA/P to RGB for JPEG
+    if img.mode in ("RGBA", "P"):
         img = img.convert("RGB")
 
     # Downscale maintaining aspect ratio
     w, h = img.size
     if w > max_dim or h > max_dim:
         ratio = min(max_dim / w, max_dim / h)
-        new_w = int(w * ratio)
-        new_h = int(h * ratio)
-        img = img.resize((new_w, new_h))
+        img = img.resize((int(w * ratio), int(h * ratio)))
 
     buffer = BytesIO()
     img.save(buffer, format="JPEG", quality=quality, optimize=True)
     b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
     return {"image_base64": b64, "mime_type": "image/jpeg"}
 
+
+# ---------------------------------------------------------------------------
+# Path helpers
+# ---------------------------------------------------------------------------
 
 def contractuser(path_str: str | Path) -> str:
     """
@@ -53,7 +56,13 @@ def contractuser(path_str: str | Path) -> str:
         # Path is not under the home directory — return unchanged
         return str(path)
 
+
+# ---------------------------------------------------------------------------
+# Command-tree helpers (for NestedCompleter)
+# ---------------------------------------------------------------------------
+
 separator_re = re.compile(r"[-\s]+")
+
 def add_command(tree: dict, command: str) -> None:
     # Keep leading "/" so NestedCompleter keys match the raw input.
     # Split on "-" or spaces.
@@ -99,11 +108,16 @@ def collapse_none_dicts(obj):
 
     return collapsed
 
+
+# ---------------------------------------------------------------------------
+# Time helpers
+# ---------------------------------------------------------------------------
+
 def pretty_timedelta(delta):
     """
     Pretty printing a `timedelta` object form `datetime` Python module
-        
-    Acknowledgements: 
+
+    Acknowledgements:
     @thatalextaylor for his earlier version:
     https://gist.github.com/thatalextaylor/7408395
     That I used to modify the script.
@@ -113,15 +127,15 @@ def pretty_timedelta(delta):
         None -- just a printing function -- works better with Jupyter Notebook
     """
     timedelta_seconds = delta.total_seconds()
-    
+
     # Seconds will be int-s, timedelta_seconds stores also decimal places
     seconds = timedelta_seconds
-    
+
     # Can be negative
     sign_string = '-' if seconds < 0 else ''
-    
+
     seconds = abs(int(seconds))
- 
+
     days, seconds = divmod(seconds, 86400)
     hours, seconds = divmod(seconds, 3600)
     minutes, seconds = divmod(seconds, 60)
@@ -135,3 +149,34 @@ def pretty_timedelta(delta):
         return '%s%ds' % (sign_string, seconds)
     else:
         'no time'
+
+
+# ---------------------------------------------------------------------------
+# Prompt UI abstraction layer
+# ---------------------------------------------------------------------------
+
+class PromptUi(Protocol):
+    """Abstract interface for user prompting.
+
+    Implementations provide the same prompting primitives that ``rich.prompt``
+    and ``prompt_toolkit`` offer, but routed through whichever UI is active
+    (classic REPL or full-screen TUI).
+    """
+
+    def ask_string(self, message: str, default: str = "") -> str:
+        """Prompt the user for a free-form string."""
+
+    def ask_float(self, message: str, default: float = 0.0) -> float:
+        """Prompt the user for a floating-point number."""
+
+    def ask_choice(
+        self,
+        message: str,
+        options: list[tuple[str, str]],
+        default: str | None = None,
+    ) -> str:
+        """Present a list of *options* as ``(value, label)`` tuples and return
+        the selected *value*."""
+
+    def ask_confirm(self, message: str, default: bool = False) -> bool:
+        """Ask a yes/no question and return the boolean answer."""
