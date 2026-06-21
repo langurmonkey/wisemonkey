@@ -129,7 +129,8 @@ class WisemonkeyTui(App):
         yield RichLog(id="output", highlight=True, markup=True, wrap=True)
         with Container(id="bottom-area"):
             yield Static(id="status-bar")
-            yield TextArea(id="input", placeholder="Type a message...")
+            with Container(id="input-widget"):
+                yield TextArea(id="input", placeholder="Type a message...")
             yield Static(id="bottom-bar")
 
     def on_mount(self) -> None:
