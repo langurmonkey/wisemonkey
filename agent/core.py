@@ -449,10 +449,40 @@ class Core:
                 # Persist memory
                 self.memory.save()
 
-                # If the stream had a partial error (e.g. malformed SSE), raise
-                # it now so the caller can inform the user — but the turn's
-                # content has already been persisted above.
+                # If the stream had a partial error, check if it was caused
+                # by an unsupported image in a previous tool result.  If so,
+                # replace the image with a text-only fallback and retry.
+                # Otherwise, let the error propagate.
                 if stream_error is not None:
+                    # Look backwards through tool results for an image block
+                    image_fallback_applied = False
+                    for msg in reversed(self.messages):
+                        if msg.get("role") == "tool" and isinstance(msg.get("content"), list):
+                            has_image = any(
+                                isinstance(block, dict) and block.get("type") == "image_url"
+                                for block in msg["content"]
+                            )
+                            if has_image:
+                                # Replace the multimodal content with a
+                                # text-only fallback so the model can still
+                                # respond without receiving an image it
+                                # doesn't support.
+                                msg["content"] = (
+                                    "[Screenshot was captured but the current model "
+                                    "does not support vision/image inputs. Describe "
+                                    "what you would expect to see on screen.]"
+                                )
+                                # Remove the last (errored) assistant message
+                                # so we can retry cleanly.
+                                if self.messages and self.messages[-1].get("role") == "assistant":
+                                    self.messages.pop()
+                                image_fallback_applied = True
+                                break
+                    if image_fallback_applied:
+                        # Retry the LLM call with the text-only fallback
+                        # instead of the image
+                        continue
+                    # Not image-related — propagate the error
                     raise stream_error
 
                 return (response_text, total_tokens, n_tools, total_gen_time)
@@ -526,12 +556,35 @@ class Core:
 
             result = execute_tool(tool_name, json.loads(tool_args) if isinstance(tool_args, str) else tool_args)
 
-            # Append tool result
-            self.messages.append({
-                "role": "tool",
-                "tool_call_id": tc["id"],
-                "content": result if isinstance(result, str) else json.dumps(result),
-            })
+            # Check if the result contains an image (e.g. screenshot tool)
+            if isinstance(result, dict) and "image_base64" in result:
+                # Build a multimodal content block with the image
+                mime_type = result.get("mime_type", "image/png")
+                b64_data = result["image_base64"]
+                content = [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mime_type};base64,{b64_data}",
+                        },
+                    },
+                    {
+                        "type": "text",
+                        "text": result.get("text", f"[Tool '{tool_name}' returned an image]"),
+                    },
+                ]
+                self.messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": content,
+                })
+            else:
+                # Standard text/JSON tool result
+                self.messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": result if isinstance(result, str) else json.dumps(result),
+                })
 
         return n_tools
 

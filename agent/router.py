@@ -363,7 +363,14 @@ class ModelRouter:
 
     def _adapt_messages_for_anthropic(self, messages: list[dict]
                                       ) -> tuple[list[dict], str | None]:
-        """Extract system messages (Anthropic uses a separate 'system' param)."""
+        """Extract system messages and convert image blocks to Anthropic format.
+
+        Anthropic uses a separate 'system' param and a different image block
+        format than OpenAI.  This method:
+        1. Extracts system messages into a separate string.
+        2. Converts OpenAI-style image_url content blocks to Anthropic's
+           image source format in tool result messages.
+        """
         system_parts = []
         chat_messages = []
         for msg in messages:
@@ -372,6 +379,38 @@ class ModelRouter:
                 if content:
                     system_parts.append(content)
             else:
+                # Convert image blocks in tool results from OpenAI to Anthropic format
+                if msg.get("role") == "tool" and isinstance(msg.get("content"), list):
+                    converted_content = []
+                    text_parts = []
+                    for block in msg["content"]:
+                        if block.get("type") == "image_url":
+                            url = block.get("image_url", {}).get("url", "")
+                            # Extract base64 data from data URL
+                            if url.startswith("data:"):
+                                header, data = url.split(",", 1)
+                                mime = header.split(";")[0].split(":")[1]
+                                converted_content.append({
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": mime,
+                                        "data": data,
+                                    },
+                                })
+                            else:
+                                converted_content.append(block)
+                        elif block.get("type") == "text":
+                            text_parts.append(block.get("text", ""))
+                        else:
+                            converted_content.append(block)
+                    # Merge text parts into a single text block before the image
+                    if text_parts:
+                        converted_content.insert(0, {
+                            "type": "text",
+                            "text": "\n".join(text_parts),
+                        })
+                    msg = {**msg, "content": converted_content}
                 chat_messages.append(msg)
         system_text = "\n\n".join(system_parts) if system_parts else None
         return chat_messages, system_text
