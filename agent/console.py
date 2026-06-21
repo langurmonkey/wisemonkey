@@ -5,8 +5,7 @@ from rich.traceback import install
 # Replace default error tracebacks with better version
 install()
 
-# Theme
-monkee_theme = Theme({
+theme_dict: dict[str, str] = {
     "title": "bold deep_sky_blue3",
 
     # Global
@@ -43,7 +42,10 @@ monkee_theme = Theme({
     "warn": "orange_red1",
     "error": "bold red",
     "err": "bold red"
-})
+}
+
+# Theme
+monkee_theme = Theme(theme_dict)
 
 # Create consoles
 console = Console(theme=monkee_theme)

@@ -28,6 +28,7 @@ from agent.core import Core, TurnCancelled
 from agent.commands import registry
 from agent.prompt_ui import TuiPromptUi as _TuiPromptUi
 from agent.startup import startup_info, StartupOutput
+from agent.console import theme_dict
 
 # ---------------------------------------------------------------------------
 # Style-name resolution  (abstract -> concrete colour tags)
@@ -38,28 +39,10 @@ from agent.startup import startup_info, StartupOutput
 # with concrete colour tags before writing to the log.
 # ---------------------------------------------------------------------------
 
-_STYLE_MAP: dict[str, str] = {
-    "[title]":       "[bold #d7eb95]",
-    "[/title]":      "[/bold #d7eb95]",
-    "[accent]":      "[#d7eb95]",
-    "[/accent]":     "[/#d7eb95]",
-    "[accent-bold]": "[bold #d7eb95]",
-    "[/accent-bold]":"[/bold #d7eb95]",
-    "[info]":        "[bold deep_sky_blue3]",
-    "[/info]":       "[/bold deep_sky_blue3]",
-    "[warn]":        "[bold yellow]",
-    "[/warn]":       "[/bold yellow]",
-    "[time]":        "[italic #848484]",
-    "[/time]":       "[/italic #848484]",
-    "[dim]":         "[dim white]",
-    "[/dim]":        "[/dim white]",
-    "[weak]":        "[dim grey58]",
-    "[/weak]":       "[/dim grey58]",
-    "[red]":         "[red]",
-    "[/red]":        "[/red]",
-    "[green]":       "[green]",
-    "[/green]":      "[/green]",
-}
+_STYLE_MAP = {}
+for key in theme_dict.keys():
+    _STYLE_MAP[f"[{key}]"] = f"[{theme_dict[key]}]"
+    _STYLE_MAP[f"[/{key}]"] = f"[/{theme_dict[key]}]"
 
 _STYLE_KEYS = sorted(_STYLE_MAP.keys(), key=len, reverse=True)
 
