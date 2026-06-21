@@ -20,6 +20,7 @@ from prompt_toolkit.formatted_text import HTML
 from pubsub import pub
 
 from agent.console import console, err
+from agent.utils import resize_image
 
 # Global error messages for commands
 no_params_error = "This command does not take any parameters"
@@ -697,6 +698,33 @@ def _cmd_vi(core, params) -> tuple[bool, str | None, str | None, str | None]:
     config.set("agent.vi_mode", state_bool)
     pub.sendMessage("prompt-update")
     return True, f"Vi mode: {state_bool}", None, None
+
+
+@cmd(
+    "/attachimage",
+    "Attach an image to the next prompt",
+    examples=[
+        "/attachimage path/to/screenshot.png",
+        "/attachimage ~/Pictures/photo.jpg",
+    ]
+)
+def _cmd_attach_image(core, params) -> tuple[bool, str | None, str | None, str | None]:
+    if not params:
+        return False, "please provide an image file path", None, None
+
+    file_path = os.path.expanduser(' '.join(params))
+    path = Path(file_path)
+
+    if not path.is_file():
+        return False, f"file not found: {file_path}", None, None
+
+    try:
+        raw_bytes = path.read_bytes()
+        result = resize_image(raw_bytes)
+        core._pending_image = result
+        return True, f"\U0001f5bc\ufe0f  Image loaded and attached — will be sent with your next message. ([dim]{path.name}[/dim], {len(result['image_base64'])} bytes base64)", None, None
+    except Exception as e:
+        return False, f"failed to load image: {e}", None, None
 
 
 @cmd(

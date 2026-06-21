@@ -5,13 +5,13 @@ Downscaled and compressed to reduce token usage. User confirmation is
 required for privacy/security.
 """
 
-import base64
 from io import BytesIO
-from PIL import Image, ImageGrab
+from PIL import ImageGrab
 from rich.prompt import Confirm as RichConfirm
 
 from agent.tools import tool
-from agent.console import print, newline
+from agent.console import print, newline, ok, err
+from agent.utils import resize_image
 
 
 @tool(
@@ -32,14 +32,14 @@ def screenshot_handler(args):
 
     # User confirmation
     newline()
-    print("\U0001f4f8 [warn]Screenshot requested[/warn]")
+    print("📷 [warn]Screenshot requested[/warn]")
     print("  [weak]The agent wants to capture your current screen.[/weak]")
     newline()
 
     confirmed = RichConfirm.ask("[bold]Allow screenshot?[/bold]", default=False)
 
     if not confirmed:
-        print("  [err]\u2717[/err] Cancelled by user")
+        err("Cancelled by user")
         return {
             "error": (
                 "Screenshot was cancelled by the user. "
@@ -49,7 +49,7 @@ def screenshot_handler(args):
             "user_cancelled": True,
         }
 
-    print("  [ok]\u2713[/ok] Capturing screenshot...")
+    ok("Capturing screenshot...")
 
     # Capture
     img = ImageGrab.grab()
@@ -58,16 +58,9 @@ def screenshot_handler(args):
     if img.mode == "RGBA":
         img = img.convert("RGB")
 
-    # Downscale: max dimension 1024px, maintain aspect ratio
-    max_dim = 1024
-    w, h = img.size
-    if w > max_dim or h > max_dim:
-        ratio = min(max_dim / w, max_dim / h)
-        new_w = int(w * ratio)
-        new_h = int(h * ratio)
-        img = img.resize((new_w, new_h))
+    # Save to bytes then reuse the shared resize utility
+    buf = BytesIO()
+    img.save(buf, format="PNG")  # lossless intermediate
+    raw_bytes = buf.getvalue()
 
-    buffer = BytesIO()
-    img.save(buffer, format="JPEG", quality=70, optimize=True)
-    b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
-    return {"image_base64": b64, "mime_type": "image/jpeg"}
+    return resize_image(raw_bytes)

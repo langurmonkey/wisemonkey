@@ -1,5 +1,44 @@
+import base64
 import re
+from io import BytesIO
 from pathlib import Path
+
+def resize_image(image_bytes: bytes, max_dim: int = 1024, quality: int = 70) -> dict:
+    """Resize and compress an image to JPEG.
+
+    Args:
+        image_bytes: Raw image bytes (PNG, JPEG, etc.).
+        max_dim: Maximum width or height (maintains aspect ratio). Default 1024.
+        quality: JPEG quality 1–100. Default 70.
+
+    Returns:
+        dict with keys:
+            - ``image_base64``: base64-encoded JPEG data
+            - ``mime_type``: always ``"image/jpeg"``
+    """
+    from PIL import Image
+
+    img = Image.open(BytesIO(image_bytes))
+
+    # Convert RGBA to RGB for JPEG
+    if img.mode == "RGBA":
+        img = img.convert("RGB")
+    elif img.mode == "P":
+        img = img.convert("RGB")
+
+    # Downscale maintaining aspect ratio
+    w, h = img.size
+    if w > max_dim or h > max_dim:
+        ratio = min(max_dim / w, max_dim / h)
+        new_w = int(w * ratio)
+        new_h = int(h * ratio)
+        img = img.resize((new_w, new_h))
+
+    buffer = BytesIO()
+    img.save(buffer, format="JPEG", quality=quality, optimize=True)
+    b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+    return {"image_base64": b64, "mime_type": "image/jpeg"}
+
 
 def contractuser(path_str: str | Path) -> str:
     """

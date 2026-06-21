@@ -68,6 +68,9 @@ class Core:
             self.thinking = False
             self.generating = False
 
+            # Pending image to attach to the next user prompt
+            self._pending_image: dict | None = None
+
             # Initialize tokenizer for token-counting
             encoding_name = "cl100k_base"
             try:
@@ -378,10 +381,27 @@ class Core:
         """
 
         # Initialize with system prompt
-        self.messages = [
-            {"role": "system", "content": self._build_system_prompt()},
-            {"role": "user", "content": user_input},
-        ]
+        system_msg = {"role": "system", "content": self._build_system_prompt()}
+
+        # Build user message — attach pending image if one exists
+        if self._pending_image:
+            user_msg = {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{self._pending_image['mime_type']};base64,{self._pending_image['image_base64']}",
+                        },
+                    },
+                    {"type": "text", "text": user_input},
+                ],
+            }
+            self._pending_image = None  # consumed
+        else:
+            user_msg = {"role": "user", "content": user_input}
+
+        self.messages = [system_msg, user_msg]
 
         # Total token count
         total_tokens = 0
