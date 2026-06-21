@@ -53,7 +53,6 @@ def _concretize(text: str) -> str:
         text = text.replace(k, _STYLE_MAP[k])
     return text
 
-
 class TuiStartupOutput(StartupOutput):
     """Startup output adapter that writes directly to the TUI RichLog.
 
@@ -117,43 +116,7 @@ class WisemonkeyTui(App):
     """Full-screen Textual TUI for Wisemonkey."""
 
     TITLE = "Wisemonkey"
-    CSS = """
-    Screen {
-        layout: vertical;
-    }
-
-    Header {
-        dock: top;
-        height: 1;
-    }
-
-    #output {
-        height: 1fr;
-        border: none;
-        padding: 0 1;
-        overflow-y: auto;
-        scrollbar-gutter: stable;
-    }
-
-    #bottom-area {
-        dock: bottom;
-        height: auto;
-        width: 100%;
-    }
-
-    #status-bar {
-        height: 1;
-        background: $surface;
-        color: $text-muted;
-        padding: 0 1;
-        width: 100%;
-    }
-
-    #input {
-        width: 100%;
-        height: 10;
-    }
-    """
+    CSS_PATH = "../styles/wm.tcss"
 
     def __init__(self, config_path: str | None = None, session: str = "default"):
         super().__init__()
@@ -167,6 +130,7 @@ class WisemonkeyTui(App):
         with Container(id="bottom-area"):
             yield Static(id="status-bar")
             yield TextArea(id="input", placeholder="Type a message...")
+            yield Static(id="bottom-bar")
 
     def on_mount(self) -> None:
         """Set up the agent core and render startup info."""
@@ -203,7 +167,7 @@ class WisemonkeyTui(App):
         self.query_one("#output", RichLog).write(renderable)
 
     def _update_status(self) -> None:
-        """Refresh the status bar text."""
+        """Refresh the status and bottom bars text."""
         if not self.core:
             self.query_one("#status-bar", Static).update(" Not connected")
             return
@@ -212,6 +176,12 @@ class WisemonkeyTui(App):
         self.query_one("#status-bar", Static).update(
             f" Model: [bold]{model}[/bold]  |  Session: [bold]{sess}[/bold]"
         )
+        bottom_text = _concretize(
+            " [$accent]Alt[/$accent]+[$accent]↵[/$accent]: new line | [$accent]↵[/$accent]: submit | [$accent]Ctrl[/$accent]+[$accent]q[/$accent]: quit"
+            )
+        self.query_one("#bottom-bar", Static).update(bottom_text)
+
+        
 
     # ---- input handling ----------------------------------------------------
 

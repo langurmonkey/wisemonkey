@@ -1,0 +1,43 @@
+Screen {
+    layout: vertical;
+}
+
+Header {
+    dock: top;
+    height: 1;
+}
+
+#output {
+    height: 1fr;
+    border: none;
+    padding: 0 1;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+}
+
+#bottom-area {
+    dock: bottom;
+    height: auto;
+    width: 100%;
+}
+
+#status-bar {
+    height: 1;
+    background: $surface;
+    color: $text-muted;
+    padding: 0 1;
+    width: 100%;
+}
+
+#bottom-bar {
+    height: 1;
+    background: $surface;
+    color: $text-muted;
+    padding: 0 1;
+    width: 100%;
+}
+
+#input {
+    width: 100%;
+    height: 10;
+}
