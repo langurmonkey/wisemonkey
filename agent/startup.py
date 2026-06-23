@@ -75,6 +75,8 @@ def startup_info(core, output: StartupOutput):
     from importlib.metadata import version as _ver, PackageNotFoundError
 
     term_size = shutil.get_terminal_size((80, 20))
+    # ASCII monkey: Modified from "Monkey Typing" by Joan G. Stark (Spunk)
+    # https://www.asciiart.eu/animals/monkeys
     monkee = r'''
                                .-"-.
                              _/.-.-.\_
@@ -87,6 +89,7 @@ def startup_info(core, output: StartupOutput):
     if term_size.columns < 80:
         wisemonkey = "WISEMONKEY"
     else:
+        # ASCII title generated with https://patorjk.com/software/taag/
         wisemonkey = '''
                                                                     
 ██     ██ ██ ▄█████ ██████ ██▄  ▄██ ▄████▄ ███  ██ ██ ▄█▀ ██████ ██  ██ 
