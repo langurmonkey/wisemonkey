@@ -5,6 +5,8 @@ Screen {
 Header {
     dock: top;
     height: 1;
+    background: $primary-muted;
+    color: $text-primary;
 }
 
 #output {
@@ -23,16 +25,16 @@ Header {
 
 #status-bar {
     height: 1;
-    background: $surface;
-    color: $text-muted;
+    background: $accent-muted;
+    color: $text-accent;
     padding: 0 1;
     width: 100%;
 }
 
 #bottom-bar {
     height: 1;
-    background: $surface;
-    color: $text-muted;
+    background: $primary-muted;
+    color: $text-primary;
     padding: 0 1;
     width: 100%;
 }

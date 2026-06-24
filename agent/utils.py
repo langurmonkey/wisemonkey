@@ -10,10 +10,18 @@ from typing import Protocol
 
 from PIL import Image
 
+# Terminal helpers
 
-# ---------------------------------------------------------------------------
+def term_width():
+    import os
+    try:
+        w = os.get_terminal_size().columns
+    except Exception:
+        w = 80
+    return w
+
+
 # Image helpers
-# ---------------------------------------------------------------------------
 
 def resize_image(image_bytes: bytes, max_dim: int = 1024, quality: int = 70) -> dict:
     """Resize an image so its longest side is at most *max_dim* pixels and
@@ -39,9 +47,7 @@ def resize_image(image_bytes: bytes, max_dim: int = 1024, quality: int = 70) -> 
     return {"image_base64": b64, "mime_type": "image/jpeg"}
 
 
-# ---------------------------------------------------------------------------
 # Path helpers
-# ---------------------------------------------------------------------------
 
 def contractuser(path_str: str | Path) -> str:
     """
@@ -57,9 +63,7 @@ def contractuser(path_str: str | Path) -> str:
         return str(path)
 
 
-# ---------------------------------------------------------------------------
 # Command-tree helpers (for NestedCompleter)
-# ---------------------------------------------------------------------------
 
 separator_re = re.compile(r"[-\s]+")
 
@@ -109,9 +113,7 @@ def collapse_none_dicts(obj):
     return collapsed
 
 
-# ---------------------------------------------------------------------------
 # Time helpers
-# ---------------------------------------------------------------------------
 
 def pretty_timedelta(delta):
     """
@@ -151,9 +153,7 @@ def pretty_timedelta(delta):
         'no time'
 
 
-# ---------------------------------------------------------------------------
 # Prompt UI abstraction layer
-# ---------------------------------------------------------------------------
 
 class PromptUi(Protocol):
     """Abstract interface for user prompting.

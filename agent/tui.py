@@ -29,6 +29,7 @@ from agent.commands import registry
 from agent.prompt_ui import TuiPromptUi as _TuiPromptUi
 from agent.startup import startup_info, StartupOutput
 from agent.console import theme_dict
+from agent.utils import term_width
 
 # ---------------------------------------------------------------------------
 # Style-name resolution  (abstract -> concrete colour tags)
@@ -74,14 +75,10 @@ class TuiStartupOutput(StartupOutput):
         if self._rc is None:
             from io import StringIO
             from agent.console import monkee_theme
-            import os
-            try:
-                w = os.get_terminal_size().columns
-            except Exception:
-                w = 80
+            w = term_width() - 4
             self._rc_buf = StringIO()
             self._rc = Console(
-                theme=monkee_theme, file=self._rc_buf, width=w-4,
+                theme=monkee_theme, file=self._rc_buf, width=w,
                 force_terminal=True, color_system="truecolor",
             )
         return self._rc
@@ -104,7 +101,7 @@ class TuiStartupOutput(StartupOutput):
         self.app._write("")
 
     def rule(self, style: str = "dim", title: str = "") -> None:
-        self.app._write_rich(self._render_to_text(Rule(style=style)))
+        self.app._write_rich(self._render_to_text(Rule(style=style, title=title)))
 
     def info(self, text: str) -> None:
         self.app._write(
@@ -123,6 +120,7 @@ class WisemonkeyTui(App):
         self.config_path = config_path
         self.session = session
         self.core: Core | None = None
+        self.output: TuiStartupOutput = TuiStartupOutput(self)
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -144,7 +142,7 @@ class WisemonkeyTui(App):
             return
 
         # Render startup info via the shared module
-        startup_info(self.core, TuiStartupOutput(self))
+        startup_info(self.core, self.output)
         self._update_status()
 
         # Stream buffer: accumulate content until a newline is hit
@@ -192,6 +190,7 @@ class WisemonkeyTui(App):
         Runs in a background thread so that TuiPromptUi can block waiting
         for user input without freezing the Textual event loop.
         """
+        self.output.rule(style="dim")
         tokens = user_input.split()
         command, params = registry.lookup(tokens)
 
@@ -228,7 +227,7 @@ class WisemonkeyTui(App):
 
     def _handle_prompt(self, user_input: str) -> None:
         """Send the user message to the LLM in a background thread."""
-        self._write_rich(Rule(style="dim"))
+        self.output.rule(style="dim")
         self._write("[medium_orchid bold]Wisemonkey:[/medium_orchid bold]")
         self._stream_buffer = ""
         self._run_turn(user_input)
@@ -344,7 +343,7 @@ class WisemonkeyTui(App):
             length, max_sz, rate = self.core.memory.get_chat_stats()
             label = f"  {gen_time:.1f}s  |  {tokens} tokens  |  {ntools} tools  |  Mem: {length}/{max_sz} ({rate:.2f}%)  "
             self._write("")
-            self._write_rich(Rule(style="dim", title=label))
+            self.output.rule(style="dim", title=label)
             self._write("")
 
     # ---- lifecycle ---------------------------------------------------------
