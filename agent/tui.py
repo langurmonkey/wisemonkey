@@ -23,8 +23,9 @@ from textual.containers import Container
 from textual.widgets import TextArea, Header, RichLog, Static
 from textual import work
 from textual.binding import Binding
+from textual.timer import Timer
 
-from agent.core import Core, TurnCancelled
+from agent.core import Core, Stage, TurnCancelled
 from agent.commands import registry
 from agent.prompt_ui import TuiPromptUi as _TuiPromptUi
 from agent.startup import startup_info, StartupOutput
@@ -148,12 +149,44 @@ class WisemonkeyTui(App):
         # Stream buffer: accumulate content until a newline is hit
         self._stream_buffer = ""
 
+        # Spinner interval handle for prompt callback
+        self._prompt_spinner_interval: Timer | None = None
+
         # Prompt UI for interactive commands
         self._prompt_ui = _TuiPromptUi(self)
 
         # Focus the input field by default
         inp = self.query_one("#input", TextArea)
         inp.focus()
+
+    # ---- prompt callback (spinner) -----------------------------------------
+
+    def _prompt_callback(self, stage: Stage) -> None:
+        """Called when the LLM starts/stops processing a prompt.
+
+        On START: replace the status bar with "⏳ Processing prompt..."
+        and start a spinner animation via set_interval.
+        On STOP: stop the spinner and restore the normal status.
+        """
+        if stage == Stage.START:
+            self.query_one("#status-bar", Static).update(" ⏳ Processing prompt...")
+            self._prompt_spinner_chars = "◐◓◑◒"
+            self._prompt_spinner_idx = 0
+
+            def _tick() -> None:
+                sb = self.query_one("#status-bar", Static)
+                sb.update(
+                    f" {self._prompt_spinner_chars[self._prompt_spinner_idx % 4]} Processing prompt..."
+                )
+                self._prompt_spinner_idx += 1
+
+            self._prompt_spinner_interval = self.set_interval(0.2, _tick)
+
+        elif stage == Stage.STOP:
+            if self._prompt_spinner_interval:
+                self._prompt_spinner_interval.stop()
+                self._prompt_spinner_interval = None
+            self._update_status()
 
     # ---- output helpers ----------------------------------------------------
 
@@ -289,7 +322,7 @@ class WisemonkeyTui(App):
         try:
             (response, total_tokens, ntools, total_gen_time) = self.core.run_turn(
                 user_input,
-                prompt_callback=None,
+                prompt_callback=lambda s: self.call_from_thread(self._prompt_callback, s),
                 reasoning_callback=None,
                 content_callback=lambda c: self._append_content(c),
                 tool_callback=lambda n, a: self._append_tool(n),
