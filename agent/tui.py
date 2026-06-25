@@ -146,11 +146,13 @@ class WisemonkeyTui(App):
         startup_info(self.core, self.output)
         self._update_status()
 
-        # Stream buffer: accumulate content until a newline is hit
+        # Stream buffers: accumulate content until a newline is hit
         self._stream_buffer = ""
+        self._reasoning_buffer = ""
 
-        # Spinner interval handle for prompt callback
+        # Spinner interval handles
         self._prompt_spinner_interval: Timer | None = None
+        self._thinking_spinner_interval: Timer | None = None
 
         # Prompt UI for interactive commands
         self._prompt_ui = _TuiPromptUi(self)
@@ -158,6 +160,51 @@ class WisemonkeyTui(App):
         # Focus the input field by default
         inp = self.query_one("#input", TextArea)
         inp.focus()
+
+    # ---- reasoning callback -------------------------------------------------
+
+    def _reasoning_callback(self, stage: Stage, content: str = "", reasoning_visible: bool = True) -> None:
+        """Called from worker thread on START / PROCESS / STOP of reasoning.
+
+        START: show "Thinking..." in the status bar with a spinner.
+        PROCESS: accumulate reasoning in a buffer, flush on newline.
+        STOP: stop spinner, flush remaining buffer, restore status.
+
+        All UI writes go through ``call_from_thread``, same pattern as
+        ``_append_content``.
+        """
+        if stage == Stage.START:
+            self.call_from_thread(self.query_one("#status-bar", Static).update, " \U0001f4a1 Thinking...")
+            self._thinking_spinner_chars = "\u25d0\u25d3\u25d1\u25d2"
+            self._thinking_spinner_idx = 0
+
+            def _tick() -> None:
+                sb = self.query_one("#status-bar", Static)
+                sb.update(
+                    f" {self._thinking_spinner_chars[self._thinking_spinner_idx % 4]} Thinking..."
+                )
+                self._thinking_spinner_idx += 1
+
+            self._thinking_spinner_interval = self.set_interval(0.2, _tick)
+
+        elif stage == Stage.PROCESS:
+            if content and reasoning_visible:
+                self._reasoning_buffer += content
+                if "\n" in content:
+                    buf = self._reasoning_buffer
+                    self._reasoning_buffer = ""
+                    self.call_from_thread(self._write, f"[dim]{buf}[/dim]")
+
+        elif stage == Stage.STOP:
+            if self._thinking_spinner_interval:
+                self._thinking_spinner_interval.stop()
+                self._thinking_spinner_interval = None
+            # Flush any remaining reasoning content
+            if self._reasoning_buffer:
+                self.call_from_thread(self._write, f"[dim]{self._reasoning_buffer}[/dim]")
+                self._reasoning_buffer = ""
+            self.call_from_thread(self._write, "[green]\u2714[/green] \U0001f4a1 Done thinking")
+            self.call_from_thread(self._update_status)
 
     # ---- prompt callback (spinner) -----------------------------------------
 
@@ -323,9 +370,9 @@ class WisemonkeyTui(App):
             (response, total_tokens, ntools, total_gen_time) = self.core.run_turn(
                 user_input,
                 prompt_callback=lambda s: self.call_from_thread(self._prompt_callback, s),
-                reasoning_callback=None,
-                content_callback=lambda c: self._append_content(c),
-                tool_callback=lambda n, a: self._append_tool(n),
+                reasoning_callback=self._reasoning_callback,
+                content_callback=self._append_content,
+                tool_callback=self._append_tool,
                 cancel_callback=None,
                 error_callback=None,
             )
