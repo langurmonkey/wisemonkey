@@ -169,7 +169,8 @@ class Agent:
             "frame.border": "ansiyellow",
             "bottom-toolbar": "#ffffff bg:#262626 noreverse",
             "kbd": "#ffd787 bold",
-            "model": "#0087d7"
+            "model": "#0087d7",
+            "weak": "#393939"
         })
 
         # Vi mode
@@ -247,7 +248,7 @@ class Agent:
         model = self.core.config.get("model.name")
         self._session = PromptSession(
                     style=style,
-                    message=HTML(f"⩥ You ⩤ <model>⇒ {model}</model>\n❯ "),
+                    message=HTML(f"⩥ You ⩤   <weak>model:</weak> <model>{model}</model>  <weak>session:</weak> <model>{self.core.memory.session}</model>\n❯ "),
                     history=FileHistory(str(history_path)),
                     show_frame=True,
                     multiline=True,
