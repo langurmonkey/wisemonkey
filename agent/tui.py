@@ -46,10 +46,6 @@ PASTE_THRESHOLD = 1000
 # that look like path components.
 _PATH_RE = re.compile(r'(?:^|(?<=\s))(~?/?(?:[^\s]*/)+[^\s]*|~?/[^\s]*)$')
 
-# ---------------------------------------------------------------------------
-# A TextArea that handles history on up/down when cursor is at boundaries
-# ---------------------------------------------------------------------------
-
 class _PromptInput(TextArea):
     """TextArea that handles history on up/down, Ctrl+C (clear/double-tap
     quit), and paste threshold."""
@@ -58,6 +54,7 @@ class _PromptInput(TextArea):
         Binding("enter", "submit", "Submit", priority=True),
         Binding("shift+enter", "newline", "New line"),
         Binding("ctrl+c", "clear", "Clear"),
+        Binding("ctrl+o", "open_in_pager", "Open chat in pager"),
     ]
 
     def __init__(self, *args, **kwargs):
@@ -65,11 +62,14 @@ class _PromptInput(TextArea):
         self._last_ctrl_c_time: float = 0.0
 
         # Autocomplete
-        self.AUTOCOMPLETE = []
+        self.COMMANDS = []
         for cmd in registry.list_commands():
-            self.AUTOCOMPLETE.append(cmd.name)
+            self.COMMANDS.append(cmd.name)
             if '-' in cmd.name:
-                self.AUTOCOMPLETE.append(cmd.name.replace('-', ' '))
+                self.COMMANDS.append(cmd.name.replace('-', ' '))
+
+    def set_core(self, core: Core):
+        self.core = core
 
     @property
     def _wm_app(self) -> WisemonkeyTui:
@@ -105,6 +105,40 @@ class _PromptInput(TextArea):
     def action_clear(self) -> None:
         """Clear text"""
         self.clear()
+
+    def action_open_in_pager(self) -> None:
+        """Write the current session log to a temp file and open it in $PAGER."""
+        import subprocess
+        import tempfile
+
+        if not self.core:
+            return
+
+        history = self.core.memory.get_chat_unformatted()
+
+        lines = []
+        for turn in history:
+            role = turn.get("role", "")
+            content = turn.get("content", "")
+            if isinstance(content, list):
+                # tool-use turns have content as a list of blocks
+                content = "\n".join(
+                    block.get("text", "") for block in content if block.get("type") == "text"
+                )
+            label = "You" if role == "user" else "Wisemonkey"
+            lines.append(f"{'─' * 60}\n{label}\n{'─' * 60}\n{content}\n")
+
+        text = "\n".join(lines)
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", prefix="wisemonkey_", delete=False
+        ) as f:
+            f.write(text)
+            tmp_path = f.name
+
+        pager = os.environ.get("PAGER", "less")
+        with self.app.suspend():
+            subprocess.call([pager, tmp_path])
 
     async def _on_paste(self, event: PasteEvent) -> None:
         """Handle paste: save large pastes (>PASTE_THRESHOLD chars) to a file
@@ -157,10 +191,10 @@ class _PromptInput(TextArea):
         line = self.document.get_line(row)
         current = line[:col]  # text on this line up to the cursor
 
-        # ── 1. slash commands ────────────────────────────────────────────
+        # Slash commands
         if line.startswith("/") and col == len(line):
             candidates = [
-                c for c in self.AUTOCOMPLETE
+                c for c in self.COMMANDS
                 if c.startswith(current) and c != current
             ]
             if candidates:
@@ -170,7 +204,7 @@ class _PromptInput(TextArea):
             self.suggestion = ""
             return
 
-        # ── 2. filesystem paths ──────────────────────────────────────────
+        # File system paths
         m = _PATH_RE.search(current)
         if m:
             token = m.group(0)
@@ -187,7 +221,7 @@ class _PromptInput(TextArea):
 
         # Decide what directory to scan and what prefix to match against.
         if expanded.endswith("/"):
-            # User typed a full dir path ending in /  → list contents
+            # User typed a full dir path ending in /  -> list contents
             directory = expanded
             prefix = ""
             # The suggestion should start with nothing (entries are below the slash)
@@ -369,6 +403,7 @@ class WisemonkeyTui(App):
 
         # Focus the input field by default
         inp = self.query_one("#input", _PromptInput)
+        inp.set_core(self.core)
         inp.focus()
 
     # ---- reasoning callback -------------------------------------------------
