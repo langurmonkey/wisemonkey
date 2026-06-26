@@ -6,7 +6,6 @@ import base64
 import re
 from io import BytesIO
 from pathlib import Path
-from typing import Protocol
 
 from PIL import Image
 
@@ -153,30 +152,3 @@ def pretty_timedelta(delta):
         'no time'
 
 
-# Prompt UI abstraction layer
-
-class PromptUi(Protocol):
-    """Abstract interface for user prompting.
-
-    Implementations provide the same prompting primitives that ``rich.prompt``
-    and ``prompt_toolkit`` offer, but routed through whichever UI is active
-    (classic REPL or full-screen TUI).
-    """
-
-    def ask_string(self, message: str, default: str = "") -> str:
-        """Prompt the user for a free-form string."""
-
-    def ask_float(self, message: str, default: float = 0.0) -> float:
-        """Prompt the user for a floating-point number."""
-
-    def ask_choice(
-        self,
-        message: str,
-        options: list[tuple[str, str]],
-        default: str | None = None,
-    ) -> str:
-        """Present a list of *options* as ``(value, label)`` tuples and return
-        the selected *value*."""
-
-    def ask_confirm(self, message: str, default: bool = False) -> bool:
-        """Ask a yes/no question and return the boolean answer."""

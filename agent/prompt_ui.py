@@ -2,14 +2,49 @@
 
 from __future__ import annotations
 
+from typing import Protocol
+
 from rich.prompt import Prompt as RichPrompt, FloatPrompt, Confirm
 from prompt_toolkit.shortcuts import choice
 from prompt_toolkit.formatted_text import HTML
 
 from agent.console import console
 
+# Prompt UI abstraction layer
 
-class RichPromptUi:
+class PromptUi(Protocol):
+    """Abstract interface for user prompting.
+
+    Implementations provide the same prompting primitives that ``rich.prompt``
+    and ``prompt_toolkit`` offer, but routed through whichever UI is active
+    (classic REPL or full-screen TUI).
+    """
+
+    def ask_string(self, message: str, default: str = "") -> str:
+        """Prompt the user for a free-form string."""
+
+    def ask_float(self, message: str, default: float = 0.0) -> float:
+        """Prompt the user for a floating-point number."""
+
+    def ask_choice(
+        self,
+        message: str,
+        options: list[tuple[str, str]],
+        default: str | None = None,
+    ) -> str:
+        """Present a list of *options* as ``(value, label)`` tuples and return
+        the selected *value*."""
+
+    def ask_confirm(self, message: str, default: bool = False) -> bool:
+        """Ask a yes/no question and return the boolean answer."""
+
+    def run_subprocess(self, cmd: list[str]):
+        """Run an external program with full terminal control.
+        Default: just run it directly (fine for plain-terminal contexts)."""
+        import subprocess
+        return subprocess.run(cmd)
+
+class RichPromptUi(PromptUi):
     """PromptUi backed by rich.prompt (for classic REPL mode)."""
 
     def ask_string(self, message: str, default: str = "") -> str:
@@ -37,7 +72,7 @@ class RichPromptUi:
         return Confirm.ask(message, default=default, console=console)
 
 
-class TuiPromptUi:
+class TuiPromptUi(PromptUi):
     """PromptUi backed by the Textual TUI (for --tui mode).
 
     Each method writes a prompt to the output log, switches the status bar
@@ -144,3 +179,14 @@ class TuiPromptUi:
         if not raw:
             return default
         return raw.lower() in ("y", "yes", "true", "1")
+
+    def run_subprocess(self, cmd: list[str]):
+        import subprocess
+
+        def _do():
+            with self._app.suspend():
+                return subprocess.run(cmd)
+
+        # We're called from the worker thread running the command;
+        # call_from_thread hops to the main thread and blocks until done.
+        return self._app.call_from_thread(_do)

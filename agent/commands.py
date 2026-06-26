@@ -17,7 +17,8 @@ from typing import Callable
 from pubsub import pub
 
 from agent.console import console, err
-from agent.utils import resize_image, PromptUi
+from agent.utils import resize_image
+from agent.prompt_ui import PromptUi
 
 # Global error messages for commands
 no_params_error = "This command does not take any parameters"
@@ -212,7 +213,7 @@ def _fallback_prompt_ui() -> PromptUi:
       "Exit the agent",
       aliases=["/exit", "/q"]
 )
-def _cmd_quit(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_quit(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     return True, "EXIT", None, None
 
 
@@ -220,7 +221,7 @@ def _cmd_quit(core, params, prompt_ui=None) -> tuple[bool, str | None, str | Non
       "/reasoning",
        "Configure model reasoning",
 )
-def _cmd_reasoning(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_reasoning(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
 
     if params:
         return False, no_params_error, None, None
@@ -267,7 +268,7 @@ def _cmd_reasoning(core, params, prompt_ui=None) -> tuple[bool, str | None, str 
       "/notes",
       "List all notes",
 )
-def _cmd_notes(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_notes(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     notes = core.memory.get_notes()
     buff = ""
     for note in notes:
@@ -282,7 +283,7 @@ def _cmd_notes(core, params, prompt_ui=None) -> tuple[bool, str | None, str | No
           "/notes add This is my note   # Add a new note",
       ]
 )
-def _cmd_notes_add(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_notes_add(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         core.memory.add_note(" ".join(params))
         return True, "note added successfully", None, None
@@ -293,7 +294,7 @@ def _cmd_notes_add(core, params, prompt_ui=None) -> tuple[bool, str | None, str 
     "/session",
     "Print session information",
 )
-def _cmd_session(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_session(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
@@ -321,7 +322,7 @@ def _cmd_session(core, params, prompt_ui=None) -> tuple[bool, str | None, str | 
         "/session clear 10     # Clear the 10 oldest chat exchanges of this session",
     ]
 )
-def _cmd_session_clear(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_session_clear(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     n = 0
     if params:
         try:
@@ -340,7 +341,7 @@ def _chat_memory(core, max_exchanges):
       "/session-agent",
       "Show the session agent memory contents (user profile and notes)",
 )
-def _cmd_session_agent(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_session_agent(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
@@ -359,7 +360,7 @@ def _cmd_session_agent(core, params, prompt_ui=None) -> tuple[bool, str | None, 
           "/session chat 2   # Print last 2 interactions"
       ]
 )
-def _cmd_session_chat(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_session_chat(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     n = 0
     if params:
         try:
@@ -377,7 +378,7 @@ def _cmd_session_chat(core, params, prompt_ui=None) -> tuple[bool, str | None, s
     "/session-compact",
     "Compact the session chat history by summarizing it into a shorter form."
 )
-def _cmd_session_compact(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_session_compact(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
@@ -426,7 +427,7 @@ def _cmd_session_compact(core, params, prompt_ui=None) -> tuple[bool, str | None
         "/embed ./notes.md",
     ]
 )
-def _cmd_embed(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_embed(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     if not params:
         return False, "please provide a file path", None, None
 
@@ -457,7 +458,7 @@ def _cmd_embed(core, params, prompt_ui=None) -> tuple[bool, str | None, str | No
       "/tools",
       "List all available tools ⚙",
 )
-def _cmd_tools(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_tools(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     from agent.tools import get_tools_str
     return True, None, get_tools_str(), None
 
@@ -465,7 +466,7 @@ def _cmd_tools(core, params, prompt_ui=None) -> tuple[bool, str | None, str | No
       "/tools-native",
       "List native tools ⚙",
 )
-def _cmd_tools_native(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_tools_native(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     from agent.tools import get_tools_str
     return True, None, get_tools_str(prefix="mcp_", contains=False), None
 
@@ -473,7 +474,7 @@ def _cmd_tools_native(core, params, prompt_ui=None) -> tuple[bool, str | None, s
       "/tools-mcp",
       "List MCP tools ⚙",
 )
-def _cmd_tools_mcp(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_tools_mcp(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     from agent.tools import get_tools_str
     return True, None, get_tools_str(prefix="mcp_", contains=True), None
 
@@ -481,7 +482,7 @@ def _cmd_tools_mcp(core, params, prompt_ui=None) -> tuple[bool, str | None, str 
       "/skills",
       "List loaded skills ⚔",
 )
-def _cmd_skills(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_skills(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     return True, None, core.skills.get_skills_str(), None
 
 @cmd(
@@ -489,7 +490,7 @@ def _cmd_skills(core, params, prompt_ui=None) -> tuple[bool, str | None, str | N
       "Configure the model to use",
       aliases=["/models"]
 )
-def _cmd_models(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_models(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     ui = prompt_ui or _fallback_prompt_ui()
     from agent.config import get_config
     from agent.router import Provider
@@ -552,7 +553,7 @@ def _cmd_models(core, params, prompt_ui=None) -> tuple[bool, str | None, str | N
       "/url",
       "Configure the base URL",
 )
-def _cmd_url(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_url(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
@@ -576,7 +577,7 @@ def _cmd_url(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None
       "/config-show",
        "Show current configuration",
 )
-def _cmd_config_show(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_config_show(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
@@ -587,15 +588,15 @@ def _cmd_config_show(core, params, prompt_ui=None) -> tuple[bool, str | None, st
       "/config-edit",
        "Edit the configuration file with $EDITOR or $VISUAL",
 )
-def _cmd_config_edit(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_config_edit(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
     from agent.config import edit_base_config_visual
-    result = edit_base_config_visual()
+    result = edit_base_config_visual(prompt_ui)
     ok = result.returncode == 0
     if ok:
-        ok, msg = core.initialize_router()
+        ok, _ = core.initialize_router()
         return ok, "Configuration edited successfully", None, None
     else:
         return ok, result.stderr, None, None
@@ -605,7 +606,7 @@ def _cmd_config_edit(core, params, prompt_ui=None) -> tuple[bool, str | None, st
     "Configure the agent interactively",
     aliases = ["/configure"],
 )
-def _cmd_config(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_config(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
@@ -623,12 +624,12 @@ def _cmd_config(core, params, prompt_ui=None) -> tuple[bool, str | None, str | N
       "/mcp-edit",
        "Edit the mcp.json configuration file with $EDITOR or $VISUAL",
 )
-def _cmd_mcp_edit(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_mcp_edit(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
     from agent.config import edit_mcp_config_visual
-    result = edit_mcp_config_visual()
+    result = edit_mcp_config_visual(prompt_ui)
     ok = result.returncode == 0
     if ok:
         return ok, "MCP configuration edited successfully", None, None
@@ -640,7 +641,7 @@ def _cmd_mcp_edit(core, params, prompt_ui=None) -> tuple[bool, str | None, str |
       "Show the current MCP configuration file",
       aliases = ["/mcp-show"],
 )
-def _cmd_mcp_show(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_mcp_show(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
@@ -658,7 +659,7 @@ def _cmd_mcp_show(core, params, prompt_ui=None) -> tuple[bool, str | None, str |
       "/mcp-tools",
       "List MCP tools ⚙",
 )
-def _cmd_mcp_tools(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_mcp_tools(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     from agent.tools import get_tools_str
     return True, None, get_tools_str(prefix="mcp_", contains=True), None
 
@@ -667,7 +668,7 @@ def _cmd_mcp_tools(core, params, prompt_ui=None) -> tuple[bool, str | None, str 
     "Set the inference temperature parameter in 0..2",
     aliases=["/temp", "/t"],
 )
-def _cmd_temperature(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_temperature(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
@@ -685,7 +686,7 @@ def _cmd_temperature(core, params, prompt_ui=None) -> tuple[bool, str | None, st
       "/vi",
        "Enable/disable vi input mode",
 )
-def _cmd_vi(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_vi(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
@@ -715,7 +716,7 @@ def _cmd_vi(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None,
         "/attachimage ~/Pictures/photo.jpg",
     ]
 )
-def _cmd_attach_image(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_attach_image(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     if not params:
         return False, "please provide an image file path", None, None
 
@@ -739,5 +740,5 @@ def _cmd_attach_image(core, params, prompt_ui=None) -> tuple[bool, str | None, s
     "Show command help",
     aliases=["/commands"],
 )
-def _cmd_help(core, params, prompt_ui=None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_help(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     return True, None, registry.get_commands_str(), None
