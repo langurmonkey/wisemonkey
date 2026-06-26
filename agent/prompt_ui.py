@@ -157,9 +157,18 @@ class TuiPromptUi(PromptUi):
                 lines.append(f"  {marker} [accent]{value}[/accent]")
             else:
                 lines.append(f"  {marker} [accent]{value}[/accent] — {label}")
+
+        # Set autocomplete
+        suggestions = [name for (name, _) in options]
+        self._app.set_special_suggestions(suggestions)
+
         self._app._write("\n".join(lines))
         self._app._write("\n")
         raw = self._request(f"Enter your choice from the list above (default: [accent]{default}[/accent])")
+
+        # Reset special autocomplete
+        self._app.set_special_suggestions(None)
+
         if not raw and default is not None:
             return default
         # Allow typing either the value or the label

@@ -57,6 +57,10 @@ class _PromptInput(TextArea):
         Binding("ctrl+o", "open_in_pager", "Open chat in pager"),
     ]
 
+    # Special autocomplete list
+    # When this is set, COMMANDS is ignored
+    SPECIAL: list[str] | None = None
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._last_ctrl_c_time: float = 0.0
@@ -68,8 +72,15 @@ class _PromptInput(TextArea):
             if '-' in cmd.name:
                 self.COMMANDS.append(cmd.name.replace('-', ' '))
 
+        # Special autocomplete list
+        # When this is set, COMMANDS is ignored
+        self.SPECIAL: list[str] | None = None
+
     def set_core(self, core: Core):
         self.core = core
+
+    def set_special_suggestions(self, sp: list[str] | None):
+        self.SPECIAL = sp
 
     @property
     def _wm_app(self) -> WisemonkeyTui:
@@ -191,10 +202,10 @@ class _PromptInput(TextArea):
         line = self.document.get_line(row)
         current = line[:col]  # text on this line up to the cursor
 
-        # Slash commands
-        if line.startswith("/") and col == len(line):
+        if self.SPECIAL:
+            # Use special list
             candidates = [
-                c for c in self.COMMANDS
+                c for c in self.SPECIAL
                 if c.startswith(current) and c != current
             ]
             if candidates:
@@ -203,16 +214,30 @@ class _PromptInput(TextArea):
                 return
             self.suggestion = ""
             return
+            
+        else:
+            # Slash commands
+            if line.startswith("/") and col == len(line):
+                candidates = [
+                    c for c in self.COMMANDS
+                    if c.startswith(current) and c != current
+                ]
+                if candidates:
+                    best = min(candidates, key=len)
+                    self.suggestion = best[len(current):]
+                    return
+                self.suggestion = ""
+                return
 
-        # File system paths
-        m = _PATH_RE.search(current)
-        if m:
-            token = m.group(0)
-            suffix = self._path_suggestions(token)
-            self.suggestion = suffix
-            return
+            # File system paths
+            m = _PATH_RE.search(current)
+            if m:
+                token = m.group(0)
+                suffix = self._path_suggestions(token)
+                self.suggestion = suffix
+                return
 
-        self.suggestion = ""
+            self.suggestion = ""
 
     @staticmethod
     def _path_suggestions(token: str) -> str:
@@ -614,6 +639,10 @@ class WisemonkeyTui(App):
             self._handle_command(user_input)
         else:
             self._handle_prompt(user_input)
+
+    def set_special_suggestions(self, sp: list[str] | None):
+        inp = self.query_one("#input", _PromptInput)
+        inp.set_special_suggestions(sp)
 
     @work(thread=True, exit_on_error=False)
     def _run_turn(self, user_input: str) -> None:
