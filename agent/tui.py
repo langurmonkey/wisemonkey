@@ -41,7 +41,7 @@ PASTE_THRESHOLD = 1000
 # A TextArea that handles history on up/down when cursor is at boundaries
 # ---------------------------------------------------------------------------
 
-class _SubmitTextArea(TextArea):
+class _PromptInput(TextArea):
     """TextArea that handles history on up/down, Ctrl+C (clear/double-tap
     quit), and paste threshold."""
 
@@ -234,7 +234,7 @@ class WisemonkeyTui(App):
         with Container(id="bottom-area"):
             yield Static(id="status-bar")
             with Container(id="input-widget"):
-                yield _SubmitTextArea.code_editor(id="input",
+                yield _PromptInput.code_editor(id="input",
                                                   placeholder="Type a message...",
                                                   soft_wrap=True,
                                                   language="markdown")
@@ -270,7 +270,7 @@ class WisemonkeyTui(App):
         self._history = History(sess_dir)
 
         # Focus the input field by default
-        inp = self.query_one("#input", _SubmitTextArea)
+        inp = self.query_one("#input", _PromptInput)
         inp.focus()
 
     # ---- reasoning callback -------------------------------------------------
@@ -415,20 +415,20 @@ class WisemonkeyTui(App):
     def _handle_prompt(self, user_input: str) -> None:
         """Send the user message to the LLM in a background thread."""
         self.output.rule(style="dim")
-        self._write("[medium_orchid bold]Wisemonkey:[/medium_orchid bold]")
+        self._write("[medium_orchid bold]▶ Wisemonkey ◀[/medium_orchid bold]")
         self._stream_buffer = ""
         self._run_turn(user_input)
 
     # ---- turn execution (threaded) -----------------------------------------
 
     BINDINGS = [
-        # Enter / shift+enter are handled by _SubmitTextArea
-        # Up / down for history are handled by _SubmitTextArea (cursor-boundary logic)
+        # Enter / shift+enter are handled by _PromptInput
+        # Up / down for history are handled by _PromptInput (cursor-boundary logic)
     ]
 
     def action_newline(self) -> None:
         """Insert a newline in the text area."""
-        inp = self.query_one("#input", _SubmitTextArea)
+        inp = self.query_one("#input", _PromptInput)
         row, col = inp.cursor_location
         text = inp.text
         lines = text.split("\n")
@@ -441,7 +441,7 @@ class WisemonkeyTui(App):
 
     def action_submit_text(self) -> None:
         """Submit the current text in the input area."""
-        inp = self.query_one("#input", _SubmitTextArea)
+        inp = self.query_one("#input", _PromptInput)
         text = inp.text.strip()
         # If we are waiting for an event, we can input nothing to use default
         if self._prompt_ui._pending_event is None and not text:
@@ -459,14 +459,14 @@ class WisemonkeyTui(App):
         """Move up in history - only if called from _SubmitTextArea (cursor at start)."""
         entry = self._history.up(current_text)
         if entry is not None:
-            inp = self.query_one("#input", _SubmitTextArea)
+            inp = self.query_one("#input", _PromptInput)
             inp.text = entry
             inp.cursor_location = (0, 0)
 
     def action_history_down(self) -> None:
         """Move down in history - only if called from _SubmitTextArea (cursor at end)."""
         entry = self._history.down()
-        inp = self.query_one("#input", _SubmitTextArea)
+        inp = self.query_one("#input", _PromptInput)
         if entry is not None:
             inp.text = entry
             lines = entry.split("\n")
@@ -475,7 +475,7 @@ class WisemonkeyTui(App):
 
     def _handle_user_input(self, user_input: str) -> None:
         """Process a user message or slash command."""
-        self._write(f"\n[gold1 bold]You:[/gold1 bold] {user_input}")
+        self._write(f"\n[gold1 bold]▶ You ◀[/gold1 bold]\n{user_input}")
 
         if user_input.startswith("/"):
             self._handle_command(user_input)
@@ -516,22 +516,30 @@ class WisemonkeyTui(App):
     def _append_content(self, content: str) -> None:
         """Streaming callback – called from worker thread.
 
-        Accumulates tokens in a buffer and only flushes to the RichLog
-        when a newline is encountered.  This prevents every token from
-        becoming its own RichLog entry (which causes double-spacing).
+        Accumulates tokens in a buffer and only flushes complete lines
+        to the RichLog when a newline is encountered.  This preserves
+        line breaks (so RichLog wraps at natural line endings) while
+        still preventing every token from becoming its own entry.
         """
-        self._stream_buffer += content
-        # Flush only on newlines to avoid fragmenting the output
-        if "\n" in content:
-            buf = self._stream_buffer
+        parts = content.split("\n")
+        # First part goes into the buffer (may be partial).
+        self._stream_buffer += parts[0]
+
+        if len(parts) > 1:
+            # Flush the completed line.
+            self.call_from_thread(self._write, self._stream_buffer)
             self._stream_buffer = ""
-            self.call_from_thread(self._write, buf)
+            # Remaining parts (except the last) are complete lines.
+            for p in parts[1:-1]:
+                self.call_from_thread(self._write, p)
+            # Last part starts a new buffer (still accumulating).
+            self._stream_buffer = parts[-1]
 
     def _append_tool(self, tool_name: str, tool_args) -> None:
         """Tool activation callback – called from worker thread."""
         self.call_from_thread(
             self._write,
-            f"[dim]🛠️ Activating tool: [steel_blue3]{tool_name}[/steel_blue3][/dim]",
+            f"[dim]🛠️ Activating tool: [steel_blue3]{tool_name}[/steel_blue3] with [/dim]{tool_args}",
         )
 
     def _finish_turn(
