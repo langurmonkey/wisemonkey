@@ -11,13 +11,18 @@ Coexists with the terminal-based agent (agent/agent.py).
 Launch with: wisemonkey --tui <session>
 """
 
+
 from __future__ import annotations
+
+import os
+import re
 
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.rule import Rule
 from rich.text import Text as RichText
 
+from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Container
 from textual.widgets import TextArea, Header, RichLog, Static, Footer
@@ -36,6 +41,10 @@ from textual.events import Paste as PasteEvent
 
 # Number of characters above which the paste action creates a file
 PASTE_THRESHOLD = 1000
+# Regex to find a path-like token immediately left of the cursor.
+# Matches an optional ~ or leading / followed by any non-whitespace chars
+# that look like path components.
+_PATH_RE = re.compile(r'(?:^|(?<=\s))(~?/?(?:[^\s]*/)+[^\s]*|~?/[^\s]*)$')
 
 # ---------------------------------------------------------------------------
 # A TextArea that handles history on up/down when cursor is at boundaries
@@ -54,6 +63,13 @@ class _PromptInput(TextArea):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._last_ctrl_c_time: float = 0.0
+
+        # Autocomplete
+        self.AUTOCOMPLETE = []
+        for cmd in registry.list_commands():
+            self.AUTOCOMPLETE.append(cmd.name)
+            if '-' in cmd.name:
+                self.AUTOCOMPLETE.append(cmd.name.replace('-', ' '))
 
     @property
     def _wm_app(self) -> WisemonkeyTui:
@@ -135,6 +151,88 @@ class _PromptInput(TextArea):
                 self.app.exit()
             else:
                 self._last_ctrl_c_time = now
+
+    def update_suggestion(self) -> None:
+        row, col = self.cursor_location
+        line = self.document.get_line(row)
+        current = line[:col]  # text on this line up to the cursor
+
+        # ── 1. slash commands ────────────────────────────────────────────
+        if line.startswith("/") and col == len(line):
+            candidates = [
+                c for c in self.AUTOCOMPLETE
+                if c.startswith(current) and c != current
+            ]
+            if candidates:
+                best = min(candidates, key=len)
+                self.suggestion = best[len(current):]
+                return
+            self.suggestion = ""
+            return
+
+        # ── 2. filesystem paths ──────────────────────────────────────────
+        m = _PATH_RE.search(current)
+        if m:
+            token = m.group(0)
+            suffix = self._path_suggestions(token)
+            self.suggestion = suffix
+            return
+
+        self.suggestion = ""
+
+    @staticmethod
+    def _path_suggestions(token: str) -> str:
+        """Return the completion suffix for *token*, or '' if none."""
+        expanded = os.path.expanduser(token)
+
+        # Decide what directory to scan and what prefix to match against.
+        if expanded.endswith("/"):
+            # User typed a full dir path ending in /  → list contents
+            directory = expanded
+            prefix = ""
+            # The suggestion should start with nothing (entries are below the slash)
+            offset = 0
+        else:
+            directory = os.path.dirname(expanded) or "."
+            prefix = os.path.basename(expanded)
+            offset = len(prefix)
+
+        try:
+            entries = os.scandir(directory)
+        except (PermissionError, FileNotFoundError, NotADirectoryError):
+            return ""
+
+        matches = []
+        with entries:
+            for entry in entries:
+                if entry.name.startswith(prefix) and entry.name != prefix:
+                    name = entry.name
+                    if entry.is_dir(follow_symlinks=False):
+                        name += "/"
+                    matches.append(name)
+
+        if not matches:
+            return ""
+
+        # Prefer the shortest match so Tab always advances one component.
+        best = min(matches, key=len)
+        return best[offset:]
+
+    def watch_selection(self) -> None:
+        # selection changes whenever the cursor moves (typing, arrows, etc.)
+        self.update_suggestion()
+
+    async def _on_key(self, event: events.Key) -> None:
+        if self.suggestion and event.key in ("right", "ctrl+f", "tab"):
+            # accept: insert the suggestion text at the cursor
+            self.insert(self.suggestion)
+            self.suggestion = ""
+            event.prevent_default()
+            event.stop()
+        elif event.key == "escape" and self.suggestion:
+            self.suggestion = ""
+            event.prevent_default()
+            event.stop()
 
 
 # ---------------------------------------------------------------------------
