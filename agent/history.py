@@ -33,6 +33,7 @@ class History:
         self._entries: list[Entry] = []
         self._max_entries = max_entries
         self._index = 0  # 0 <= index <= len(entries); len = beyond newest
+        self._draft: str = ""  # in-progress text, stashed when leaving the draft position
         self._load()
 
     def add(self, text: str) -> None:
@@ -41,20 +42,24 @@ class History:
             return
         if self._entries and self._entries[-1][1] == text:
             self._index = len(self._entries)
+            self._draft = ""
             return
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         self._entries.append((ts, text))
         if len(self._entries) > self._max_entries:
             self._entries.pop(0)
         self._index = len(self._entries)
+        self._draft = ""
         self._save()
 
-    def up(self) -> str | None:
+    def up(self, current_text: str) -> str | None:
         """Move one step back into the past.
 
         Returns the entry at that position, or ``None`` if already at
         the oldest entry.
         """
+        if self._index == len(self._entries):
+            self._draft = current_text
         if self._index > 0:
             self._index -= 1
             return self._entries[self._index][1]
@@ -67,11 +72,12 @@ class History:
         the newest entry.  Once past the newest entry the cursor resets
         to the end-of-list position and ``None`` is returned.
         """
-        if self._index < len(self._entries) - 1:
-            self._index += 1
-            return self._entries[self._index][1]
-        self._index = len(self._entries)
-        return None
+        if self._index >= len(self._entries):
+            return None
+        self._index += 1
+        if self._index == len(self._entries):
+            return self._draft
+        return self._entries[self._index][1]
 
     def _load(self) -> None:
         """Parse the structured history file.

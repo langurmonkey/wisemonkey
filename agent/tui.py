@@ -35,7 +35,7 @@ from agent.utils import term_width
 from textual.events import Paste as PasteEvent
 
 # Number of characters above which the paste action creates a file
-PASTE_THRESHOLD = 20
+PASTE_THRESHOLD = 1000
 
 # ---------------------------------------------------------------------------
 # A TextArea that handles history on up/down when cursor is at boundaries
@@ -71,17 +71,17 @@ class _SubmitTextArea(TextArea):
 
     def action_cursor_up(self, select: bool = False) -> None:
         """Override: navigate history when at very start of first line."""
-        row, col = self.cursor_location
-        if row == 0 and col == 0:
-            self._wm_app.action_history_up()
+        row, _ = self.cursor_location
+        if row == 0:
+            self._wm_app.action_history_up(self.text)
         else:
             super().action_cursor_up(select)
 
     def action_cursor_down(self, select: bool = False) -> None:
         """Override: navigate history when at very end of last line."""
-        row, col = self.cursor_location
+        row, _ = self.cursor_location
         lines = self.text.split("\n")
-        if row == len(lines) - 1 and col == len(lines[-1]):
+        if row == len(lines) - 1:
             self._wm_app.action_history_down()
         else:
             super().action_cursor_down(select)
@@ -455,9 +455,9 @@ class WisemonkeyTui(App):
         else:
             self._handle_user_input(text)
 
-    def action_history_up(self) -> None:
+    def action_history_up(self, current_text: str) -> None:
         """Move up in history - only if called from _SubmitTextArea (cursor at start)."""
-        entry = self._history.up()
+        entry = self._history.up(current_text)
         if entry is not None:
             inp = self.query_one("#input", _SubmitTextArea)
             inp.text = entry
@@ -471,8 +471,6 @@ class WisemonkeyTui(App):
             inp.text = entry
             lines = entry.split("\n")
             inp.cursor_location = (len(lines) - 1, len(lines[-1]))
-        else:
-            inp.text = ""
 
 
     def _handle_user_input(self, user_input: str) -> None:
