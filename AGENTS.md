@@ -111,6 +111,24 @@ Run `wisemonkey --onboard` for interactive configuration.
 - Build: `uv build`
 - Entry point: `agent.__main__:main` → `wisemonkey` CLI command
 
+## Type checking
+
+Whenever you make changes, always run the type checker. To run the type checker for all files in the project, execute:
+
+```bash
+just checkall
+```
+
+If you want to run the type checker for a particular file or directory:
+```bash
+# A single file
+just check agent/agent.py
+
+# A directory
+just check agent
+```
+
+
 ## Testing
 
 Tests use the standard library `unittest` framework. Test files live in `tests/` at the project root, each mirroring the source module it tests.

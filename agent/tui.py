@@ -27,10 +27,115 @@ from textual.timer import Timer
 
 from agent.core import Core, Stage, TurnCancelled
 from agent.commands import registry
+from agent.history import History
 from agent.prompt_ui import TuiPromptUi as _TuiPromptUi
 from agent.startup import startup_info, StartupOutput
 from agent.console import theme_dict
 from agent.utils import term_width
+from textual.events import Paste as PasteEvent
+
+# Number of characters above which the paste action creates a file
+PASTE_THRESHOLD = 20
+
+# ---------------------------------------------------------------------------
+# A TextArea that handles history on up/down when cursor is at boundaries
+# ---------------------------------------------------------------------------
+
+class _SubmitTextArea(TextArea):
+    """TextArea that handles history on up/down, Ctrl+C (clear/double-tap
+    quit), and paste threshold."""
+
+    BINDINGS = [
+        Binding("enter", "submit", "Submit", priority=True),
+        Binding("shift+enter", "newline", "New line"),
+        Binding("ctrl+c", "clear", "Clear"),
+    ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._last_ctrl_c_time: float = 0.0
+
+    @property
+    def _wm_app(self) -> WisemonkeyTui:
+        """Narrow ``self.app`` to ``WisemonkeyTui`` for type-checking."""
+        from typing import cast as _cast
+        return _cast(WisemonkeyTui, self.app)
+
+    def action_submit(self) -> None:
+        """Forward submit to the parent app."""
+        self._wm_app.action_submit_text()
+
+    def action_newline(self) -> None:
+        """Insert a newline."""
+        self._wm_app.action_newline()
+
+    def action_cursor_up(self, select: bool = False) -> None:
+        """Override: navigate history when at very start of first line."""
+        row, col = self.cursor_location
+        if row == 0 and col == 0:
+            self._wm_app.action_history_up()
+        else:
+            super().action_cursor_up(select)
+
+    def action_cursor_down(self, select: bool = False) -> None:
+        """Override: navigate history when at very end of last line."""
+        row, col = self.cursor_location
+        lines = self.text.split("\n")
+        if row == len(lines) - 1 and col == len(lines[-1]):
+            self._wm_app.action_history_down()
+        else:
+            super().action_cursor_down(select)
+
+    def action_clear(self) -> None:
+        """Clear text"""
+        self.clear()
+
+    async def _on_paste(self, event: PasteEvent) -> None:
+        """Handle paste: save large pastes (>PASTE_THRESHOLD chars) to a file
+        instead of inserting them into the buffer."""
+        if self.read_only:
+            return
+
+        event.stop()
+        event.prevent_default()
+
+        text = event.text
+        start, end = self.selection
+
+        if len(text) <= PASTE_THRESHOLD:
+            # Small paste: insert normally at the current selection.
+            self.replace(text, start, end, maintain_selection_offset=False)
+            return
+
+        core = self._wm_app.core
+        if not core:
+            return
+
+        file_path = core.memory.create_pasted_file(text)
+
+        # If the cursor isn't already at the start of a line, lead with a
+        # newline so the reference sits on its own line.
+        _, col = start
+        prefix = "\n" if col != 0 else ""
+        reference = f"{prefix}*Pasted file: {file_path}*\n"
+
+        # Insert ONLY the reference, at exactly the spot the pasted text
+        # would have gone — never touch self.text wholesale.
+        self.replace(reference, start, end, maintain_selection_offset=False)
+
+    def key_control_c(self) -> None:
+        """Ctrl+C: first press clears input, second press (within 1s) quits."""
+        import time
+        now = time.time()
+        if self.text:
+            self.text = ""
+            self._last_ctrl_c_time = now
+        else:
+            if now - self._last_ctrl_c_time < 1.0:
+                self.app.exit()
+            else:
+                self._last_ctrl_c_time = now
+
 
 # ---------------------------------------------------------------------------
 # Style-name resolution  (abstract -> concrete colour tags)
@@ -129,7 +234,10 @@ class WisemonkeyTui(App):
         with Container(id="bottom-area"):
             yield Static(id="status-bar")
             with Container(id="input-widget"):
-                yield TextArea(id="input", placeholder="Type a message...")
+                yield _SubmitTextArea.code_editor(id="input",
+                                                  placeholder="Type a message...",
+                                                  soft_wrap=True,
+                                                  language="markdown")
             yield Footer(id="bottom-bar")
 
     def on_mount(self) -> None:
@@ -157,8 +265,12 @@ class WisemonkeyTui(App):
         # Prompt UI for interactive commands
         self._prompt_ui = _TuiPromptUi(self)
 
+        # Input history
+        sess_dir = str(self.core.memory.session_dir)
+        self._history = History(sess_dir)
+
         # Focus the input field by default
-        inp = self.query_one("#input", TextArea)
+        inp = self.query_one("#input", _SubmitTextArea)
         inp.focus()
 
     # ---- reasoning callback -------------------------------------------------
@@ -310,15 +422,13 @@ class WisemonkeyTui(App):
     # ---- turn execution (threaded) -----------------------------------------
 
     BINDINGS = [
-        Binding("enter", "submit_text", "Submit", priority=True),
-        Binding("shift+enter", "newline", "New line"),
-        Binding("alt+up", "history_up", "Up (history)"),
-        Binding("alt+down", "history_down", "Down (history)"),
+        # Enter / shift+enter are handled by _SubmitTextArea
+        # Up / down for history are handled by _SubmitTextArea (cursor-boundary logic)
     ]
 
     def action_newline(self) -> None:
         """Insert a newline in the text area."""
-        inp = self.query_one("#input", TextArea)
+        inp = self.query_one("#input", _SubmitTextArea)
         row, col = inp.cursor_location
         text = inp.text
         lines = text.split("\n")
@@ -331,12 +441,13 @@ class WisemonkeyTui(App):
 
     def action_submit_text(self) -> None:
         """Submit the current text in the input area."""
-        inp = self.query_one("#input", TextArea)
+        inp = self.query_one("#input", _SubmitTextArea)
         text = inp.text.strip()
         # If we are waiting for an event, we can input nothing to use default
         if self._prompt_ui._pending_event is None and not text:
             return
         inp.text = ""
+        self._history.add(text)
         # If a prompt_ui request is pending, fulfill it instead of sending
         # the text as a chat message.
         if self._prompt_ui._pending_event is not None:
@@ -345,12 +456,23 @@ class WisemonkeyTui(App):
             self._handle_user_input(text)
 
     def action_history_up(self) -> None:
-        """Move up in history"""
-        self._write("History up\n")
+        """Move up in history - only if called from _SubmitTextArea (cursor at start)."""
+        entry = self._history.up()
+        if entry is not None:
+            inp = self.query_one("#input", _SubmitTextArea)
+            inp.text = entry
+            inp.cursor_location = (0, 0)
 
     def action_history_down(self) -> None:
-        """Move down in history"""
-        self._write("History down\n")
+        """Move down in history - only if called from _SubmitTextArea (cursor at end)."""
+        entry = self._history.down()
+        inp = self.query_one("#input", _SubmitTextArea)
+        if entry is not None:
+            inp.text = entry
+            lines = entry.split("\n")
+            inp.cursor_location = (len(lines) - 1, len(lines[-1]))
+        else:
+            inp.text = ""
 
 
     def _handle_user_input(self, user_input: str) -> None:
@@ -407,7 +529,7 @@ class WisemonkeyTui(App):
             self._stream_buffer = ""
             self.call_from_thread(self._write, buf)
 
-    def _append_tool(self, tool_name: str) -> None:
+    def _append_tool(self, tool_name: str, tool_args) -> None:
         """Tool activation callback – called from worker thread."""
         self.call_from_thread(
             self._write,

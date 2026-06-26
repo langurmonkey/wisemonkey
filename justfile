@@ -17,6 +17,14 @@ test-file name:
 test-one path:
     uv run python -m unittest {{path}} -v
 
+# Run the type checker for all python files in the project
+checkall:
+    ty check agent tools tests
+
+# Run the type checker for a particular path
+check path:
+    ty check {{path}}
+
 # Install dependencies
 install:
     uv sync
