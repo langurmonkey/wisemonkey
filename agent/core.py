@@ -12,8 +12,10 @@ import time
 import tiktoken
 
 from enum import Enum
+from io import StringIO
 from pathlib import Path
 
+from agent import console as agent_console
 from agent.config import get_config, get_mcp_config_path
 from agent.memory import Memory
 from agent.skills import SkillLoader
@@ -574,7 +576,25 @@ class Core:
             if tool_callback:
                 tool_callback(tool_name, tool_args)
 
-            result = execute_tool(tool_name, json.loads(tool_args) if isinstance(tool_args, str) else tool_args)
+            # Capture console output from the tool (e.g. print() calls in
+            # tools/files.py, tools/terminal.py, etc.) so it can be displayed
+            # in environments where stdout is hidden (e.g. TUI mode).
+            original_file = agent_console.console.file
+            original_no_color = agent_console.console.no_color
+            capture_buf = StringIO()
+            agent_console.console.file = capture_buf
+            agent_console.console.no_color = True
+            try:
+                result = execute_tool(tool_name, json.loads(tool_args) if isinstance(tool_args, str) else tool_args)
+            finally:
+                agent_console.console.file = original_file
+                agent_console.console.no_color = original_no_color
+
+            captured_output = capture_buf.getvalue()
+
+            # Notify the UI about the captured output
+            if tool_callback:
+                tool_callback(tool_name, tool_args, captured_output=captured_output)
 
             # Check if the result contains an image (e.g. screenshot tool)
             if isinstance(result, dict) and "image_base64" in result:

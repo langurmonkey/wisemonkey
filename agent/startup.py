@@ -150,8 +150,8 @@ def startup_info(core, output: StartupOutput):
     output.rule()
 
     # Chat history
-    chat_history = core.memory.get_chat_formatted(num_exchanges=3,
-                                                  timestamps=True,
+    chat_history = core.memory.get_chat_formatted(num_exchanges=2,
+                                                  timestamps=False,
                                                   width=250)
     if chat_history:
         curr, max_sz, rate = core.memory.get_chat_stats()

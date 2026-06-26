@@ -535,12 +535,12 @@ class WisemonkeyTui(App):
             # Last part starts a new buffer (still accumulating).
             self._stream_buffer = parts[-1]
 
-    def _append_tool(self, tool_name: str, tool_args) -> None:
+    def _append_tool(self, tool_name: str, tool_args, captured_output: str = "") -> None:
         """Tool activation callback – called from worker thread."""
-        self.call_from_thread(
-            self._write,
-            f"[dim]🛠️ Activating tool: [steel_blue3]{tool_name}[/steel_blue3] with [/dim]{tool_args}",
-        )
+        text = f"[dim]🛠️ Activating tool: [steel_blue3]{tool_name}[/steel_blue3][/dim]"
+        if captured_output.strip():
+            text += "\n" + captured_output.strip()
+        self.call_from_thread(self._write, text)
 
     def _finish_turn(
         self, response: str, tokens: int, ntools: int, gen_time: float

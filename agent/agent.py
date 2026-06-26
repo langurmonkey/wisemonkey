@@ -93,9 +93,11 @@ class Agent:
         """Called when new chunks arrive in streaming mode."""
         print(escape(content), end="")
 
-    def tool_callback(self, tool_name: str, tool_args):
+    def tool_callback(self, tool_name: str, tool_args, captured_output: str = ""):
         newline()
         info(f"🛠️ [weak]Activating tool:[/weak]  [tool]{tool_name}[/tool]")
+        if captured_output.strip():
+            print(captured_output.rstrip())
 
     def cancel_callback(self, e: KeyboardInterrupt):
         """Handles the Control+c during inference, as a keyboard interrupt"""
