@@ -20,7 +20,7 @@ from rich.text import Text as RichText
 
 from textual.app import App, ComposeResult
 from textual.containers import Container
-from textual.widgets import TextArea, Header, RichLog, Static
+from textual.widgets import TextArea, Header, RichLog, Static, Footer
 from textual import work
 from textual.binding import Binding
 from textual.timer import Timer
@@ -130,7 +130,7 @@ class WisemonkeyTui(App):
             yield Static(id="status-bar")
             with Container(id="input-widget"):
                 yield TextArea(id="input", placeholder="Type a message...")
-            yield Static(id="bottom-bar")
+            yield Footer(id="bottom-bar")
 
     def on_mount(self) -> None:
         """Set up the agent core and render startup info."""
@@ -239,6 +239,7 @@ class WisemonkeyTui(App):
 
     def _write(self, text: str) -> None:
         """Append plain or markup text to the output log."""
+        text = _concretize(text)
         self.query_one("#output", RichLog).write(text)
 
     def _write_rich(self, renderable) -> None:
@@ -255,12 +256,6 @@ class WisemonkeyTui(App):
         self.query_one("#status-bar", Static).update(
             f" Model: [bold]{model}[/bold]  |  Session: [bold]{sess}[/bold]"
         )
-        bottom_text = _concretize(
-            " [$accent]Alt[/$accent]+[$accent]↵[/$accent]: new line | [$accent]↵[/$accent]: submit | [$accent]Ctrl[/$accent]+[$accent]q[/$accent]: quit"
-            )
-        self.query_one("#bottom-bar", Static).update(bottom_text)
-
-        
 
     # ---- input handling ----------------------------------------------------
 
@@ -275,7 +270,7 @@ class WisemonkeyTui(App):
         command, params = registry.lookup(tokens)
 
         if not command:
-            self._write(f"[red]Command not found: {user_input}[/]")
+            self._write(f"[red]Command not found: {user_input}[/red]")
             return
 
         self._run_command_in_thread(command, params)
@@ -316,7 +311,9 @@ class WisemonkeyTui(App):
 
     BINDINGS = [
         Binding("enter", "submit_text", "Submit", priority=True),
-        Binding("shift+enter", "newline", "Newline"),
+        Binding("shift+enter", "newline", "New line"),
+        Binding("alt+up", "history_up", "Up (history)"),
+        Binding("alt+down", "history_down", "Down (history)"),
     ]
 
     def action_newline(self) -> None:
@@ -336,15 +333,25 @@ class WisemonkeyTui(App):
         """Submit the current text in the input area."""
         inp = self.query_one("#input", TextArea)
         text = inp.text.strip()
-        if not text:
+        # If we are waiting for an event, we can input nothing to use default
+        if self._prompt_ui._pending_event is None and not text:
             return
         inp.text = ""
-        # If a prompt_ui request is pending, fulfil it instead of sending
+        # If a prompt_ui request is pending, fulfill it instead of sending
         # the text as a chat message.
         if self._prompt_ui._pending_event is not None:
             self._prompt_ui._submit(text)
         else:
             self._handle_user_input(text)
+
+    def action_history_up(self) -> None:
+        """Move up in history"""
+        self._write("History up\n")
+
+    def action_history_down(self) -> None:
+        """Move down in history"""
+        self._write("History down\n")
+
 
     def _handle_user_input(self, user_input: str) -> None:
         """Process a user message or slash command."""

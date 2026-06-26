@@ -82,6 +82,7 @@ class TuiPromptUi:
         inp.focus()
         # Block until _on_input_submitted fires
         self._pending_event.wait()
+        self._pending_event = None
         return self._pending_result or ""
 
     def _submit(self, text: str) -> None:
@@ -117,9 +118,13 @@ class TuiPromptUi:
         lines = [f"[bold]{message}[/bold]"]
         for value, label in options:
             marker = "●" if value == default else "○"
-            lines.append(f"  {marker} [accent]{value}[/accent] — {label}")
+            if value == label:
+                lines.append(f"  {marker} [accent]{value}[/accent]")
+            else:
+                lines.append(f"  {marker} [accent]{value}[/accent] — {label}")
         self._app._write("\n".join(lines))
-        raw = self._request("Enter choice")
+        self._app._write("\n")
+        raw = self._request(f"Enter your choice from the list above (default: [accent]{default}[/accent])")
         if not raw and default is not None:
             return default
         # Allow typing either the value or the label

@@ -540,7 +540,7 @@ def _cmd_models(core, params, prompt_ui=None) -> tuple[bool, str | None, str | N
         success = core.set_model(result)
         if success:
             pub.sendMessage("prompt-update")
-            return True, f"Provider: {selected_provider} — Model: {result}", None, None
+            return True, f"Provider: [accent]{selected_provider}[/accent]— Model: [accent]{result}[/accent]", None, None
         else:
             return False, "Model could not be set", None, None
     except NameError as e:
