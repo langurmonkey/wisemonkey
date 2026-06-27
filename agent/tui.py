@@ -20,6 +20,8 @@ import re
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.rule import Rule
+from rich.align import AlignMethod
+from rich.panel import Panel
 from rich.text import Text as RichText
 
 from textual import events
@@ -29,15 +31,15 @@ from textual.widgets import TextArea, Header, RichLog, Static, Footer
 from textual import work
 from textual.binding import Binding
 from textual.timer import Timer
+from textual.events import Paste as PasteEvent
 
 from agent.core import Core, Stage, TurnCancelled
-from agent.commands import registry
+from agent.commands import registry, Command
 from agent.history import History
 from agent.prompt_ui import TuiPromptUi as _TuiPromptUi
-from agent.startup import startup_info, StartupOutput
+from agent.startup import startup_info, OutputAdapter
 from agent.console import theme_dict
 from agent.utils import term_width
-from textual.events import Paste as PasteEvent
 
 # Number of characters above which the paste action creates a file
 PASTE_THRESHOLD = 1000
@@ -76,7 +78,7 @@ class _PromptInput(TextArea):
         # When this is set, COMMANDS is ignored
         self.SPECIAL: list[str] | None = None
 
-    def set_core(self, core: Core):
+    def set_core(self, core: Core | None):
         self.core = core
 
     def set_special_suggestions(self, sp: list[str] | None):
@@ -317,8 +319,8 @@ def _concretize(text: str) -> str:
         text = text.replace(k, _STYLE_MAP[k])
     return text
 
-class TuiStartupOutput(StartupOutput):
-    """Startup output adapter that writes directly to the TUI RichLog.
+class TuiOutput(OutputAdapter):
+    """Output adapter that writes directly to the TUI RichLog.
 
     Abstract style names (``[title]``, ``[accent]``) in markup strings are
     replaced with concrete colour tags via ``_concretize()``.
@@ -363,8 +365,8 @@ class TuiStartupOutput(StartupOutput):
     def newline(self) -> None:
         self.app._write("")
 
-    def rule(self, style: str = "dim", title: str = "") -> None:
-        self.app._write_rich(self._render_to_text(Rule(style=style, title=title)))
+    def rule(self, style: str = "dim", title: str = "", align: AlignMethod = "center") -> None:
+        self.app._write_rich(self._render_to_text(Rule(style=style, title=title, align=align)))
 
     def info(self, text: str) -> None:
         self.app._write(
@@ -383,7 +385,7 @@ class WisemonkeyTui(App):
         self.config_path = config_path
         self.session = session
         self.core: Core | None = None
-        self.output: TuiStartupOutput = TuiStartupOutput(self)
+        self.output: TuiOutput = TuiOutput(self)
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -391,10 +393,11 @@ class WisemonkeyTui(App):
         with Container(id="bottom-area"):
             yield Static(id="status-bar")
             with Container(id="input-widget"):
-                yield _PromptInput.code_editor(id="input",
+                prompt = _PromptInput.code_editor(id="input",
                                                   placeholder="Type a message...",
                                                   soft_wrap=True,
                                                   language="markdown")
+                yield prompt
             yield Footer(id="bottom-bar")
 
     def on_mount(self) -> None:
@@ -404,7 +407,7 @@ class WisemonkeyTui(App):
         try:
             self.core = Core(self.config_path, self.session)
         except Exception as e:
-            self._write(f"[red]Agent initialisation failed: {e}[/]")
+            self._write(f"[err]Agent initialisation failed: {e}[/]")
             return
 
         # Render startup info via the shared module
@@ -506,11 +509,22 @@ class WisemonkeyTui(App):
             self._update_status()
 
     # ---- output helpers ----------------------------------------------------
+    #
+    def _err(self, text: str) -> None:
+        """Append an error to the output log."""
+        self._write(f"[err]✗[/err] {text}")
+
+    def _ok(self, text: str) -> None:
+        """Append an ok operation to the output log."""
+        self._write(f"[green]✔[/green] {text}")
 
     def _write(self, text: str) -> None:
         """Append plain or markup text to the output log."""
         text = _concretize(text)
         self.query_one("#output", RichLog).write(text)
+
+    def _newline(self) -> None:
+        self.query_one("#output", RichLog).write("\n")
 
     def _write_rich(self, renderable) -> None:
         """Append a Rich renderable to the output log."""
@@ -535,18 +549,17 @@ class WisemonkeyTui(App):
         Runs in a background thread so that TuiPromptUi can block waiting
         for user input without freezing the Textual event loop.
         """
-        self.output.rule(style="dim")
         tokens = user_input.split()
         command, params = registry.lookup(tokens)
 
         if not command:
-            self._write(f"[red]Command not found: {user_input}[/red]")
+            self._write(f"[err]⚠[/err] Command not found: {user_input}")
             return
 
         self._run_command_in_thread(command, params)
 
     @work(thread=True, exit_on_error=False)
-    def _run_command_in_thread(self, command, params) -> None:
+    def _run_command_in_thread(self, command: Command, params: list[str]) -> None:
         """Run a slash command on a worker thread."""
         ok_flag, msg, content, md, should_exit = registry.execute(
             self.core, command, params, self._prompt_ui
@@ -558,22 +571,38 @@ class WisemonkeyTui(App):
             return
 
         if ok_flag:
+            if params:
+                param_list = ' '.join(params)
+            else:
+                param_list = ''
             if content:
-                self.call_from_thread(self._write, content)
+                panel = Panel(content,
+                            border_style="output-frame",
+                            title=f"{command.name} {param_list}",
+                            subtitle=f"{command.name} {param_list}",
+                            highlight=True)
+                self.call_from_thread(self.output.print_rich, panel)
             elif md:
-                self.call_from_thread(self._write_rich, Markdown(md))
+                panel = Panel(Markdown(md),
+                            border_style="output-frame",
+                            title=f"{command.name} {param_list}",
+                            subtitle=f"{command.name} {param_list}",
+                            highlight=True)
+                self.call_from_thread(self.output.print_rich, panel)
+
             if msg:
-                self.call_from_thread(self._write, f"[green]✔[/green] {msg}")
+                self.call_from_thread(self._ok, msg)
         else:
             if msg:
-                self.call_from_thread(self._write, f"[red]✗[/red] {msg}")
+                self.call_from_thread(self._err, msg)
 
         self.call_from_thread(self._update_status)
 
     def _handle_prompt(self, user_input: str) -> None:
         """Send the user message to the LLM in a background thread."""
-        self.output.rule(style="dim")
-        self._write("[medium_orchid bold]▶ Wisemonkey ◀[/medium_orchid bold]")
+        self.output.rule(style="user")
+        self.output.rule(style="agent", title="[agent]▶▶▶ Wisemonkey[/agent]", align="left")
+        # self._write("[agent bold]▶ Wisemonkey ◀[/agent bold]")
         self._stream_buffer = ""
         self._run_turn(user_input)
 
@@ -633,7 +662,10 @@ class WisemonkeyTui(App):
 
     def _handle_user_input(self, user_input: str) -> None:
         """Process a user message or slash command."""
-        self._write(f"\n[gold1 bold]▶ You ◀[/gold1 bold]\n{user_input}")
+        self.output.newline()
+        self.output.rule(style="user", title="[user]▶▶▶ You[/user]", align="left")
+        self._write(f"{user_input}")
+        # self._write(f"\n[user bold]▶ You ◀[/user bold]\n{user_input}")
 
         if user_input.startswith("/"):
             self._handle_command(user_input)
@@ -648,7 +680,7 @@ class WisemonkeyTui(App):
     def _run_turn(self, user_input: str) -> None:
         """Run a full turn on a worker thread so the UI stays responsive."""
         if not self.core:
-            self.call_from_thread(self._write, "[red]Core not initialised[/]")
+            self.call_from_thread(self._err, "Core not initialised")
             return
 
         self.call_from_thread(
@@ -669,9 +701,9 @@ class WisemonkeyTui(App):
                 self._finish_turn, response, total_tokens, ntools, total_gen_time
             )
         except TurnCancelled:
-            self.call_from_thread(self._write, "[orange1]Turn cancelled[/]")
+            self.call_from_thread(self._err, "turn cancelled")
         except Exception as e:
-            self.call_from_thread(self._write, f"[red]Error: {e}[/]")
+            self.call_from_thread(self._err, f"Error: {e}")
         finally:
             self.call_from_thread(self._update_status)
 
@@ -718,10 +750,8 @@ class WisemonkeyTui(App):
 
         if self.core:
             length, max_sz, rate = self.core.memory.get_chat_stats()
-            label = f"  {gen_time:.1f}s  |  {tokens} tokens  |  {ntools} tools  |  Mem: {length}/{max_sz} ({rate:.2f}%)  "
-            self._write("")
-            self.output.rule(style="dim", title=label)
-            self._write("")
+            label = f"{gen_time:.1f}s  |  {tokens} tokens  |  {ntools} tools  |  Mem: {length}/{max_sz} ({rate:.2f}%)"
+            self.output.rule(style="agent", title=label)
 
     # ---- lifecycle ---------------------------------------------------------
 

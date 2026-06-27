@@ -18,7 +18,7 @@ from agent.commands import registry
 from agent.utils import add_command, collapse_none_dicts
 from agent.prompt_ui import RichPromptUi
 from agent.console import print, err, ok, info, newline, console
-from agent.startup import startup_info, ConsoleStartupOutput
+from agent.startup import startup_info, CLIOutput
 
 # Try to import prompt_toolkit for rich input; fall back to plain input.
 try:
@@ -270,7 +270,7 @@ class Agent:
     def run_interactive(self):
         """Run the agent in interactive mode."""
 
-        startup_info(self.core, ConsoleStartupOutput())
+        startup_info(self.core, CLIOutput())
 
         if _HAS_PROMPT_TOOLKIT:
             self._create_prompt_session()

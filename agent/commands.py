@@ -271,10 +271,13 @@ def _cmd_reasoning(core, params, prompt_ui: PromptUi | None = None) -> tuple[boo
 def _cmd_notes(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     notes = core.memory.get_notes()
     buff = ""
-    for note in notes:
-        buff += f"📋️  [blue]{note['id']}[/blue] ({note['category']}):\n"
-        buff += f"[grey39]{note['content']}[/]\n\n"
-    return True, None, buff, None
+    if notes:
+        for note in notes:
+            buff += f"📋️  [blue]{note['id']}[/blue] ({note['category']}):\n"
+            buff += f"[grey39]{note['content']}[/]\n\n"
+        return True, None, buff, None
+    else:
+        return False, "no notes found", None, None
 
 @cmd(
       "/notes-add",
@@ -333,9 +336,6 @@ def _cmd_session_clear(core, params, prompt_ui: PromptUi | None = None) -> tuple
     cleared = core.memory.clear_chat(n)
     return True, f"{cleared} exchanges cleared", None, None
 
-
-def _chat_memory(core, max_exchanges):
-    return core.memory.get_chat_formatted(max_exchanges, timestamps=True)
 
 @cmd(
       "/session-agent",
@@ -468,7 +468,10 @@ def _cmd_tools(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, s
 )
 def _cmd_tools_native(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     from agent.tools import get_tools_str
-    return True, None, get_tools_str(prefix="mcp_", contains=False), None
+    buff = get_tools_str(prefix="mcp_", contains=False)
+    if not buff:
+        return False, "no native tools found", None, None
+    return True, None, buff, None
 
 @cmd(
       "/tools-mcp",
@@ -476,14 +479,20 @@ def _cmd_tools_native(core, params, prompt_ui: PromptUi | None = None) -> tuple[
 )
 def _cmd_tools_mcp(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
     from agent.tools import get_tools_str
-    return True, None, get_tools_str(prefix="mcp_", contains=True), None
+    buff = get_tools_str(prefix="mcp_", contains=True)
+    if not buff:
+        return False, "no MCP tools found", None, None
+    return True, None, buff, None
 
 @cmd(
       "/skills",
       "List loaded skills ⚔",
 )
 def _cmd_skills(core, params, prompt_ui: PromptUi | None = None) -> tuple[bool, str | None, str | None, str | None]:
-    return True, None, core.skills.get_skills_str(), None
+    buff = core.skills.get_skills_str()
+    if not buff:
+        return False, "no skills found", None, None
+    return True, None, buff, None
 
 @cmd(
       "/model",

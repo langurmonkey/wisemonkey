@@ -6,13 +6,12 @@ from rich import box
 from rich.align import Align
 from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.rule import Rule
 
 from agent.utils import contractuser, pretty_timedelta
 
 
-class StartupOutput:
-    """Abstract base for startup-output adapters.
+class OutputAdapter:
+    """Abstract base for output adapters.
 
     Implementations wrap console printing (CLI agent) or RichLog writing (TUI).
     """
@@ -33,8 +32,8 @@ class StartupOutput:
         """Print an info line with the \u21d2 prefix."""
 
 
-class ConsoleStartupOutput(StartupOutput):
-    """Startup output adapter backed by agent.console (CLI agent)."""
+class CLIOutput(OutputAdapter):
+    """Output adapter backed by agent.console (CLI agent)."""
 
     def print(self, text: str) -> None:
         from agent.console import print as cprint
@@ -64,7 +63,7 @@ def check_updates(repo_dir):
     return um.check_updates(repo_dir)
 
 
-def startup_info(core, output: StartupOutput):
+def startup_info(core, output: OutputAdapter):
     """Print startup information.
 
     Delegates all output to the *output* adapter so the same code works

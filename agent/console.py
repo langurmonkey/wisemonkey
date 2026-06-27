@@ -16,7 +16,7 @@ theme_dict: dict[str, str] = {
 
     # Turns
     "agent": "medium_orchid",
-    "user": "gold1",
+    "user": "deep_sky_blue3",
 
     # Features
     "tool": "steel_blue3",
