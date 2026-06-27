@@ -161,7 +161,8 @@ class Core:
                         response,
                         prompt_callback=None,
                         reasoning_callback=None,
-                        content_callback=None):
+                        content_callback=None,
+                        poll=None):
         self.thinking_buffer = ""
         self.response_buffer = ""
 
@@ -175,6 +176,10 @@ class Core:
 
         try:
             for chunk in response:
+                if poll and poll():
+                    response.close()
+                    raise KeyboardInterrupt
+
                 # Stop prompt spinner
                 if not prompt_stopped and prompt_callback:
                     prompt_callback(Stage.STOP)
@@ -282,7 +287,8 @@ class Core:
                      reasoning_callback=None,
                      content_callback=None,
                      cancel_callback=None,
-                     error_callback=None):
+                     error_callback=None,
+                     poll=None):
         """
         Send messages to the LLM and get a response.
         """
@@ -322,7 +328,8 @@ class Core:
                 (first_chunk_time, tool_calls, stream_error) = self._stream_handler(response,
                                                                                     prompt_callback,
                                                                                     reasoning_callback,
-                                                                                    content_callback)
+                                                                                    content_callback,
+                                                                                    poll=poll)
             except KeyboardInterrupt as e:
                 # Close the response stream to stop the API call
                 response.close()
@@ -364,7 +371,8 @@ class Core:
             content_callback=None,
             tool_callback=None,
             cancel_callback=None,
-            error_callback=None):
+            error_callback=None,
+            poll=None):
         """
         Run a turn interaction with a user message. All callbacks are Agent methods, so
         they take the agent as the first parameter.
@@ -419,7 +427,8 @@ class Core:
                                                                                     reasoning_callback,
                                                                                     content_callback,
                                                                                     cancel_callback,
-                                                                                    error_callback)
+                                                                                    error_callback,
+                                                                                    poll=poll)
                 except TurnCancelled:
                     # User canceled turn: don't persist anything, return immediately
                     return ("[Canceled]", 0, 0, 0.0)

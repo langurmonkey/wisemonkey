@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -47,10 +48,11 @@ PASTE_THRESHOLD = 1000
 # Matches an optional ~ or leading / followed by any non-whitespace chars
 # that look like path components.
 _PATH_RE = re.compile(r'(?:^|(?<=\s))(~?/?(?:[^\s]*/)+[^\s]*|~?/[^\s]*)$')
+# Spinner characters
+SPINNER_CHARS ="⣾⣽⣻⢿⡿⣟⣯⣷"
 
 class _PromptInput(TextArea):
-    """TextArea that handles history on up/down, Ctrl+C (clear/double-tap
-    quit), and paste threshold."""
+    """TextArea that handles history on up/down, Ctrl+C to clear, and paste threshold."""
 
     BINDINGS = [
         Binding("enter", "submit", "Submit", priority=True),
@@ -185,19 +187,6 @@ class _PromptInput(TextArea):
         # Insert ONLY the reference, at exactly the spot the pasted text
         # would have gone — never touch self.text wholesale.
         self.replace(reference, start, end, maintain_selection_offset=False)
-
-    def key_control_c(self) -> None:
-        """Ctrl+C: first press clears input, second press (within 1s) quits."""
-        import time
-        now = time.time()
-        if self.text:
-            self.text = ""
-            self._last_ctrl_c_time = now
-        else:
-            if now - self._last_ctrl_c_time < 1.0:
-                self.app.exit()
-            else:
-                self._last_ctrl_c_time = now
 
     def update_suggestion(self) -> None:
         row, col = self.cursor_location
@@ -434,6 +423,9 @@ class WisemonkeyTui(App):
         inp.set_core(self.core)
         inp.focus()
 
+        self._cancel_event = threading.Event()
+        self._turn_active = False
+
     # ---- reasoning callback -------------------------------------------------
 
     def _reasoning_callback(self, stage: Stage, content: str = "", reasoning_visible: bool = True) -> None:
@@ -447,8 +439,8 @@ class WisemonkeyTui(App):
         ``_append_content``.
         """
         if stage == Stage.START:
-            self.call_from_thread(self.query_one("#status-bar", Static).update, " \U0001f4a1 Thinking...")
-            self._thinking_spinner_chars = "\u25d0\u25d3\u25d1\u25d2"
+            self.call_from_thread(self.query_one("#status-bar", Static).update, "💡 Thinking...")
+            self._thinking_spinner_chars = SPINNER_CHARS
             self._thinking_spinner_idx = 0
 
             def _tick() -> None:
@@ -469,6 +461,14 @@ class WisemonkeyTui(App):
                     self.call_from_thread(self._write, f"[dim]{buf}[/dim]")
 
         elif stage == Stage.STOP:
+            if self._cancel_event.is_set():
+                # Swallow the "Done thinking" message on cancellation
+                if self._thinking_spinner_interval:
+                    self._thinking_spinner_interval.stop()
+                    self._thinking_spinner_interval = None
+                self._reasoning_buffer = ""
+                return
+
             if self._thinking_spinner_interval:
                 self._thinking_spinner_interval.stop()
                 self._thinking_spinner_interval = None
@@ -476,7 +476,7 @@ class WisemonkeyTui(App):
             if self._reasoning_buffer:
                 self.call_from_thread(self._write, f"[dim]{self._reasoning_buffer}[/dim]")
                 self._reasoning_buffer = ""
-            self.call_from_thread(self._write, "[green]\u2714[/green] \U0001f4a1 Done thinking")
+            self.call_from_thread(self._ok, "💡 Done thinking")
             self.call_from_thread(self._update_status)
 
     # ---- prompt callback (spinner) -----------------------------------------
@@ -611,7 +611,14 @@ class WisemonkeyTui(App):
     BINDINGS = [
         # Enter / shift+enter are handled by _PromptInput
         # Up / down for history are handled by _PromptInput (cursor-boundary logic)
+        Binding("ctrl+s", "cancel_turn", "Cancel turn"),
     ]
+
+    def action_cancel_turn(self) -> None:
+        """Signal the running worker thread to cancel the current turn."""
+        if self._cancel_event:
+            self._cancel_event.set()
+
 
     def action_newline(self) -> None:
         """Insert a newline in the text area."""
@@ -687,6 +694,13 @@ class WisemonkeyTui(App):
             self.query_one("#status-bar", Static).update, " Processing\u2026"
         )
 
+        # Reset before each turn
+        self._cancel_event.clear()
+        self._turn_active = True
+
+        def poll():
+            return self._cancel_event.is_set()
+
         try:
             (response, total_tokens, ntools, total_gen_time) = self.core.run_turn(
                 user_input,
@@ -694,8 +708,9 @@ class WisemonkeyTui(App):
                 reasoning_callback=self._reasoning_callback,
                 content_callback=self._append_content,
                 tool_callback=self._append_tool,
-                cancel_callback=None,
+                cancel_callback=self._cancel_cb,
                 error_callback=None,
+                poll=poll
             )
             self.call_from_thread(
                 self._finish_turn, response, total_tokens, ntools, total_gen_time
@@ -705,6 +720,7 @@ class WisemonkeyTui(App):
         except Exception as e:
             self.call_from_thread(self._err, f"Error: {e}")
         finally:
+            self._turn_active = False
             self.call_from_thread(self._update_status)
 
     def _append_content(self, content: str) -> None:
@@ -715,6 +731,9 @@ class WisemonkeyTui(App):
         line breaks (so RichLog wraps at natural line endings) while
         still preventing every token from becoming its own entry.
         """
+        if self._cancel_event.is_set():
+            return
+
         parts = content.split("\n")
         # First part goes into the buffer (may be partial).
         self._stream_buffer += parts[0]
@@ -740,6 +759,10 @@ class WisemonkeyTui(App):
         self, response: str, tokens: int, ntools: int, gen_time: float
     ) -> None:
         """Called on the main thread after a turn completes."""
+        if self._cancel_event.is_set():
+            self._stream_buffer = ""  # discard anything left
+            return
+
         # Flush any remaining buffered content
         if self._stream_buffer:
             self._write(self._stream_buffer)
@@ -752,6 +775,10 @@ class WisemonkeyTui(App):
             length, max_sz, rate = self.core.memory.get_chat_stats()
             label = f"{gen_time:.1f}s  |  {tokens} tokens  |  {ntools} tools  |  Mem: {length}/{max_sz} ({rate:.2f}%)"
             self.output.rule(style="agent", title=label)
+
+    def _cancel_cb(self, e) -> None:
+        self.call_from_thread(self._err, "turn cancelled")
+        raise TurnCancelled() from e
 
     # ---- lifecycle ---------------------------------------------------------
 
