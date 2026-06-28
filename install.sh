@@ -72,7 +72,7 @@ if [ ! -d "\$INSTALL_DIR" ] || [ ! -f "\$INSTALL_DIR/pyproject.toml" ]; then
     echo "Error: Could not find wisemonkey installation"
     exit 1
 fi
-exec uv --project "\$INSTALL_DIR/pyproject.toml" run wisemonkey "\$@"
+WISEMONKEY_INSTALLED=yes exec uv --project "\$INSTALL_DIR/pyproject.toml" run wisemonkey "\$@"
 WRAPPER
 chmod +x "$BIN_DIR/wisemonkey"
 echo "Created wrapper: $BIN_DIR/wisemonkey"
