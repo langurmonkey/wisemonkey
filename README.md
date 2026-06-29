@@ -50,7 +50,7 @@ uvx wisemonkey
 You can also install it with our script:
 
 ```bash
-curl -fsSL https://codeberg.org/langurmonkey/wisemonkey/raw/branch/master/install.sh | bash
+curl -fsSL https://codeberg.org/langurmonkey/wisemonkey/raw/branch/master/install.sh | sh
 ```
 This installs wisemonkey to `~/.local/share/wisemonkey/repository`. It adds a `wisemonkey` binary to `~/.local/bin/wisemonkey`. If you have `~/.local/bin` in your `$PATH`, you can launch the onboarding process to configure the agent interactively:
 
