@@ -381,7 +381,7 @@ class TuiOutputAdapter(OutputAdapter):
         return raw
 
     def ask_confirm(self, message: str, default: bool = False) -> bool:
-        raw = self._request(f"{message} \[{'Y/n' if default else 'y/N'}]")
+        raw = self._request(f"{message} \\[{'Y/n' if default else 'y/N'}]")
         if not raw:
             return default
         return raw.lower() in ("y", "yes", "true", "1")
