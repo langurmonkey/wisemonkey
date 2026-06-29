@@ -15,7 +15,7 @@ import os
 from pathlib import Path
 from xdg_base_dirs import xdg_config_home
 from dotenv import load_dotenv
-from agent.prompt_ui import PromptUi
+from agent.output import OutputAdapter
 
 BASE_CONFIG_DIR = xdg_config_home() / "wisemonkey"
 
@@ -249,24 +249,24 @@ def log_config():
     content = json.dumps(config.to_dict(), indent=4, sort_keys=True, default=str)
     return f"[bold]Config file[/bold]: [blue]{path}[/blue]\n{content}"
 
-def edit_base_config_visual(prompt_ui:PromptUi | None = None):
+def edit_base_config_visual(output:OutputAdapter | None = None):
     """Edit the configuration file with $EDITOR or $VISUAL."""
     import subprocess
     config = get_config()
     editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "nano"
     cmd = [editor, str(config.config_path)]
-    if prompt_ui is not None:
-        return prompt_ui.run_subprocess(cmd)
+    if output is not None:
+        return output.run_subprocess(cmd)
     else:
         return subprocess.run(cmd)
 
-def edit_mcp_config_visual(prompt_ui:PromptUi | None = None):
+def edit_mcp_config_visual(output:OutputAdapter | None = None):
     """Edit the configuration file with $EDITOR or $VISUAL."""
     import subprocess
     config = get_config()
     editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "nano"
     cmd = [editor, str(config.mcp_config_path)]
-    if prompt_ui is not None:
-        return prompt_ui.run_subprocess(cmd)
+    if output is not None:
+        return output.run_subprocess(cmd)
     else:
         return subprocess.run(cmd)

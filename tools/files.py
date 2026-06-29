@@ -12,7 +12,7 @@ from textwrap import indent
 
 from agent.utils import contractuser
 from agent.tools import tool
-from agent.console import print
+from agent.output import get_output
 
 @tool(
     name="read_file",
@@ -65,7 +65,9 @@ def read_file_handler(args):
         return {"error": f"The path exists but does not point to a file: {contractuser(path)}"}
 
     with open(path, "r") as file:
-        print(f"  [weak]Reading[/weak] [path]{contractuser(path)}[/path]")
+        output = get_output()
+        output.print(f"[weak]Reading[/weak] [path]{contractuser(path)}[/path]",
+                     indent=2)
         content = file.read()
 
     # Optionally add line numbers
@@ -120,8 +122,9 @@ def list_dir_handler(args):
 
     if os.path.isfile(path):
         return {"error": f"The path exists but does not point to a directory: {contractuser(path)}"}
-
-    print(f"  [weak]Listing[/weak] [path]{contractuser(path)}[/path]")
+    output = get_output()
+    output.print(f"[weak]Listing[/weak] [path]{contractuser(path)}[/path]",
+                 indent=2)
 
     content = os.listdir(path)
     # Format as a readable listing
@@ -179,10 +182,12 @@ def write_file_handler(args):
     path = os.path.expanduser(path)
     path = os.path.abspath(path)
 
+    output = get_output()
     parent = os.path.dirname(path)
     if parent and not os.path.exists(parent):
         os.makedirs(parent, exist_ok=True)
-        print(f"  [weak]Created directory[/weak] [path]{parent}[/path]")
+        output.print(f"[weak]Created directory[/weak] [path]{parent}[/path]",
+                     indent=2)
 
     fd, tmp_path = tempfile.mkstemp(dir=parent if parent else None, prefix=".patched-")
     try:
@@ -192,7 +197,8 @@ def write_file_handler(args):
         os.close(fd)
     os.replace(tmp_path, path)
 
-    print(f"  [weak]Wrote[/weak] [path]{contractuser(path)}[/path] ({len(content)} chars)")
+    output.print(f"[weak]Wrote[/weak] [path]{contractuser(path)}[/path] ({len(content)} chars)",
+                 indent=2)
 
     return {"path": path, "success": True, "message": f"Wrote {len(content)} bytes to {contractuser(path)}"}
 
@@ -244,9 +250,12 @@ def patch_file_handler(args):
     if not os.path.isfile(path):
         return {"error": f"The path is not a file: {contractuser(path)}"}
     
-    print(f"  [weak]Patching[/weak] [path]{contractuser(path)}[/path]")
-    print(f"[patch-remove]{indent(old_string, '  - ')}[/patch-remove]")
-    print(f"[patch-add]{indent(new_string, '  + ')}[/patch-add]")
+    from rich.markup import escape
+    output = get_output()
+    output.print(f"[weak]Patching[/weak] [path]{contractuser(path)}[/path]",
+                 indent=2)
+    output.print(f"[patch-remove]{escape(indent(old_string, '  - '))}[/patch-remove]")
+    output.print(f"[patch-add]{escape(indent(new_string, '  + '))}[/patch-add]")
 
     with open(path, "r") as f:
         file_content = f.read()
@@ -316,7 +325,6 @@ def find_files_handler(args):
     root = args.get("root", "")
     pattern = args.get("pattern", "")
     max_depth = args.get("max_depth", -1)
-    print(f"  [weak]Pattern[/weak]: [path]{pattern}[/path]")
 
     if not root or not pattern:
         return {"error": "Both 'root' and 'pattern' are required"}
@@ -327,7 +335,9 @@ def find_files_handler(args):
     if not os.path.isdir(root):
         return {"error": f"Directory does not exist: {contractuser(root)}"}
 
-    print(f"  [weak]Searching for[/weak] [path]{pattern}[/path] [weak]in[/weak] [path]{contractuser(root)}[/path]")
+    output = get_output()
+    output.print(f"[weak]Searching for[/weak] [path]{pattern}[/path] [weak]in[/weak] [path]{contractuser(root)}[/path]",
+                 indent=2)
 
     matches = []
     root_path = Path(root)
@@ -426,7 +436,9 @@ def search_content_handler(args):
     if not os.path.isdir(root):
         return {"error": f"Directory does not exist: {contractuser(root)}"}
 
-    print(f"  [weak]Searching for[/weak] [path]'{query}'[/path] [weak]in[/weak] [path]{contractuser(root)}[/path]")
+    output = get_output()
+    output.print(f"[weak]Searching for[/weak] [path]'{query}'[/path] [weak]in[/weak] [path]{contractuser(root)}[/path]",
+                 indent=2)
 
     root_path = Path(root)
     matches = []  # list of {"file": str, "line": int, "line_content": str, "context": list[str]}

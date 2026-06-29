@@ -8,52 +8,7 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 
 from agent.utils import contractuser, pretty_timedelta
-
-
-class OutputAdapter:
-    """Abstract base for output adapters.
-
-    Implementations wrap console printing (CLI agent) or RichLog writing (TUI).
-    """
-
-    def print(self, text: str) -> None:
-        """Print plain or markup text."""
-
-    def print_rich(self, renderable) -> None:
-        """Print a Rich renderable."""
-
-    def newline(self) -> None:
-        """Print a blank line."""
-
-    def rule(self, style: str = "dim", title: str = "") -> None:
-        """Print a horizontal rule line."""
-
-    def info(self, text: str) -> None:
-        """Print an info line with the \u21d2 prefix."""
-
-
-class CLIOutput(OutputAdapter):
-    """Output adapter backed by agent.console (CLI agent)."""
-
-    def print(self, text: str) -> None:
-        from agent.console import print as cprint
-        cprint(text)
-
-    def print_rich(self, renderable) -> None:
-        from agent.console import console
-        console.print(renderable)
-
-    def newline(self) -> None:
-        from agent.console import newline as nl
-        nl()
-
-    def rule(self, style: str = "dim", title: str = "") -> None:
-        from agent.console import console
-        console.rule(style=style)
-
-    def info(self, text: str) -> None:
-        from agent.console import info as cinfo
-        cinfo(text)
+from agent.output import OutputAdapter
 
 
 def check_updates(repo_dir):

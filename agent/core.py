@@ -8,6 +8,7 @@ The core:
 """
 
 import json
+import re
 import time
 import tiktoken
 
@@ -22,6 +23,15 @@ from agent.skills import SkillLoader
 from agent.mcp import MCPClient
 from agent.router import ModelRouter
 from agent.tools import get_tool_schemas, execute_tool
+
+
+# Regex matching ANSI escape sequences (SGR codes and all CSI sequences).
+_ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences from *text*."""
+    return _ANSI_RE.sub('', text)
 
 class TurnCancelled(Exception):
     """Raised when the user cancels an LLM turn during inference."""
@@ -585,25 +595,10 @@ class Core:
             if tool_callback:
                 tool_callback(tool_name, tool_args)
 
-            # Capture console output from the tool (e.g. print() calls in
-            # tools/files.py, tools/terminal.py, etc.) so it can be displayed
-            # in environments where stdout is hidden (e.g. TUI mode).
-            original_file = agent_console.console.file
-            original_no_color = agent_console.console.no_color
-            capture_buf = StringIO()
-            agent_console.console.file = capture_buf
-            agent_console.console.no_color = True
-            try:
-                result = execute_tool(tool_name, json.loads(tool_args) if isinstance(tool_args, str) else tool_args)
-            finally:
-                agent_console.console.file = original_file
-                agent_console.console.no_color = original_no_color
+            result = execute_tool(tool_name, json.loads(tool_args) if isinstance(tool_args, str) else tool_args)
 
-            captured_output = capture_buf.getvalue()
-
-            # Notify the UI about the captured output
             if tool_callback:
-                tool_callback(tool_name, tool_args, captured_output=captured_output)
+                tool_callback(tool_name, tool_args)
 
             # Check if the result contains an image (e.g. screenshot tool)
             if isinstance(result, dict) and "image_base64" in result:

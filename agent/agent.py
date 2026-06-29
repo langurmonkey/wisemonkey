@@ -16,9 +16,9 @@ from pubsub import pub
 from agent.core import Core, Stage, TurnCancelled
 from agent.commands import registry
 from agent.utils import add_command, collapse_none_dicts
-from agent.prompt_ui import RichPromptUi
+from agent.output import RichOutputAdapter, set_output
 from agent.console import print, err, ok, info, newline, console
-from agent.startup import startup_info, CLIOutput
+from agent.startup import startup_info
 
 # Try to import prompt_toolkit for rich input; fall back to plain input.
 try:
@@ -50,7 +50,8 @@ class Agent:
         self.spinner_prompt = None
         self.spinner_thinking = None
         self._last_ctrl_c_time = 0  # Timestamp of last Control+C for double-tap detection
-        self._prompt_ui = RichPromptUi()
+        self.output = RichOutputAdapter()
+        set_output(self.output)
         pub.subscribe(self._create_prompt_session, "prompt-update")
 
     def prompt_callback(self, stage:Stage):
@@ -93,11 +94,9 @@ class Agent:
         """Called when new chunks arrive in streaming mode."""
         print(escape(content), end="")
 
-    def tool_callback(self, tool_name: str, tool_args, captured_output: str = ""):
+    def tool_callback(self, tool_name: str, tool_args):
         newline()
         info(f"🛠️ [weak]Activating tool:[/weak]  [tool]{tool_name}[/tool]")
-        if captured_output.strip():
-            print(captured_output.rstrip())
 
     def cancel_callback(self, e: KeyboardInterrupt):
         """Handles the Control+c during inference, as a keyboard interrupt"""
@@ -270,7 +269,7 @@ class Agent:
     def run_interactive(self):
         """Run the agent in interactive mode."""
 
-        startup_info(self.core, CLIOutput())
+        startup_info(self.core, self.output)
 
         if _HAS_PROMPT_TOOLKIT:
             self._create_prompt_session()
@@ -304,7 +303,7 @@ class Agent:
                 command, params = registry.lookup(tokens)
 
                 if command:
-                    no_errors, msg, content, md, should_exit = registry.execute(self.core, command, params, self._prompt_ui)
+                    no_errors, msg, content, md, should_exit = registry.execute(self.core, command, params, self.output)
 
                     if should_exit:
                         print(txt_goodbye)

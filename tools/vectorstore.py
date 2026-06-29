@@ -7,7 +7,7 @@ from shutil import get_terminal_size
 
 from agent.memory import Memory, _load_vectorstore
 from agent.tools import tool
-from agent.console import print
+from agent.output import get_output
 
 
 @tool(
@@ -51,7 +51,8 @@ def search_knowledge_handler(args):
 
     try:
         terminal_width = get_terminal_size((80, 20)).columns
-        print(f"  [weak]Query vector store:[/weak] [path]{shorten(query, width=terminal_width - 24)}[/path]")
+        output = get_output()
+        output.print(f"[weak]Query vector store:[/weak] [path]{shorten(query, width=terminal_width - 24)}[/path]", indent=2)
         results = mem.vectorstore.query(query, top_k=top_k)
     except Exception as e:
         return {"error": f"Vector store query failed: {e}"}

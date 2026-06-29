@@ -10,10 +10,8 @@ User confirmation is required for dangerous commands.
 import subprocess
 import re
 
-from rich.prompt import Confirm as RichConfirm
-
 from agent.tools import tool
-from agent.console import print, newline
+from agent.output import get_output
 
 # ──────────────────────────────────────────────
 # Configurable danger detection
@@ -136,18 +134,19 @@ def _requires_extra_confirmation(command: str, timeout: int) -> bool:
 
 def _prompt_user(command: str, reason: str) -> bool:
     """Ask the user to confirm (or reject) a command."""
-    newline()
-    print("⚠️ [warn]Command requires confirmation[/warn]")
-    print(f"  [weak]Reason[/weak]: {reason}")
-    print(f"  [prompt]$[/prompt] [cmd]{command}[/cmd]")
-    newline()
+    output = get_output()
+    output.newline()
+    output.print("⚠️ [warn]Command requires confirmation[/warn]", indent=2)
+    output.print(f"[weak]Reason[/weak]: {reason}", indent=2)
+    output.print(f"[prompt]$[/prompt] [cmd]{command}[/cmd]", indent=2)
+    output.newline()
 
-    confirmed = RichConfirm.ask("[bold]Run this command?[/bold]", default=False)
+    confirmed = output.ask_confirm("[bold]Run this command?[/bold]", default=False)
 
     if confirmed:
-        print("  [ok]✓[/ok] Confirmed")
+        output.ok("Confirmed", indent=2)
     else:
-        print("  [err]✗[/err] Cancelled by user")
+        output.err("Cancelled by user", indent=2)
 
     return confirmed
 
@@ -226,7 +225,8 @@ def run_command_handler(args):
         else:
             # Safe-looking commands still get a lightweight prompt
             # so the user always sees what's about to run.
-            print(f"  [path][bold]$[/bold] {command}[/path]")
+            output = get_output()
+            output.print(f"[path][bold]$[/bold] {command}[/path]", indent=2)
 
     # Execute
     try:

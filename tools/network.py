@@ -9,7 +9,7 @@ import urllib.error
 import re
 
 from agent.tools import tool
-from agent.console import print
+from agent.output import get_output
 
 def _strip_scripts_and_styles(html):
     html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
@@ -65,7 +65,8 @@ def fetch_url_handler(args):
     if not url:
         return {"error": "No URL provided"}
     try:
-        print(f"  [weak]Accessing[/weak] [link]{url}[/link]")
+        output = get_output()
+        output.print(f"[weak]Accessing[/weak] [link]{url}[/link]", indent=2)
         req = urllib.request.Request(url, headers={'User-Agent': 'Wisemonkey/1.0'})
         with urllib.request.urlopen(req, timeout=10) as response:
             html = _decode_response(response)

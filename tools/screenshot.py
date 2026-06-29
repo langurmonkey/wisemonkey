@@ -7,11 +7,10 @@ required for privacy/security.
 
 from io import BytesIO
 from PIL import ImageGrab
-from rich.prompt import Confirm as RichConfirm
 
 from agent.tools import tool
-from agent.console import print, newline, ok, err
 from agent.utils import resize_image
+from agent.output import get_output
 
 
 @tool(
@@ -31,15 +30,16 @@ def screenshot_handler(args):
     """
 
     # User confirmation
-    newline()
-    print("📷 [warn]Screenshot requested[/warn]")
-    print("  [weak]The agent wants to capture your current screen.[/weak]")
-    newline()
+    output = get_output()
+    output.newline()
+    output.print("📷 [warn]Screenshot requested[/warn]", indent=2)
+    output.print("[weak]The agent wants to capture your current screen.[/weak]", indent=2)
+    output.newline()
 
-    confirmed = RichConfirm.ask("[bold]Allow screenshot?[/bold]", default=False)
+    confirmed = output.ask_confirm("[bold]Allow screenshot?[/bold]", default=False)
 
     if not confirmed:
-        err("Cancelled by user")
+        output.err("Cancelled by user", indent=2)
         return {
             "error": (
                 "Screenshot was cancelled by the user. "
@@ -49,7 +49,7 @@ def screenshot_handler(args):
             "user_cancelled": True,
         }
 
-    ok("Capturing screenshot...")
+    output.ok("Capturing screenshot...", indent=2)
 
     # Capture
     img = ImageGrab.grab()
