@@ -316,6 +316,7 @@ def find_files_handler(args):
     root = args.get("root", "")
     pattern = args.get("pattern", "")
     max_depth = args.get("max_depth", -1)
+    print(f"  [weak]Pattern[/weak]: [path]{pattern}[/path]")
 
     if not root or not pattern:
         return {"error": "Both 'root' and 'pattern' are required"}
