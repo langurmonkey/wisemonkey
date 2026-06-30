@@ -15,7 +15,7 @@ theme_dict: dict[str, str] = {
     "time": "grey30 i",
 
     # Turns
-    "agent": "medium_orchid",
+    "agent": "orange3",
     "user": "deep_sky_blue3",
 
     # Features
