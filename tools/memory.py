@@ -6,6 +6,8 @@ Allows the agent to operate on memory:
 - Add notes
 - Set user profile
 """
+import os
+
 from agent.memory import Memory
 from agent.tools import tool
 
@@ -97,3 +99,23 @@ def set_user_profile_handler(args):
         profile = {k: v for k, v in args.items() if k != "save"}
     mem.set_user_profile(profile)
     return {"saved": True, "profile": profile}
+
+@tool(
+    name="get_session_info",
+    description=(
+        "Get the session name, working directory, and session directory (configuration and agent data).\n"
+        "Use this if you are unsure of where the current project files are."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {},
+    },
+)
+def get_session_info_handler(args):
+    """Get information on the current session."""
+    mem = Memory()
+    return {
+        "session_name": mem.session,
+        "working_directory": os.getcwd(),
+        "session_directory": str(mem.session_dir)
+    }
