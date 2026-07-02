@@ -114,6 +114,7 @@ def discover_tools(tools_dir=None):
     Idempotent: tools are only loaded once per process.
     """
     global _discovered
+    global _registry
 
     if _discovered:
         return
@@ -142,6 +143,7 @@ def discover_tools(tools_dir=None):
         except Exception as e:
             warn(f"Failed to load tool {py_file.name}: {e}")
 
+    _registry = dict(sorted(_registry.items()))
     _discovered = True
 
 

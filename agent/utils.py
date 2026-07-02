@@ -116,17 +116,24 @@ def collapse_none_dicts(obj):
 
 def pretty_timedelta(delta):
     """
-    Pretty printing a `timedelta` object form `datetime` Python module
+    Pretty printing a `timedelta` or `datetime` object.
+
+    If a `datetime` is passed, it is compared to `datetime.now().astimezone()`
+    and the difference is displayed.
 
     Acknowledgements:
     @thatalextaylor for his earlier version:
     https://gist.github.com/thatalextaylor/7408395
     That I used to modify the script.
     Args:
-        delta -- `datatime` Python time delta object
+        delta -- `timedelta` or `datetime` object
     Returns:
-        None -- just a printing function -- works better with Jupyter Notebook
+        str -- human-readable time delta
     """
+    from datetime import datetime
+
+    if isinstance(delta, datetime):
+        delta = datetime.now() - delta
     timedelta_seconds = delta.total_seconds()
 
     # Seconds will be int-s, timedelta_seconds stores also decimal places

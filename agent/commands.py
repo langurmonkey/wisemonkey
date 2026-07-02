@@ -317,25 +317,6 @@ def _cmd_session(core, params, output: OutputAdapter | None = None) -> tuple[boo
     return True, None, result, None
 
 
-@cmd(
-    "/session-clear",
-    "Clear the current session chat memory",
-    examples=[
-        "/session clear        # Clear chat memory for this sesson",
-        "/session clear 10     # Clear the 10 oldest chat exchanges of this session",
-    ]
-)
-def _cmd_session_clear(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
-    n = 0
-    if params:
-        try:
-            n = int(params[0])
-        except ValueError:
-            return False, f"the parameter must be an integer: '{params[0]}'", None, None
-
-    cleared = core.memory.clear_chat(n)
-    return True, f"{cleared} exchanges cleared", None, None
-
 
 @cmd(
       "/session-agent",
@@ -374,11 +355,32 @@ def _cmd_session_chat(core, params, output: OutputAdapter | None = None) -> tupl
     # Format in Markdown
     return True, stats, None, mem
 
+
 @cmd(
-    "/session-compact",
-    "Compact the session chat history by summarizing it into a shorter form."
+    "/session-chat-clear",
+    "Clear the current session chat memory; gets an optional integer with the number of exchanges to show",
+    examples=[
+        "/session clear        # Clear chat memory for this sesson",
+        "/session clear 10     # Clear the 10 oldest chat exchanges of this session",
+    ]
 )
-def _cmd_session_compact(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_session_chat_clear(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+    n = 0
+    if params:
+        try:
+            n = int(params[0])
+        except ValueError:
+            return False, f"the parameter must be an integer: '{params[0]}'", None, None
+
+    cleared = core.memory.clear_chat(n)
+    return True, f"{cleared} exchanges cleared", None, None
+
+
+@cmd(
+    "/session-chat-compact",
+    "Compact the session chat history by summarizing it into a shorter form"
+)
+def _cmd_session_chat_compact(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
@@ -417,6 +419,132 @@ def _cmd_session_compact(core, params, output: OutputAdapter | None = None) -> t
     except Exception as e:
         spinner_compact.stop()
         return False, f"Memory compact operation failed: {e}", None, None
+
+@cmd(
+    "/session-plan",
+    "List all saved session plans in the current session",
+     aliases=["/session-plans"]
+)
+def _cmd_session_plan_list(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+    if params:
+        return False, no_params_error, None, None
+
+    from agent.memory import Memory
+    mem = Memory()
+    plans_dir = mem.session_dir / "plans"
+    if not plans_dir.exists():
+        return False, "no plans directory found", None, None
+
+    import datetime
+    import re
+
+    files = sorted(plans_dir.glob("*.md"), reverse=True)
+    if not files:
+        return False, "no session plans found", None, None
+
+    results = ""
+    for f in files:
+        raw = f.read_text(encoding="utf-8")
+        # Parse frontmatter for status
+        meta = {}
+        match = re.match(r"^---\s*\n(.*?)\n---", raw, re.DOTALL)
+        if match:
+            for line in match.group(1).strip().split("\n"):
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    meta[k.strip()] = v.strip()
+        name_display = f.stem
+        status = meta.get("status", "unknown")
+        mod = datetime.datetime.fromtimestamp(f.stat().st_mtime)
+        from agent.utils import pretty_timedelta
+        age = pretty_timedelta(mod)
+        results += f"  \u2022 [bold]{name_display}[/bold] \u2014 {status} ({age} ago)\n"
+
+    return True, f"{len(files)} plan(s) found", results, None
+
+
+@cmd(
+    "/session-plan-read",
+    "Read a saved session plan by name",
+    examples=[
+        "/session-plan-read REFACTOR_20260626_120000   # Read a specific plan",
+        "/session-plan-read REFACTOR                    # Read the most recent matching plan",
+    ]
+)
+def _cmd_session_plan_read(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+    if not params:
+        return False, "provide a plan name (e.g., REFACTOR or REFACTOR_20260626_120000)", None, None
+
+    name = " ".join(params).strip().upper().replace(" ", "_")
+    from agent.memory import Memory
+    mem = Memory()
+    plans_dir = mem.session_dir / "plans"
+    if not plans_dir.exists():
+        return False, "no plans directory found", None, None
+
+    # Try exact match first
+    exact = plans_dir / f"{name}.md"
+    target = None
+    if exact.exists():
+        target = exact
+    else:
+        matches = sorted(plans_dir.glob(f"{name}_*.md"), reverse=True)
+        if matches:
+            target = matches[0]
+
+    if not target:
+        return False, f"no plan found matching '{name}'", None, None
+
+    content = target.read_text(encoding="utf-8")
+    return True, f"Plan: {target.name}", content, content
+
+
+@cmd(
+    "/session-plan-edit",
+    "Edit a saved session plan with $EDITOR or $VISUAL",
+    examples=[
+        "/session-plan-edit REFACTOR_20260626_120000   # Edit a specific plan",
+        "/session-plan-edit REFACTOR                    # Edit the most recent matching plan",
+    ]
+)
+def _cmd_session_plan_edit(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+    if not params:
+        return False, "provide a plan name (e.g., REFACTOR or REFACTOR_20260626_120000)", None, None
+
+    name = " ".join(params).strip().upper().replace(" ", "_")
+    from agent.memory import Memory
+    mem = Memory()
+    plans_dir = mem.session_dir / "plans"
+    if not plans_dir.exists():
+        return False, "no plans directory found", None, None
+
+    # Try exact match first
+    exact = plans_dir / f"{name}.md"
+    target = None
+    if exact.exists():
+        target = exact
+    else:
+        matches = sorted(plans_dir.glob(f"{name}_*.md"), reverse=True)
+        if matches:
+            target = matches[0]
+
+    if not target:
+        return False, f"no plan found matching '{name}'", None, None
+
+    import subprocess
+    import os
+    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "nano"
+    cmd = [editor, str(target)]
+    if output is not None:
+        result = output.run_subprocess(cmd)
+    else:
+        result = subprocess.run(cmd)
+
+    ok = result.returncode == 0
+    if ok:
+        return True, f"Plan '{target.name}' edited successfully", None, None
+    else:
+        return False, f"Editor exited with code {result.returncode}", None, None
 
 
 @cmd(
@@ -742,6 +870,7 @@ def _cmd_attach_image(core, params, output: OutputAdapter | None = None) -> tupl
         return True, f"🖼️  Image loaded and attached — will be sent with your next message. ([dim]{path.name}[/dim], {len(result['image_base64'])} bytes base64)", None, None
     except Exception as e:
         return False, f"failed to load image: {e}", None, None
+
 
 
 @cmd(

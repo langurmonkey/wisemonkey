@@ -1,8 +1,6 @@
 ---
 name: create-plan
 description: Create a concise plan. Use when a user explicitly asks for a plan related to a coding task.
-metadata:
-  short-description: Create a plan
 ---
 
 # Create Plan
@@ -26,6 +24,8 @@ Throughout the entire workflow, operate in read-only mode. Do not write or updat
    - If unsure but not blocked, make a reasonable assumption and proceed.
 
 3. **Create a plan using the template below**
+   - The plan must be persisted as a Markdown file using the `save_session_plan` tool. You can use `list_session_plans` to list the existing plans, and `read_session_plan` to read the contents of a single plan by name.
+   - The plan status is in the front-matter. You can update it with `update_session_plan_status` after the task is done. You can also update the contents of a plan (i.e. after user feedback) with `update_session_plan_content`.
    - Start with **1 short paragraph** describing the intent and approach.
    - Clearly call out what is **in scope** and what is **not in scope** in short.
    - Then provide a **small checklist** of action items (default 6–10 items).

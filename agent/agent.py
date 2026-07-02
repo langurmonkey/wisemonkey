@@ -166,11 +166,11 @@ class Agent:
 
         # Create prompt session now
         style = Style.from_dict({
-            "prompt": "ansiyellow",
-            "frame.border": "ansiyellow",
+            "prompt": "#0087d7",
+            "frame.border": "#0087d7",
             "bottom-toolbar": "#ffffff bg:#262626 noreverse",
             "kbd": "#ffd787 bold",
-            "model": "#0087d7",
+            "model": "#005faf",
             "weak": "#393939"
         })
 

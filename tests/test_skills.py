@@ -80,9 +80,9 @@ class TestLoadSkill(BaseTest):
         assert body == "Skill body here."
 
     def test_load_missing_skill(self):
-        meta, body = self.loader.load_skill("nonexistent")
-        assert meta is None
-        assert body is None
+        from agent.skills import SkillNotFoundError
+        with self.assertRaises(SkillNotFoundError):
+            self.loader.load_skill("nonexistent")
 
     def test_caching(self):
         content = "---\nname: cached\n---\nOriginal body."
@@ -97,6 +97,53 @@ class TestLoadSkill(BaseTest):
         # Should return cached version
         meta2, body2 = self.loader.load_skill("cached")
         assert body2 == "Original body."
+
+
+class TestSubdirectorySkills(BaseTest):
+    """Test loading skills from subdirectory SKILL.md files."""
+
+    def setUp(self):
+        super().setUp()
+        self.loader = SkillLoader(skills_dir=self._tmpdir)
+
+    def test_load_skill_from_subdir(self):
+        skill_dir = self._tmpdir / "my-dir-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: dir-skill\ndescription: From a subdirectory\n---\n## Steps\nDo something.",
+            encoding="utf-8",
+        )
+        assert "dir-skill" in self.loader.list_skills()
+        meta, body = self.loader.load_skill("dir-skill")
+        assert meta["name"] == "dir-skill"
+        assert "Do something" in body
+
+    def test_subdir_name_fallback(self):
+        skill_dir = self._tmpdir / "unnamed-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "Body without frontmatter.", encoding="utf-8"
+        )
+        assert "unnamed-skill" in self.loader.list_skills()
+
+    def test_get_skill_content(self):
+        (self._tmpdir / "flat-skill.md").write_text(
+            "---\nname: flat-skill\n---\nBody.", encoding="utf-8"
+        )
+        content = self.loader.get_skill_content("flat-skill")
+        assert content is not None
+        assert "flat-skill" in content
+        assert "Body." in content
+
+    def test_get_skill_content_subdir(self):
+        skill_dir = self._tmpdir / "sub-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: sub-skill\n---\nBody from subdir.", encoding="utf-8"
+        )
+        content = self.loader.get_skill_content("sub-skill")
+        assert content is not None
+        assert "Body from subdir" in content
 
 
 class TestLoadAll(BaseTest):
