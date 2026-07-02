@@ -1,6 +1,6 @@
 [project]
 name = "wisemonkey"
-version = "2026.6.19"
+version = "2026.7.2"
 description = "A simple, extensible, and hackable AI agent for the Linux and macOS terminal"
 readme = "README.md"
 requires-python = ">=3.13"
