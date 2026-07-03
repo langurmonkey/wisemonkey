@@ -14,6 +14,24 @@ from agent.utils import contractuser
 from agent.tools import tool
 from agent.output import get_output
 
+def _prompt_user(command: str, reason: str) -> bool:
+    """Ask the user to confirm (or reject) a search."""
+    output = get_output()
+    output.newline()
+    output.print("⚠️ [warn]Search outside cwd requires confirmation[/warn]", indent=2)
+    output.print(f"[weak]Reason[/weak]: {reason}", indent=2)
+    output.print(f"[cmd]{command}[/cmd]", indent=2)
+    output.newline()
+
+    confirmed = output.ask_confirm("[bold]Accept this search?[/bold]", default=False)
+
+    if confirmed:
+        output.ok("Confirmed", indent=2)
+    else:
+        output.err("Cancelled by user", indent=2)
+
+    return confirmed
+
 @tool(
     name="read_file",
     description=(
@@ -306,7 +324,7 @@ def patch_file_handler(args):
         "properties": {
             "root": {
                 "type": "string",
-                "description": "The directory to search in (e.g., '/home/user/projects')",
+                "description": "The directory to search, preferably in the current working directory (i.e. ./assets/doc).",
             },
             "pattern": {
                 "type": "string",
@@ -321,7 +339,10 @@ def patch_file_handler(args):
     },
 )
 def find_files_handler(args):
-    """Recursively find files by name pattern."""
+    """
+    Recursively find files by name pattern. This method asks the user for confirmation if the
+    agent tries to find files outside the current working directory.
+    """
     root = args.get("root", "")
     pattern = args.get("pattern", "")
     max_depth = args.get("max_depth", -1)
@@ -334,6 +355,24 @@ def find_files_handler(args):
 
     if not os.path.isdir(root):
         return {"error": f"Directory does not exist: {contractuser(root)}"}
+
+    # Ask for confirmation if not in cwd
+    cwd = Path(os.getcwd())
+    target = Path(root)
+    if cwd not in target.parents:
+        command = f"find_files {pattern} {target}"
+        confirmed = _prompt_user(command, "Target not in current working directory")
+        if not confirmed:
+            return {
+                "error": (
+                    "'find_files' was cancelled by the user. "
+                    "You asked to search for files outside the current working directory "
+                    "and the user declined. The file you are trying to find is "
+                    "probably in the current working directory. Try that instead."
+                ),
+                "user_cancelled": True,
+                "command": command,
+            }
 
     output = get_output()
     output.print(f"[weak]Searching for[/weak] [path]{pattern}[/path] [weak]in[/weak] [path]{contractuser(root)}[/path]",
