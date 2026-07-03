@@ -359,7 +359,6 @@ def find_files_handler(args):
     # Ask for confirmation if not in cwd
     cwd = Path(os.getcwd())
     target = Path(root)
-    print(f"{cwd}  VS  {target}")
     if not os.path.samefile(cwd, target) and cwd not in target.parents:
         command = f"find_files {pattern} {target}"
         confirmed = _prompt_user(command, "Target not in current working directory")
