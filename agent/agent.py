@@ -361,7 +361,15 @@ class Agent:
                                                           error_cb
                                                       )
                     self.output.newline()
+
                     self.output.newline()
+                    if response == "[Cancelled]":
+                        continue  # skip status line, go straight back to prompt
+
+                    self._statusline(total_tokens, ntools, total_gen_time)
+                    self.output.newline()
+                    self.output.newline()
+
                     if self.core.config.get("agent.markdown", False):
                         # Print markdown
                         md = self.core.memory.get_chat_unformatted()[-1]['content']
@@ -371,12 +379,6 @@ class Agent:
                                     subtitle=f"Markdown",
                                     highlight=True)
                         self.output.print_rich(md)
-
-                    self.output.newline()
-                    if response == "[Cancelled]":
-                        continue  # skip status line, go straight back to prompt
-                    self._statusline(total_tokens, ntools, total_gen_time)
-                    self.output.newline()
                 except Exception as e:
                     self._cancel_all_spinners()
                     self.output.err(f"Error sending prompt: {e}")
