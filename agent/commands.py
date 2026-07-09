@@ -748,7 +748,7 @@ def _cmd_config(core, params, output: OutputAdapter | None = None) -> tuple[bool
         return False, no_params_error, None, None
 
     # URL, model, reasoning, temperature, vi
-    commands = ["/url", "/model", "/reasoning", "/temperature", "/vi"]
+    commands = ["/url", "/model", "/reasoning", "/temperature", "/vi", "/markdown"]
 
     for command in commands:
         ok, msg, _, _, _ = registry.run_command(core, command, output)
@@ -844,6 +844,30 @@ def _cmd_vi(core, params, output: OutputAdapter | None = None) -> tuple[bool, st
     pub.sendMessage("prompt-update")
     return True, f"Vi mode: {state_bool}", None, None
 
+@cmd(
+      "/markdown",
+       "Configure markdown rendering after inference",
+)
+def _cmd_vi(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+    if params:
+        return False, no_params_error, None, None
+
+    ui = output or _fallback_output()
+    from agent.config import get_config
+    config = get_config()
+
+    opts = [("true", "On"), ("false", "Off")]
+    defa = config.get("agent.markdown")
+
+    state = ui.ask_choice(
+        message="Markdown rendering:",
+        options=opts,
+        default=str(defa).lower(),
+    )
+    state_bool = state == "true"
+    config.set("agent.markdown", state_bool)
+    pub.sendMessage("prompt-update")
+    return True, f"Markdown rendering: {state_bool}", None, None
 
 @cmd(
     "/attachimage",

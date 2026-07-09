@@ -344,7 +344,7 @@ class WisemonkeyTui(App):
         self._cancel_event = threading.Event()
         self._turn_active = False
 
-    # ---- reasoning callback -------------------------------------------------
+    # Reasoning callback
 
     def _reasoning_callback(self, stage: Stage, content: str = "", reasoning_visible: bool = True) -> None:
         """Called from worker thread on START / PROCESS / STOP of reasoning.
@@ -398,7 +398,7 @@ class WisemonkeyTui(App):
             self.output.ok("💡 Done thinking")
             self.call_from_thread(self._update_status)
 
-    # ---- prompt callback (spinner) -----------------------------------------
+    # Prompt callback (spinner)
 
     def _prompt_callback(self, stage: Stage) -> None:
         """Called when the LLM starts/stops processing a prompt.
@@ -439,7 +439,7 @@ class WisemonkeyTui(App):
             f" Model: [bold]{model}[/bold]  |  Session: [bold]{sess}[/bold]"
         )
 
-    # ---- input handling ----------------------------------------------------
+    # Input handling
 
     def _handle_command(self, user_input: str) -> None:
         """Execute a slash command and print its result.
@@ -672,11 +672,21 @@ class WisemonkeyTui(App):
             self.output.newline()
             self.output.rule(style="agent", title=label)
 
+        if self.core and self.core.config.get("agent.markdown", False):
+            # Print markdown
+            md = self.core.memory.get_chat_unformatted()[-1]['content']
+            md = Panel(Markdown(md),
+                        border_style="output-frame",
+                        title=f"Markdown",
+                        subtitle=f"Markdown",
+                        highlight=True)
+            self.output.print_rich(md)
+
     def _cancel_cb(self, e) -> None:
         self.output.err("Turn cancelled")
         raise TurnCancelled() from e
 
-    # ---- lifecycle ---------------------------------------------------------
+    # Lifecycle
 
     def on_exit(self) -> None:
         """Persist memory and shut down before quitting."""

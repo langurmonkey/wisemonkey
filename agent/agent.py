@@ -291,7 +291,7 @@ class Agent:
             try:
                 user_input = get_input()
             except (EOFError, KeyboardInterrupt):
-                print(txt_goodbye)
+                self.output.print(txt_goodbye)
                 break
 
             if not user_input:
@@ -306,7 +306,7 @@ class Agent:
                     no_errors, msg, content, md, should_exit = registry.execute(self.core, command, params, self.output)
 
                     if should_exit:
-                        print(txt_goodbye)
+                        self.output.print(txt_goodbye)
                         break
 
                     if no_errors:
@@ -321,32 +321,32 @@ class Agent:
                                 cont = content
                             elif md:
                                 cont = Markdown(md)
-                            print(Panel(cont,
-                                        border_style="output-frame",
-                                        title=f"{command.name} {param_list}",
-                                        subtitle=f"{command.name} {param_list}",
-                                        highlight=True))
+                            self.output.print_rich(Panel(cont,
+                                                        border_style="output-frame",
+                                                        title=f"{command.name} {param_list}",
+                                                        subtitle=f"{command.name} {param_list}",
+                                                        highlight=True))
 
                         # Short status message
                         if msg:
-                            ok(msg)
-                        newline()
+                            self.output.ok(msg)
+                        self.output.newline()
 
                     else:
                         # Error
                         if msg:
-                            err(f"{msg}")
+                            self.output.err(f"{msg}")
 
                 else:
-                    err(f"Command not found: {user_input}")
+                    self.output.err(f"Command not found: {user_input}")
                     
                 continue
 
             else:
-                newline()
+                self.output.newline()
                 console.rule(style="agent")
-                print(f"[agent]⩥ [bold]Wisemonkey[/bold] ⩤ [/agent]  [accent]⇒ {self.core.config.get('model.name')}[/accent]")
-                print("  [kbd]Ctrl[/kbd]+[kbd]C[/kbd]: Cancel turn\n")
+                self.output.print(f"[agent]⩥ [bold]Wisemonkey[/bold] ⩤ [/agent]  [accent]⇒ {self.core.config.get('model.name')}[/accent]")
+                self.output.print("  [kbd]Ctrl[/kbd]+[kbd]C[/kbd]: Cancel turn\n")
                 try:
                     (response,
                         total_tokens,
@@ -360,18 +360,29 @@ class Agent:
                                                           cancel_cb,
                                                           error_cb
                                                       )
-                    newline()
-                    newline()
+                    self.output.newline()
+                    self.output.newline()
+                    if self.core.config.get("agent.markdown", False):
+                        # Print markdown
+                        md = self.core.memory.get_chat_unformatted()[-1]['content']
+                        md = Panel(Markdown(md),
+                                    border_style="output-frame",
+                                    title=f"Markdown",
+                                    subtitle=f"Markdown",
+                                    highlight=True)
+                        self.output.print_rich(md)
+
+                    self.output.newline()
                     if response == "[Cancelled]":
                         continue  # skip status line, go straight back to prompt
                     self._statusline(total_tokens, ntools, total_gen_time)
-                    newline()
+                    self.output.newline()
                 except Exception as e:
                     self._cancel_all_spinners()
-                    err(f"Error sending prompt: {e}")
+                    self.output.err(f"Error sending prompt: {e}")
                     # The turn's partial conversation has already been persisted
                     # by core.run_turn(), so we just continue to the next prompt.
-                    print("  [dim]Partial response was saved to chat history.[/dim]")
+                    self.output.print("  [dim]Partial response was saved to chat history.[/dim]")
                     
 
         # Persist memory and shut down core on session exit

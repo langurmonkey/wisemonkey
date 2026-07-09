@@ -13,10 +13,8 @@ import time
 import tiktoken
 
 from enum import Enum
-from io import StringIO
 from pathlib import Path
 
-from agent import console as agent_console
 from agent.config import get_config, get_mcp_config_path
 from agent.memory import Memory
 from agent.skills import SkillLoader
