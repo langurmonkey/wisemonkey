@@ -68,8 +68,10 @@ def read_file_handler(args):
     """
     path = args.get("path", "")
     show_line_numbers = args.get("show_line_numbers", False)
+    output = get_output()
 
     if not path:
+        output.err("Path not given :/")
         return {"error": "No file path provided"}
 
     # Expand ~ and relative paths
@@ -77,13 +79,14 @@ def read_file_handler(args):
     path = os.path.abspath(path)
 
     if not os.path.exists(path):
+        output.err(f"Path does not exist: {path}")
         return {"error": f"The file does not exist: {contractuser(path)}"}
 
     if not os.path.isfile(path):
+        output.err(f"Path is not a file: {path}")
         return {"error": f"The path exists but does not point to a file: {contractuser(path)}"}
 
     with open(path, "r") as file:
-        output = get_output()
         output.print(f"[weak]Reading[/weak] [path]{contractuser(path)}[/path]",
                      indent=2)
         content = file.read()
@@ -127,8 +130,10 @@ def read_file_handler(args):
 def list_dir_handler(args):
     """List contents of a directory."""
     path = args.get("path", "")
+    output = get_output()
 
     if not path:
+        output.err("Path not given :/")
         return {"error": "No path provided"}
 
     # Expand ~ and relative paths
@@ -136,11 +141,12 @@ def list_dir_handler(args):
     path = os.path.abspath(path)
 
     if not os.path.exists(path):
+        output.err(f"Path does not exist: {path}")
         return {"error": f"The directory does not exist: {contractuser(path)}"}
 
     if os.path.isfile(path):
+        output.err(f"Path must be a directory: {path}")
         return {"error": f"The path exists but does not point to a directory: {contractuser(path)}"}
-    output = get_output()
     output.print(f"[weak]Listing[/weak] [path]{contractuser(path)}[/path]",
                  indent=2)
 
@@ -193,14 +199,15 @@ def write_file_handler(args):
     """Write or overwrite a file with new content. Creates parent directories."""
     path = args.get("path", "")
     content = args.get("content", "")
+    output = get_output()
 
     if not path:
+        output.err("Path not given :/")
         return {"error": "No file path provided"}
 
     path = os.path.expanduser(path)
     path = os.path.abspath(path)
 
-    output = get_output()
     parent = os.path.dirname(path)
     if parent and not os.path.exists(parent):
         os.makedirs(parent, exist_ok=True)
@@ -254,22 +261,26 @@ def patch_file_handler(args):
     path = args.get("path", "")
     old_string = args.get("old_string", "")
     new_string = args.get("new_string", "")
+    output = get_output()
 
     if not path:
+        output.err("Path not given :/")
         return {"error": "No file path provided"}
     if not old_string:
+        output.err("Replace 'old_string' not provided :/")
         return {"error": "No 'old_string' provided."}
 
     path = os.path.expanduser(path)
     path = os.path.abspath(path)
 
     if not os.path.exists(path):
+        output.err(f"Path does not exist: {path}")
         return {"error": f"The file does not exist: {contractuser(path)}"}
     if not os.path.isfile(path):
+        output.err(f"Path is not a file: {path}")
         return {"error": f"The path is not a file: {contractuser(path)}"}
     
     from rich.markup import escape
-    output = get_output()
     output.print(f"[weak]Patching[/weak] [path]{contractuser(path)}[/path]",
                  indent=2)
     output.print(f"[patch-remove]{escape(indent(old_string, '  - '))}[/patch-remove]")
@@ -346,14 +357,17 @@ def find_files_handler(args):
     root = args.get("root", "")
     pattern = args.get("pattern", "")
     max_depth = args.get("max_depth", -1)
+    output = get_output()
 
     if not root or not pattern:
+        output.err("Both 'path' and 'pattern' are required")
         return {"error": "Both 'root' and 'pattern' are required"}
 
     root = os.path.expanduser(root)
     root = os.path.abspath(root)
 
     if not os.path.isdir(root):
+        output.err(f"Directory does not exist: {contractuser(root)}")
         return {"error": f"Directory does not exist: {contractuser(root)}"}
 
     # Ask for confirmation if not in cwd
@@ -374,7 +388,6 @@ def find_files_handler(args):
                 "command": command,
             }
 
-    output = get_output()
     output.print(f"[weak]Searching for[/weak] [path]{pattern}[/path] [weak]in[/weak] [path]{contractuser(root)}[/path]",
                  indent=2)
 
