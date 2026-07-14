@@ -12,6 +12,7 @@ import datetime
 
 from agent.memory import Memory
 from agent.tools import tool
+from agent.output import get_output
 
 
 def _get_plans_dir():
@@ -62,10 +63,16 @@ def save_session_plan_handler(args):
     """Save a session plan to the plans directory."""
     name = args.get("name", "").strip().upper().replace(" ", "_")
     content = args.get("content", "")
+    output = get_output()
+    
     if not name:
+        output.err("Plan name is required")
         return {"saved": False, "error": "Plan name is required"}
     if not content:
+        output.err("Plan content is required")
         return {"saved": False, "error": "Plan content is required"}
+
+    output.print(f"[weak]Saving plan[/weak] [path]{name}[/path]", indent=2)
 
     plans_dir = _get_plans_dir()
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
