@@ -340,7 +340,7 @@ class ModelRouter:
         }
         
         kwargs["extra_headers"] = {
-            "HTTP-Referer": "https://wisemonkey.ai", # Must be a full URL
+            "HTTP-Referer": "https://tonisagrista.com/projects/wisemonkey/",
             "X-Title": "Wisemonkey Agent",
         }
 
