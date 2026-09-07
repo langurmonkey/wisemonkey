@@ -319,7 +319,9 @@ Decorated commands are automatically registered, and auto-completed in the input
 
 ### Adding skills
 
-Add a `.md` file in `skills/` with YAML front matter, following the [agentskills.io](https://agentskills.io) standard:
+Skills are loaded from the `skills/` directory of the wisemonkey project, as well as the `./skills/` folder within the current working directory.
+
+To create a new skill, add a `.md` file in `skills/` with YAML front matter, following the [agentskills.io](https://agentskills.io) standard:
 
 ```markdown
 ---

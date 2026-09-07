@@ -14,6 +14,7 @@ The frontmatter is parsed for metadata; the body is injected into the
 system prompt.
 """
 
+import os
 import re
 from pathlib import Path
 
@@ -27,40 +28,64 @@ class SkillLoader:
     """Load and manage skills from markdown files."""
 
     def __init__(self, skills_dir=None):
-        self.skills_dir = Path(skills_dir) if skills_dir else Path(__file__).parent.parent / "skills"
-        self.skills_dir.mkdir(parents=True, exist_ok=True)
+        self.skills_dirs = []
+
+        dedicated_dir = skills_dir is not None
+
+        # Default location (wisemonkey's base)
+        skills_dir = Path(skills_dir) if skills_dir else Path(__file__).parent.parent / "skills"
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        self.skills_dirs.append(skills_dir)
+
+        if not dedicated_dir:
+            # Current working directory (./skills)
+            local = Path(os.getcwd()) / "skills"
+            if local is not skills_dir:
+                self.skills_dirs.append(local)
+
+        print(self.skills_dirs)
+        
         self._loaded = {}
 
     def _find_skill_files(self):
         """Find all skill files: *.md in root, SKILL.md in subdirectories.
 
-        Returns list of (name, path) tuples where name is derived from
-        frontmatter, falling back to filename stem or directory name.
+        Also loads any .md files from ./skills/**/*.md in the current working
+        directory. Returns list of (name, path) tuples where name is derived
+        from frontmatter, falling back to filename stem or directory name.
         """
-        if not self.skills_dir.exists():
-            return []
-
         found = []
+        seen = set()
 
-        # Flat .md files in root
-        for f in sorted(self.skills_dir.glob("*.md")):
-            found.append((f.stem, f))
+        def _add(name, path):
+            resolved = path.resolve()
+            if resolved in seen:
+                return
+            seen.add(resolved)
+            found.append((name, path))
 
-        # SKILL.md files in subdirectories (one level deep)
-        for subdir in sorted(self.skills_dir.iterdir()):
-            if subdir.is_dir():
-                skill_file = subdir / "SKILL.md"
-                if skill_file.exists():
-                    # Use frontmatter name if available, else directory name
-                    name = subdir.name
-                    try:
-                        content = skill_file.read_text()
-                        meta, _ = self._parse_frontmatter(content)
-                        if meta.get("name"):
-                            name = meta["name"]
-                    except Exception:
-                        pass
-                    found.append((name, skill_file))
+        for skills_dir in self.skills_dirs:
+            # Default skills directory (project /skills)
+            if skills_dir.exists():
+                # Flat .md files in root
+                for f in sorted(skills_dir.glob("*.md")):
+                    _add(f.stem, f)
+
+                # SKILL.md files in subdirectories (one level deep)
+                for subdir in sorted(skills_dir.iterdir()):
+                    if subdir.is_dir():
+                        skill_file = subdir / "SKILL.md"
+                        if skill_file.exists():
+                            # Use frontmatter name if available, else directory name
+                            name = subdir.name
+                            try:
+                                content = skill_file.read_text()
+                                meta, _ = self._parse_frontmatter(content)
+                                if meta.get("name"):
+                                    name = meta["name"]
+                            except Exception:
+                                pass
+                            _add(name, skill_file)
 
         return sorted(found)
 
@@ -74,7 +99,7 @@ class SkillLoader:
         skills = self.list_skills()
         result = ""
         for name in skills:
-            meta, body = self.load_skill(name)
+            meta, _ = self.load_skill(name)
             result += f"\u2694 [list-item]{meta.get('name', name)}[/]\n"
             result += f"[list-desc]{meta.get('description', '')}[/]\n"
         return result
@@ -117,28 +142,29 @@ class SkillLoader:
 
         This includes the YAML frontmatter (if any). Returns None if not found.
         """
-        # Check flat .md files
-        flat_path = self.skills_dir / f"{name}.md"
-        if flat_path.exists():
-            return flat_path.read_text()
+        for skills_dir in self.skills_dirs:
+            # Check flat .md files
+            flat_path = skills_dir / f"{name}.md"
+            if flat_path.exists():
+                return flat_path.read_text()
 
-        # Check subdirectories with SKILL.md
-        for subdir in self.skills_dir.iterdir():
-            if subdir.is_dir():
-                if subdir.name == name:
+            # Check subdirectories with SKILL.md
+            for subdir in skills_dir.iterdir():
+                if subdir.is_dir():
+                    if subdir.name == name:
+                        skill_file = subdir / "SKILL.md"
+                        if skill_file.exists():
+                            return skill_file.read_text()
+                    # Also check if the SKILL.md inside has matching frontmatter name
                     skill_file = subdir / "SKILL.md"
                     if skill_file.exists():
-                        return skill_file.read_text()
-                # Also check if the SKILL.md inside has matching frontmatter name
-                skill_file = subdir / "SKILL.md"
-                if skill_file.exists():
-                    try:
-                        content = skill_file.read_text()
-                        meta, _ = self._parse_frontmatter(content)
-                        if meta.get("name") == name:
-                            return content
-                    except Exception:
-                        pass
+                        try:
+                            content = skill_file.read_text()
+                            meta, _ = self._parse_frontmatter(content)
+                            if meta.get("name") == name:
+                                return content
+                        except Exception:
+                            pass
 
         return None
 

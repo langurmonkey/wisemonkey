@@ -1,7 +1,7 @@
 """Tests for agent/skills.py — frontmatter parsing, skill loading, formatting."""
 
-from tests.conftest import BaseTest
 from agent.skills import SkillLoader
+from tests.conftest import BaseTest
 
 
 class TestParseFrontmatter(BaseTest):
@@ -32,13 +32,13 @@ class TestParseFrontmatter(BaseTest):
 
     def test_strips_quotes_from_values(self):
         content = '---\nname: "quoted-skill"\ndescription: "A quoted description"\n---\nBody.'
-        meta, body = self.loader._parse_frontmatter(content)
+        meta, _body = self.loader._parse_frontmatter(content)
         assert meta["name"] == "quoted-skill"
         assert meta["description"] == "A quoted description"
 
     def test_single_quotes_stripped(self):
         content = "---\nname: 'single-quoted'\n---\nBody."
-        meta, body = self.loader._parse_frontmatter(content)
+        meta, _body = self.loader._parse_frontmatter(content)
         assert meta["name"] == "single-quoted"
 
 
@@ -50,7 +50,8 @@ class TestListSkills(BaseTest):
         self.loader = SkillLoader(skills_dir=self._tmpdir)
 
     def test_empty_directory(self):
-        assert self.loader.list_skills() == []
+        skills = self.loader.list_skills()       
+        assert skills == []
 
     def test_lists_skill_files(self):
         (self._tmpdir / "skill-a.md").write_text("---\nname: a\n---\n")
@@ -87,7 +88,7 @@ class TestLoadSkill(BaseTest):
     def test_caching(self):
         content = "---\nname: cached\n---\nOriginal body."
         (self._tmpdir / "cached.md").write_text(content, encoding="utf-8")
-        meta1, body1 = self.loader.load_skill("cached")
+        _meta1, _body1 = self.loader.load_skill("cached")
 
         # Modify file on disk
         (self._tmpdir / "cached.md").write_text(
@@ -95,7 +96,7 @@ class TestLoadSkill(BaseTest):
         )
 
         # Should return cached version
-        meta2, body2 = self.loader.load_skill("cached")
+        _meta2, body2 = self.loader.load_skill("cached")
         assert body2 == "Original body."
 
 

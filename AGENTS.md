@@ -62,7 +62,7 @@ Commands use the `@cmd(name, description, aliases)` decorator and are auto-regis
 
 ### Skills (`agent/skills.py` + `skills/`)
 
-Skills are `.md` files with YAML frontmatter (`name`, `description`). The body is injected into the system prompt. Follows the agentskills.io standard.
+Skills are `.md` files with YAML frontmatter (`name`, `description`). The body is injected into the system prompt. Follows the agentskills.io standard. By default, `.md` files in the wisemonkey `skills/` directory, as well as `.md` files in `./skills/` (current working directory) are loaded.
 
 ### Memory (`agent/memory.py`)
 
@@ -150,16 +150,16 @@ tests/
 
 ```bash
 # Run all tests
-python -m unittest discover -s tests -v
+uv run python -m unittest discover -s tests -v
 
 # Run a specific test file
-python -m unittest tests.test_core -v
+uv run python -m unittest tests.test_core -v
 
 # Run a specific test class
-python -m unittest tests.test_core.TestFindWorkspaceRoot -v
+uv run python -m unittest tests.test_core.TestFindWorkspaceRoot -v
 
 # Run a single test
-python -m unittest tests.test_core.TestFindWorkspaceRoot.test_finds_agents_md_in_parent -v
+uv run python -m unittest tests.test_core.TestFindWorkspaceRoot.test_finds_agents_md_in_parent -v
 ```
 
 ### Key Patterns
