@@ -43,8 +43,6 @@ class SkillLoader:
             if local is not skills_dir:
                 self.skills_dirs.append(local)
 
-        print(self.skills_dirs)
-        
         self._loaded = {}
 
     def _find_skill_files(self):
