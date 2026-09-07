@@ -12,6 +12,7 @@ import re
 
 from agent.tools import tool
 from agent.output import get_output
+from agent.config import get_config
 
 # ──────────────────────────────────────────────
 # Configurable danger detection
@@ -190,6 +191,10 @@ def run_command_handler(args):
     timeout = args.get("timeout", 30)
     # Allow explicit bypass for non-interactive use
     skip_confirmation = args.get("_skip_confirmation", False)
+
+    # Unsafe mode: skip all user prompts when agent.unsafe is true in config
+    if get_config().get("agent.unsafe", False):
+        skip_confirmation = True
 
     if not command:
         return {"error": "No command provided"}

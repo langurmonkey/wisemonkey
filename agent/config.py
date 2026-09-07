@@ -6,16 +6,15 @@ Follows XDG Base Directory spec:
 - Fallback: if not found, copies ./config.yaml there
 - If neither exists, returns defaults
 """
-
-import shutil
-import yaml
 import json
 import os
+import shutil
+import yaml
 
+from agent.output import OutputAdapter
+from dotenv import load_dotenv
 from pathlib import Path
 from xdg_base_dirs import xdg_config_home
-from dotenv import load_dotenv
-from agent.output import OutputAdapter
 
 BASE_CONFIG_DIR = xdg_config_home() / "wisemonkey"
 

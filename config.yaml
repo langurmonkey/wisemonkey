@@ -42,3 +42,5 @@ agent:
     - AGENTS.md
   # Enable vi mode input
   vi_mode: false
+  # Unsafe mode: when true, dangerous commands will NOT prompt for user confirmation
+  unsafe: false

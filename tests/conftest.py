@@ -77,5 +77,6 @@ class BaseTest(unittest.TestCase):
                 "max_chat_history": 1000,
                 "context_files": ["AGENTS.md"],
                 "vi_mode": False,
+                "unsafe": False,
             },
         }
