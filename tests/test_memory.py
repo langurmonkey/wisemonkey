@@ -141,7 +141,7 @@ class TestChatMemory(BaseTest):
 
     def test_trim_removes_oldest(self):
         # Directly test _trim() instead of add_exchange (which triggers
-        # /session-compact via the command registry and needs a real core).
+        # /session-chat-compact via the command registry and needs a real core).
         for i in range(20):
             self.cm._exchanges.append({"role": "user", "content": "x" * 50})
             self.cm.total_chars += 50
