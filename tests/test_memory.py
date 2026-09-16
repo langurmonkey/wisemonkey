@@ -194,6 +194,35 @@ class TestChatMemory(BaseTest):
         # Should be truncated
         assert len(result) < len(long_content) + 100
 
+    def test_tool_call_exchange(self):
+        self.cm.add_exchange(None, "tool_call", "", name="read_file",
+                             arguments='{"path": "x.py"}')
+        result = self.cm.get_formatted(0, timestamps=False, width=0)
+        assert "## Tool Call (read_file):" in result
+        assert "x.py" in result
+
+    def test_tool_result_exchange_rendered(self):
+        self.cm.add_exchange(None, "tool_result", "result body", name="grep")
+        result = self.cm.get_formatted(0, timestamps=False, width=0)
+        assert "## Tool Result (grep):" in result
+        assert "result body" in result
+
+    def test_tool_result_truncated_by_default(self):
+        cm = ChatMemory(self.session_dir / "big", max_chars=100000)
+        long_result = "z" * 5000
+        cm.add_exchange(None, "tool_result", long_result, name="big")
+        result = cm.get_formatted(0, timestamps=False, width=0)
+        assert "[truncated]" in result
+        # Should be far shorter than the original
+        assert len(result) < len(long_result)
+
+    def test_tool_call_counts_extra_chars(self):
+        self.cm.add_exchange(None, "user", "hi")
+        before = self.cm.total_chars
+        self.cm.add_exchange(None, "tool_call", "", name="x", arguments="abcd")
+        # role/utc aren't counted, but the extra string fields are
+        assert self.cm.total_chars == before + len("abcd") + len("x")
+
     def test_get_unformatted(self):
         self.cm.add_exchange(None, "user", "raw")
         raw = self.cm.get_unformatted()

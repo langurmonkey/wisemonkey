@@ -15,7 +15,7 @@ from pubsub import pub
 
 from agent.core import Core, Stage, TurnCancelled
 from agent.commands import registry
-from agent.utils import add_command, collapse_none_dicts
+from agent.utils import add_command, collapse_none_dicts, format_tool_args
 from agent.output import RichOutputAdapter, set_output
 from agent.console import print, err, ok, info, newline, console
 from agent.startup import startup_info
@@ -96,7 +96,11 @@ class Agent:
 
     def tool_callback(self, tool_name: str, tool_args):
         newline()
-        info(f"🛠️ [weak]Activating tool:[/weak]  [tool]{tool_name}[/tool]")
+        args_str = format_tool_args(tool_args)
+        if args_str:
+            info(f"🛠️ [weak]Activating tool:[/weak]  [tool]{tool_name}[/tool]  [weak]({escape(args_str)})[/weak]")
+        else:
+            info(f"🛠️ [weak]Activating tool:[/weak]  [tool]{tool_name}[/tool]")
 
     def cancel_callback(self, e: KeyboardInterrupt):
         """Handles the Control+c during inference, as a keyboard interrupt"""

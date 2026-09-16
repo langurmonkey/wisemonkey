@@ -35,6 +35,7 @@ from agent.commands import registry, Command
 from agent.history import History
 from agent.output import TuiOutputAdapter, set_output
 from agent.startup import startup_info
+from agent.utils import format_tool_args
 
 # Number of characters above which the paste action creates a file
 PASTE_THRESHOLD = 1000
@@ -134,7 +135,16 @@ class _PromptInput(TextArea):
                 content = "\n".join(
                     block.get("text", "") for block in content if block.get("type") == "text"
                 )
-            label = "You" if role == "user" else "Wisemonkey"
+            if role == "user":
+                label = "You"
+            elif role == "tool_call":
+                label = f"Tool Call ({turn.get('name', '?')})"
+            elif role == "tool_result":
+                label = f"Tool Result ({turn.get('name', '?')})"
+            elif role == "summary":
+                label = "Summary"
+            else:
+                label = "Wisemonkey"
             lines.append(f"{'─' * 60}\n{label}\n{'─' * 60}\n{content}\n")
 
         text = "\n".join(lines)
@@ -645,7 +655,12 @@ class WisemonkeyTui(App):
 
     def _append_tool(self, tool_name: str, tool_args, captured_output: str = "") -> None:
         """Tool activation callback – called from worker thread."""
-        text = f"[dim]🛠️ Activating tool: [steel_blue3]{tool_name}[/steel_blue3][/dim]"
+        from rich.markup import escape
+        args_str = format_tool_args(tool_args)
+        if args_str:
+            text = f"[dim]🛠️ Activating tool: [steel_blue3]{tool_name}[/steel_blue3] [grey39]({escape(args_str)})[/grey39][/dim]"
+        else:
+            text = f"[dim]🛠️ Activating tool: [steel_blue3]{tool_name}[/steel_blue3][/dim]"
         if captured_output:
             text += "\n" + captured_output
         self.output.print(text)

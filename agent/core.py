@@ -426,6 +426,11 @@ class Core:
 
         self.messages = [system_msg, user_msg]
 
+        # Record the user prompt to chat history immediately, so that all
+        # intermediate steps (assistant narration, tool calls, tool results)
+        # are ordered after it. The final assistant answer is appended last.
+        self.memory.add_chat_exchange(self, "user", user_input)
+
         # Total token count
         total_tokens = 0
         # Total generation time (excludes network latency, prompt building, etc.)
@@ -480,14 +485,16 @@ class Core:
 
                 # Handle tool calls
                 if tool_calls:
+                    # Record intermediate assistant narration (if any)
+                    if response_text:
+                        self.memory.add_chat_exchange(self, "assistant", response_text)
                     n_tools += self._tool_calls(tool_calls, tool_callback)
                     continue  # Loop back to LLM with tool results
 
                 # No tool calls - this is the final response
                 self.messages.append({"role": "assistant", "content": response_text})
 
-                # Record exchange to chat history
-                self.memory.add_chat_exchange(self, "user", user_input)
+                # Record the final assistant answer to chat history
                 self.memory.add_chat_exchange(self, "assistant", response_text)
 
                 # Persist memory
@@ -554,10 +561,11 @@ class Core:
         that were already recorded in previous successful turns.
         """
         # Check whether this user message has already been saved to chat history
-        # (e.g. if the error happened during a later tool-call round).
+        # (the user prompt is recorded at the start of every turn, so it will
+        # normally already be present).
         history = self.memory.get_chat_unformatted()
-        last_exchange = history[-1] if history else None
-        if not last_exchange or last_exchange.get("role") != "user" or last_exchange.get("content") != user_input:
+        last_user = next((e for e in reversed(history) if e.get("role") == "user"), None)
+        if not last_user or last_user.get("content") != user_input:
             self.memory.add_chat_exchange(self, "user", user_input)
 
         # Check whether the last assistant message in self.messages has content
@@ -595,13 +603,16 @@ class Core:
             tool_name = tc["function"]["name"]
             tool_args = tc["function"]["arguments"]
 
+            # Record the tool call to chat history
+            self.memory.add_chat_exchange(
+                self, "tool_call", "", name=tool_name,
+                arguments=tool_args if isinstance(tool_args, str) else json.dumps(tool_args),
+            )
+
             if tool_callback:
                 tool_callback(tool_name, tool_args)
 
             result = execute_tool(tool_name, json.loads(tool_args) if isinstance(tool_args, str) else tool_args)
-
-            if tool_callback:
-                tool_callback(tool_name, tool_args)
 
             # Check if the result contains an image (e.g. screenshot tool)
             if isinstance(result, dict) and "image_base64" in result:
@@ -625,13 +636,24 @@ class Core:
                     "tool_call_id": tc["id"],
                     "content": content,
                 })
+                # Record a short placeholder for the image tool result
+                self.memory.add_chat_exchange(
+                    self, "tool_result",
+                    result.get("text", f"[Tool '{tool_name}' returned an image]"),
+                    name=tool_name,
+                )
             else:
                 # Standard text/JSON tool result
+                result_str = result if isinstance(result, str) else json.dumps(result)
                 self.messages.append({
                     "role": "tool",
                     "tool_call_id": tc["id"],
-                    "content": result if isinstance(result, str) else json.dumps(result),
+                    "content": result_str,
                 })
+                # Record the tool result to chat history
+                self.memory.add_chat_exchange(
+                    self, "tool_result", result_str, name=tool_name,
+                )
 
         return n_tools
 

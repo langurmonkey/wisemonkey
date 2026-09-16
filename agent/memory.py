@@ -30,6 +30,26 @@ def _load_vectorstore(session_dir):
 SESSIONS_DIR = xdg_data_home() / "wisemonkey" / "sessions"
 SESSION_METADATA_FILE = ".session-metadata"
 
+# Default maximum number of characters kept per tool result when formatting
+# chat history for the system prompt. 0 means "no truncation".
+DEFAULT_TOOL_RESULT_MAX_CHARS = 500
+
+
+def _tool_result_limit() -> int:
+    """Return the max chars to keep per tool result when formatting history.
+
+    Returns 0 when the user has opted into full tool results via the
+    ``agent.chat_history_full_tool_results`` config flag.
+    """
+    try:
+        from agent.config import get_config
+        cfg = get_config()
+        if cfg.get("agent.chat_history_full_tool_results", False):
+            return 0
+        return int(cfg.get("agent.chat_history_tool_result_max_chars",
+                           DEFAULT_TOOL_RESULT_MAX_CHARS))
+    except Exception:
+        return DEFAULT_TOOL_RESULT_MAX_CHARS
 
 
 # Singleton instance
@@ -232,8 +252,8 @@ class Memory:
         """
         return self._chat_history.get_formatted(num_exchanges, timestamps, width)
 
-    def add_chat_exchange(self, core, role, content):
-        self._chat_history.add_exchange(core, role, content)
+    def add_chat_exchange(self, core, role, content, **extra):
+        self._chat_history.add_exchange(core, role, content, **extra)
 
     def get_chat_stats(self):
         """
@@ -297,7 +317,20 @@ class ChatMemory:
 
     def set_exchanges(self, content):
         self._exchanges = content
-        self.total_chars = sum(len(e["content"]) for e in self._exchanges)
+        self.total_chars = sum(self._entry_len(e) for e in self._exchanges)
+
+    @staticmethod
+    def _entry_len(entry) -> int:
+        """Character cost of an exchange, including structured extra fields."""
+        total = len(entry.get("content") or "")
+        for key, value in entry.items():
+            if key in ("role", "utc", "content"):
+                continue
+            if isinstance(value, str):
+                total += len(value)
+            elif isinstance(value, (list, dict)):
+                total += len(json.dumps(value, default=str))
+        return total
 
     def _load(self):
         """Load chat history from disk."""
@@ -306,7 +339,7 @@ class ChatMemory:
                 with open(self._chat_path, "r") as f:
                     data = json.load(f)
                     self._exchanges = data.get("exchanges", [])
-                    self.total_chars = sum(len(e["content"]) for e in self._exchanges)
+                    self.total_chars = sum(self._entry_len(e) for e in self._exchanges)
             except (json.JSONDecodeError, IOError):
                 pass
     
@@ -316,23 +349,36 @@ class ChatMemory:
         with open(self._chat_path, "w") as f:
             json.dump({"exchanges": self._exchanges}, f, indent=2)
     
-    def add_exchange(self, core, role, content):
+    def add_exchange(self, core, role, content, **extra):
         """
-        Add a user input or assistant output to memory.
-        
+        Add a user input, assistant output, or tool step to memory.
+
         Parameters:
-            role:str    - "user" or "assistant"
+            role:str    - "user", "assistant", "summary", "tool_call", or
+                          "tool_result"
             content:str - The text content
+            **extra     - Optional structured fields merged into the exchange
+                          (e.g. tool_calls for assistant messages, or name /
+                          arguments / tool_call_id for tool steps)
         """
+        if content is None:
+            content = ""
         char_count = len(content)
-        
+        for value in extra.values():
+            if isinstance(value, str):
+                char_count += len(value)
+            elif isinstance(value, (list, dict)):
+                char_count += len(json.dumps(value, default=str))
+
         now_utc = datetime.datetime.now(datetime.UTC)
         # Add the new exchange
-        self._exchanges.append({
+        entry = {
             "role": role,
             "utc": str(now_utc),
             "content": content,
-        })
+        }
+        entry.update(extra)
+        self._exchanges.append(entry)
         self.total_chars += char_count
         
         # Compact if exceeded
@@ -348,7 +394,7 @@ class ChatMemory:
 
         while self.total_chars > self.max_chars and self._exchanges:
             oldest = self._exchanges.pop(0)
-            self.total_chars -= len(oldest["content"])
+            self.total_chars -= self._entry_len(oldest)
         
         # Save after trimming
         self.save()
@@ -368,7 +414,7 @@ class ChatMemory:
         for i in range(n):
             if self._exchanges:
                 out = self._exchanges.pop(0)
-                self.total_chars -= len(out["content"])
+                self.total_chars -= self._entry_len(out)
                 cleared += 1
             else:
                 # We ran out of items
@@ -385,23 +431,47 @@ class ChatMemory:
     
     def get_formatted(self, num_exchanges: int, timestamps: bool, width: int):
         """Return chat history formatted for the system prompt.
-        
+
+        Handles all exchange roles: user, assistant, summary, tool_call,
+        and tool_result. Tool results are truncated (see
+        ``_tool_result_limit``) unless full tool results are enabled.
+
         Returns:
             Formatted string of recent exchanges, or None if empty
         """
         if not self._exchanges:
             return None
-        
+
+        tool_limit = _tool_result_limit()
+
         lines = []
-        # Show most recent exchanges
-        history = self._exchanges[-num_exchanges:]
+        # Show most recent exchanges (num_exchanges == 0 -> all)
+        history = self._exchanges[-num_exchanges:] if num_exchanges > 0 else self._exchanges
         for turn in history:
             t = f"`({turn['utc']})`" if timestamps and 'utc' in turn else ""
-            content = escape(turn['content'])
+            role = turn.get("role", "")
+            content = escape(turn.get("content") or "")
+
+            if role == "tool_result":
+                name = turn.get("name", "unknown")
+                if tool_limit > 0 and len(content) > tool_limit:
+                    content = content[:tool_limit] + " …[truncated]"
+                header = f"## Tool Result ({name}):"
+                lines.append(f"{header}\n{t}\n")
+                lines.append(f"{content}\n\n")
+                continue
+
+            if role == "tool_call":
+                name = turn.get("name", "unknown")
+                args = turn.get("arguments", "")
+                lines.append(f"## Tool Call ({name}):\n{t}\n")
+                lines.append(f"{escape(str(args))}\n\n")
+                continue
+
             if width > 0:
                 content = shorten(content, width=width)
 
-            lines.append(f"## {turn['role'].capitalize()}:\n{t}\n")
+            lines.append(f"## {role.capitalize()}:\n{t}\n")
             lines.append(f"{content}\n\n")
-        
+
         return "\n".join(lines)

@@ -37,6 +37,12 @@ agent:
   markdown: false
   # Length of chat history kept for context, in characters
   max_chat_history: 320000
+  # Include full tool call/result content in the chat history injected into
+  # the system prompt. When false, tool results are truncated to
+  # chat_history_tool_result_max_chars.
+  chat_history_full_tool_results: false
+  # Maximum characters kept per tool result in the formatted chat history
+  chat_history_tool_result_max_chars: 500
   # Context files to load into the system prompt (relative to workspace root)
   context_files:
     - AGENTS.md

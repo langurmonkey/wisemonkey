@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import re
 from io import BytesIO
 from pathlib import Path
@@ -110,6 +111,44 @@ def collapse_none_dicts(obj):
         # Single leaf: keep as dict so NestedCompleter works.
 
     return collapsed
+
+
+# Tool helpers
+
+def format_tool_args(tool_args) -> str:
+    """Format tool-call arguments into a compact, human-readable string.
+
+    Accepts either a JSON string or an already-parsed dict.  Returns an
+    empty string when there are no arguments to show.
+    """
+    if tool_args is None:
+        return ""
+
+    # Normalize to a dict when possible
+    if isinstance(tool_args, str):
+        try:
+            parsed = json.loads(tool_args)
+        except (ValueError, TypeError):
+            return tool_args.strip()
+    else:
+        parsed = tool_args
+
+    if not isinstance(parsed, dict) or not parsed:
+        return ""
+
+    parts = []
+    for key, value in parsed.items():
+        if isinstance(value, str):
+            rendered = value
+        else:
+            rendered = json.dumps(value)
+        # Keep it short — collapse newlines and cap the length
+        rendered = rendered.replace("\n", " ").strip()
+        if len(rendered) > 80:
+            rendered = rendered[:77] + "..."
+        parts.append(f"{key}={rendered}")
+
+    return ", ".join(parts)
 
 
 # Time helpers
