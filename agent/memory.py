@@ -384,7 +384,7 @@ class ChatMemory:
         # Compact if exceeded
         if self.total_chars > self.max_chars:
             from agent.commands import registry
-            ok, msg, _, _, _ = registry.run_command(core, "/session-compact")
+            _, _, _, _, _ = registry.run_command(core, "/session-chat-compact")
         
         # Persist immediately
         self.save()
