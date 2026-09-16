@@ -60,9 +60,7 @@ class Core:
             # Response buffer
             self.response_buffer = ""
             # Initialize MCP
-            self.mcp = MCPClient()
-            self.mcp.load_config(get_mcp_config_path())
-            self.mcp.start_all()
+            self.initialize_mcp()
 
             # Initialize memory
             max_chat_history = self.config.get("agent.max_chat_history", 300000)
@@ -87,6 +85,15 @@ class Core:
                 self.encoding = tiktoken.get_encoding(encoding_name)
             except Exception as e:
                 raise Exception(f"Error loading tokenizer: {e}")
+
+    def initialize_mcp(self):
+        """Initialize the MCP client"""
+        if hasattr(self, 'mcp') and self.mcp:
+            self.mcp.stop_all()
+
+        self.mcp = MCPClient()
+        self.mcp.load_config(get_mcp_config_path())
+        self.mcp.start_all()
 
     def initialize_router(self):
         """Initialize the model router."""
@@ -316,8 +323,6 @@ class Core:
             )
 
         except KeyboardInterrupt as e:
-            # Close the response stream to stop the API call
-            response.close()
             response = None
             self._cancel_prompts(prompt_callback, reasoning_callback)
             if cancel_callback:

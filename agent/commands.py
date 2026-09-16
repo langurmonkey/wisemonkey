@@ -769,6 +769,7 @@ def _cmd_mcp_edit(core, params, output: OutputAdapter | None = None) -> tuple[bo
     result = edit_mcp_config_visual(output)
     ok = result.returncode == 0
     if ok:
+        core.initialize_mcp()
         return ok, "MCP configuration edited successfully", None, None
     else:
         return ok, result.stderr, None, None
