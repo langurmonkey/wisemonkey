@@ -321,8 +321,21 @@ class ChatMemory:
 
     @staticmethod
     def _entry_len(entry) -> int:
-        """Character cost of an exchange, including structured extra fields."""
-        total = len(entry.get("content") or "")
+        """Character cost of an exchange, including structured extra fields.
+
+        Tool results are counted as they are actually injected into the
+        system prompt (see ``get_formatted``): truncated to
+        ``_tool_result_limit()`` chars unless full tool results are enabled.
+        Keeping the rolling-window accounting in sync with what is really
+        sent to the model prevents a single large tool result (e.g. a big
+        ``read_file``) from triggering premature compaction.
+        """
+        content = entry.get("content") or ""
+        if entry.get("role") == "tool_result":
+            limit = _tool_result_limit()
+            if limit > 0 and len(content) > limit:
+                content = content[:limit]
+        total = len(content)
         for key, value in entry.items():
             if key in ("role", "utc", "content"):
                 continue
@@ -363,12 +376,6 @@ class ChatMemory:
         """
         if content is None:
             content = ""
-        char_count = len(content)
-        for value in extra.values():
-            if isinstance(value, str):
-                char_count += len(value)
-            elif isinstance(value, (list, dict)):
-                char_count += len(json.dumps(value, default=str))
 
         now_utc = datetime.datetime.now(datetime.UTC)
         # Add the new exchange
@@ -379,7 +386,9 @@ class ChatMemory:
         }
         entry.update(extra)
         self._exchanges.append(entry)
-        self.total_chars += char_count
+        # Account for the exchange exactly as it will be injected into the
+        # prompt (tool results are truncated unless full results are enabled).
+        self.total_chars += self._entry_len(entry)
         
         # Compact if exceeded
         if self.total_chars > self.max_chars:

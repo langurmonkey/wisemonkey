@@ -383,6 +383,7 @@ class Agent:
                                     subtitle=f"Markdown",
                                     highlight=True)
                         self.output.print_rich(md)
+                        self._statusline(total_tokens, ntools, total_gen_time)
                 except Exception as e:
                     self._cancel_all_spinners()
                     self.output.err(f"Error sending prompt: {e}")

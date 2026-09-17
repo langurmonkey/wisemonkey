@@ -35,11 +35,13 @@ def _prompt_user(command: str, reason: str) -> bool:
 @tool(
     name="read_file",
     description=(
-        "Read the full contents of a file.\n"
+        "Read the contents of a file.\n"
         "Use this when the user asks to "
         "see file contents, check a file's content, or read any file. "
         "Takes a 'path' argument (absolute or relative path to the file). "
-        "Optional 'show_line_numbers' (bool) to prepend line numbers."
+        "Optional 'show_line_numbers' (bool) to prepend line numbers. "
+        "Optional 'max_lines' (int) to read only the first N lines from the "
+        "top (like the 'head' command) \u2014 use this for large files."
     ),
     parameters={
         "type": "object",
@@ -52,6 +54,10 @@ def _prompt_user(command: str, reason: str) -> bool:
                 "type": "boolean",
                 "description": "If True, prepend line numbers to each line (e.g. '1: line1').",
             },
+            "max_lines": {
+                "type": "integer",
+                "description": "Read only the first N lines from the top of the file (like the 'head' command). Omit or set to 0 to read the whole file.",
+            },
         },
         "required": ["path"],
     },
@@ -62,12 +68,14 @@ def read_file_handler(args):
     Args:
         path: File path to read.
         show_line_numbers: If True, prepend line numbers (e.g. "1: line1\n").
+        max_lines: If > 0, read only the first N lines (like 'head').
 
     Returns:
         Dict with 'path' and 'content'.
     """
     path = args.get("path", "")
     show_line_numbers = args.get("show_line_numbers", False)
+    max_lines = args.get("max_lines", 0)
     output = get_output()
 
     if not path:
@@ -86,10 +94,30 @@ def read_file_handler(args):
         output.err(f"Path is not a file: {path}")
         return {"error": f"The path exists but does not point to a file: {contractuser(path)}"}
 
+    truncated = False
+    total_lines = None
+    try:
+        max_lines = int(max_lines)
+    except (TypeError, ValueError):
+        max_lines = 0
+
     with open(path, "r") as file:
-        output.print(f"[weak]Reading[/weak] [path]{contractuser(path)}[/path]",
-                     indent=2)
-        content = file.read()
+        if max_lines and max_lines > 0:
+            # Read only the first `max_lines` lines (like `head`).
+            all_lines = file.readlines()
+            total_lines = len(all_lines)
+            head = all_lines[:max_lines]
+            truncated = total_lines > max_lines
+            content = "".join(head)
+            output.print(
+                f"[weak]Reading[/weak] [path]{contractuser(path)}[/path] "
+                f"[weak](first {min(max_lines, total_lines)} of {total_lines} lines)[/weak]",
+                indent=2,
+            )
+        else:
+            output.print(f"[weak]Reading[/weak] [path]{contractuser(path)}[/path]",
+                         indent=2)
+            content = file.read()
 
     # Optionally add line numbers
     if show_line_numbers:
@@ -100,11 +128,15 @@ def read_file_handler(args):
         )
         content = numbered
 
-    output = {
+    result = {
         "path": path,
         "content": content
     }
-    return output
+    if truncated:
+        result["truncated"] = True
+        result["total_lines"] = total_lines
+        result["shown_lines"] = max_lines
+    return result
 
 
 @tool(

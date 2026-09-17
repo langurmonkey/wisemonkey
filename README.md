@@ -206,6 +206,8 @@ In addition to persistent memory, the agent maintains a **chat history** of rece
 - The user can trigger the compaction any time with `/memory compact`
 - Chat memory is attached to the system prompt on each turn
 - The agent displays the last 10 exchanges, with long messages truncated
+- Tool results are truncated in the formatted history unless `chat_history_full_tool_results` is enabled (see below)
+- Large file reads can be limited with the `read_file` tool's `max_lines` parameter (like `head`)
 
 **Persistence:**
 - Chat history is persisted to `~/.local/share/wisemonkey/session/$SESSION_NAME/chat_history.json`
@@ -216,8 +218,12 @@ In addition to persistent memory, the agent maintains a **chat history** of rece
 **Configuration:**
 ```yaml
 agent:
-  max_chat_history: 128000  # Maximum history characters to keep for context
+  max_chat_history: 128000                    # Maximum history characters to keep for context
+  chat_history_full_tool_results: false       # Include full tool call/result content in the prompt
+  chat_history_tool_result_max_chars: 500     # Max chars per tool result when the above is false
 ```
+
+> The character accounting used for compaction matches what is actually injected into the prompt. When `chat_history_full_tool_results` is `false`, tool results are counted (and injected) truncated to `chat_history_tool_result_max_chars`, so a single large tool result does not trigger premature compaction.
 
 ## Structure
 

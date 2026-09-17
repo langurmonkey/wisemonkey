@@ -56,6 +56,12 @@ The system prompt is built in `Core._build_system_prompt()` each turn. It assemb
 
 Tools are defined using the `@tool(name, description, parameters)` decorator. They are auto-discovered on startup. Each tool file in `tools/` contains one or more decorated handler functions.
 
+`read_file` accepts an optional `max_lines` parameter to read only the first N lines from the top (like `head`). This is useful for large files: it keeps the tool result small and avoids flooding the chat history. When set, the result includes `truncated`, `total_lines`, and `shown_lines` metadata. Omit it or set it to `0` to read the whole file.
+
+#### Chat memory accounting
+
+`ChatMemory` tracks `total_chars` and triggers `/session-chat-compact` when it exceeds `agent.max_chat_history`. To avoid premature compaction, `ChatMemory._entry_len()` counts tool results exactly as they are injected into the prompt — truncated to `agent.chat_history_tool_result_max_chars` unless `agent.chat_history_full_tool_results` is `true` (see `get_formatted()`). Keep this accounting in sync with `get_formatted()` if the formatting logic changes.
+
 ### Slash Commands (`agent/commands.py`)
 
 Commands use the `@cmd(name, description, aliases)` decorator and are auto-registered. Each returns `(ok: bool, msg: str, content: str, markdown: str)`.
@@ -143,6 +149,7 @@ tests/
 ├── test_core.py         # Workspace root finding, context file loading, prompt building
 ├── test_memory.py       # Memory, ChatMemory persistence and trimming
 ├── test_skills.py       # SkillLoader frontmatter parsing, load_all
+├── test_files.py        # read_file handler (full read + head-style max_lines)
 └── test_tools.py        # Tool registration, discovery, execution
 ```
 

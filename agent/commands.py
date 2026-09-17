@@ -308,12 +308,14 @@ def _cmd_session(core, params, output: OutputAdapter | None = None) -> tuple[boo
     working_dir = contractuser(Path(os.getcwd()))
     created = mem.session_created
     accessed = mem.session_accessed
+    length, max, rate = mem.get_chat_stats()
     result = ""
     result += f"Name:           [accent-bold]{name}[/accent-bold]\n"
     result += f"Location:       {contractuser(session_dir)}\n"
     result += f"Working dir:    {working_dir}\n"
     result += f"Created:        {created}\n"
-    result += f"Last accessed:  {accessed}"
+    result += f"Last accessed:  {accessed}\n"
+    result += f"Memory status:  {length}/{max} ({rate:.2f}%)"
     return True, None, result, None
 
 

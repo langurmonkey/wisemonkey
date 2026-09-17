@@ -223,6 +223,19 @@ class TestChatMemory(BaseTest):
         # role/utc aren't counted, but the extra string fields are
         assert self.cm.total_chars == before + len("abcd") + len("x")
 
+    def test_large_tool_result_counted_as_truncated(self):
+        """A huge tool result must not inflate total_chars beyond the limit.
+
+        total_chars tracks what is actually injected into the prompt, where
+        tool results are truncated to chat_history_tool_result_max_chars
+        (default 500). Otherwise a single big read_file would trigger
+        premature compaction.
+        """
+        cm = ChatMemory(self.session_dir / "big", max_chars=100000)
+        cm.add_exchange(None, "tool_result", "z" * 100000, name="read_file")
+        # Should be counted as ~500 chars (+ the tool name), not 100000.
+        assert cm.total_chars < 1000
+
     def test_get_unformatted(self):
         self.cm.add_exchange(None, "user", "raw")
         raw = self.cm.get_unformatted()
