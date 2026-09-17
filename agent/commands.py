@@ -16,7 +16,7 @@ from typing import Callable
 
 from pubsub import pub
 
-from agent.console import console, err
+from agent.output import get_output_or_ipc
 from agent.utils import resize_image
 from agent.output import OutputAdapter
 
@@ -406,11 +406,10 @@ def _cmd_session_chat_compact(core, params, output: OutputAdapter | None = None)
         "content": content
     }]
 
-    spinner_compact = console.status("⏳ Compacting chat history...")
+    output = get_output_or_ipc()
+    output.print("⏳ Compacting chat history...")
     try:
-        spinner_compact.start()
         response = core.llm_chat_raw(messages)
-        spinner_compact.stop()
 
         summary = response.choices[0].message.content
         len_after = len(summary)
@@ -419,7 +418,6 @@ def _cmd_session_chat_compact(core, params, output: OutputAdapter | None = None)
 
         return True, f"Memory compacted successfully from {len_before} to {len_after}", None, None
     except Exception as e:
-        spinner_compact.stop()
         return False, f"Memory compact operation failed: {e}", None, None
 
 @cmd(
@@ -562,7 +560,8 @@ def _cmd_embed(core, params, output: OutputAdapter | None = None) -> tuple[bool,
         return False, "please provide a file path", None, None
 
     file_path = " ".join(params)
-    spinner_embed = console.status(f"⏳ Embedding: {file_path}...")
+    output = get_output_or_ipc()
+    output.print(f"⏳ Embedding: {file_path}...")
     file_path = os.path.expanduser(file_path)
 
     # Lazily initialize the vector store on first use
@@ -571,16 +570,12 @@ def _cmd_embed(core, params, output: OutputAdapter | None = None) -> tuple[bool,
         core.memory.vectorstore = _load_vectorstore(core.memory.session_dir)
 
     if core.memory.vectorstore is None:
-        spinner_embed.stop()
         return False, "Vector store is not available. Check that chromadb and tiktoken are installed, and embedding config is correct.", None, None
 
     try:
-        spinner_embed.start()
         count = core.memory.vectorstore.ingest(file_path)
-        spinner_embed.stop()
         return True, f"Successfully embedded {count} chunks from '{file_path}'", None, None
     except Exception as e:
-        spinner_embed.stop()
         return False, f"Embedding failed: {e}", None, None
 
 

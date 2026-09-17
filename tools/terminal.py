@@ -11,7 +11,7 @@ import subprocess
 import re
 
 from agent.tools import tool
-from agent.output import get_output
+from agent.output import get_output_or_ipc
 from agent.config import get_config
 
 # ──────────────────────────────────────────────
@@ -135,7 +135,7 @@ def _requires_extra_confirmation(command: str, timeout: int) -> bool:
 
 def _prompt_user(command: str, reason: str) -> bool:
     """Ask the user to confirm (or reject) a command."""
-    output = get_output()
+    output = get_output_or_ipc()
     output.newline()
     output.print("⚠️ [warn]Command requires confirmation[/warn]", indent=2)
     output.print(f"[weak]Reason[/weak]: {reason}", indent=2)
@@ -230,7 +230,7 @@ def run_command_handler(args):
         else:
             # Safe-looking commands still get a lightweight prompt
             # so the user always sees what's about to run.
-            output = get_output()
+            output = get_output_or_ipc()
             output.print(f"[path][bold]$[/bold] {command}[/path]", indent=2)
 
     # Execute

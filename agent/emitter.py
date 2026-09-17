@@ -145,12 +145,17 @@ class TurnEmitter:
         """Callback for reasoning/thinking deltas.
 
         The core passes ``content=None`` on START and STOP, where the
-        ``visible`` flag carries the only real information.
+        ``visible`` flag carries the only real information. The stage rides
+        along so clients can manage "thinking" indicators.
         """
         shown = visible if self.reasoning_visible is None else self.reasoning_visible
         self.emit(
             Event.REASONING,
-            ReasoningPayload(text=content or "", visible=bool(shown)),
+            ReasoningPayload(
+                text=content or "",
+                visible=bool(shown),
+                stage=_stage_name(stage),
+            ),
         )
 
     def content(self, content: str = "") -> None:

@@ -98,6 +98,13 @@ class TestCallbacks(unittest.TestCase):
         payload = payload_as(ReasoningPayload, peer.recv(timeout=0.1))
         assert payload.text == ""
         assert payload.visible is False
+        assert payload.stage == StageKind.START
+
+    def test_reasoning_stage_ride_along(self):
+        emitter, peer = _connected_emitter()
+        emitter.reasoning("stop", "", True)
+        payload = payload_as(ReasoningPayload, peer.recv(timeout=0.1))
+        assert payload.stage == StageKind.STOP
 
     def test_reasoning_visible_override(self):
         emitter, peer = _connected_emitter(reasoning_visible=False)

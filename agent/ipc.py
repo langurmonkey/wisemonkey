@@ -317,10 +317,15 @@ class ContentPayload:
 
 @dataclass
 class ReasoningPayload:
-    """A streamed reasoning delta."""
+    """A reasoning delta or lifecycle marker.
+
+    ``stage`` is a :class:`StageKind` value so clients can show and dismiss
+    "thinking" indicators (START/STOP) as well as render deltas (PROCESS).
+    """
 
     text: str = ""
     visible: bool = True
+    stage: str = StageKind.PROCESS
 
 
 @dataclass

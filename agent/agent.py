@@ -5,7 +5,7 @@ handling to the core.
 """
 
 import time
-from functools import partial
+import threading
 
 from rich.prompt import Prompt
 from rich.markdown import Markdown
@@ -13,11 +13,23 @@ from rich.markup import escape
 from rich.panel import Panel
 from pubsub import pub
 
-from agent.core import Core, Stage, TurnCancelled
+from agent.core import Core
+from agent.emitter import TurnEmitter
+from agent.ipc import (
+    ContentPayload,
+    Event,
+    ReasoningPayload,
+    StageKind,
+    StagePayload,
+    ToolCallPayload,
+    ToolResultPayload,
+    loopback_pair,
+    payload_as,
+)
 from agent.commands import registry
 from agent.utils import add_command, collapse_none_dicts, format_tool_args
 from agent.output import RichOutputAdapter, set_output
-from agent.console import print, err, ok, info, newline, console
+from agent.console import print, err, ok, info, newline
 from agent.startup import startup_info
 
 # Try to import prompt_toolkit for rich input; fall back to plain input.
@@ -52,43 +64,135 @@ class Agent:
         self._last_ctrl_c_time = 0  # Timestamp of last Control+C for double-tap detection
         self.output = RichOutputAdapter()
         set_output(self.output)
+        # Event emitter (phase 1 of the client/server split): core callbacks
+        # are translated into IPC events on a loopback transport and dispatched
+        # by an event pump running on a background thread.
+        transport, peer = loopback_pair()
+        self.emitter = TurnEmitter(transport=transport)
+        self._event_peer = peer
+        self._event_thread = None
+        self._events_running = False
+        self._turn_in_progress = False
         pub.subscribe(self._create_prompt_session, "prompt-update")
 
-    def prompt_callback(self, stage:Stage):
-        """Called when starting and ending prompt processing for a given turn"""
-        match stage.value:
-            case Stage.START.value:
-                self.spinner_prompt = console.status("⏳ Processing prompt...")
-                self.spinner_prompt.start()
+    # ── event handling (IPC phase 1) ────────────────────────────────────────
 
-            case Stage.STOP.value:
-                if self.spinner_prompt:
-                    self.spinner_prompt.stop()
-                    self.spinner_prompt = None
-                ok("⏳ Prompt processed")
+    def start_events(self) -> None:
+        """Start the event pump that renders IPC events from the emitter."""
+        if self._event_thread is not None:
+            return
+        self._events_running = True
+        self._event_thread = threading.Thread(
+            target=self._event_loop, name="wisemonkey-events", daemon=True
+        )
+        self._event_thread.start()
 
-            case _:
-                raise RuntimeError(f"Prompt callback only has Start and Stop stages: {stage}")
+    def stop_events(self, timeout: float = 2.0) -> None:
+        """Stop the event pump and close the loopback transport."""
+        self._events_running = False
+        transport = self.emitter.transport
+        if transport is not None:
+            try:
+                transport.close()
+            except Exception:
+                pass
+        if self._event_thread is not None:
+            self._event_thread.join(timeout=timeout)
+            self._event_thread = None
 
-    def reasoning_callback(self, stage:Stage, content:str="", reasoning_visible:bool=True):
-        """Called when starting, processing, and ending the reasoning stage."""
-        match stage.value:
-            case Stage.START.value:
-                if reasoning_visible:
-                    info("💡 Thinking...\n")
-                else:
-                    self.spinner_thinking = console.status("💡 Thinking...")
-                    self.spinner_thinking.start()
-                
-            case Stage.PROCESS.value:
-                if reasoning_visible:
-                    print(f"[weak]{escape(content)}[/]", end="")
+    def _event_loop(self) -> None:
+        """Drain events from the loopback peer until stopped.
 
-            case Stage.STOP.value:
-                if self.spinner_thinking:
-                    self.spinner_thinking.stop()
-                    self.spinner_thinking = None
-                ok("💡 Done thinking\n")
+        This runs on a dedicated thread; every UI mutation is funnelled back
+        onto the main thread via ``call_soon_threadsafe``-style helpers (here:
+        direct calls, since Rich's live display is thread-tolerant and the
+        heavy lifting happens on the turn thread as before).
+        """
+        peer = self._event_peer
+        while self._events_running:
+            try:
+                message = peer.recv(timeout=0.1)
+            except Exception:
+                break
+            if message is None:
+                continue
+            try:
+                self._handle_event(message)
+            except Exception:
+                # A rendering error must never take down the event pump.
+                pass
+
+    def _handle_event(self, message) -> None:
+        """Dispatch a single protocol event to the UI."""
+        if message.name == Event.STAGE:
+            payload = payload_as(StagePayload, message)
+            if payload.name == "prompt":
+                if payload.stage == StageKind.START:
+                    self._prompt_start()
+                elif payload.stage == StageKind.STOP:
+                    self._prompt_stop()
+
+        elif message.name == Event.REASONING:
+            payload = payload_as(ReasoningPayload, message)
+            if payload.stage == StageKind.START:
+                self._reasoning_start(payload.visible)
+            elif payload.stage == StageKind.PROCESS:
+                if payload.text and payload.visible:
+                    print(f"[weak]{escape(payload.text)}[/]", end="")
+            elif payload.stage == StageKind.STOP:
+                self._reasoning_stop()
+
+        elif message.name == Event.CONTENT:
+            self.content_callback(payload_as(ContentPayload, message).text)
+
+        elif message.name == Event.TOOL_CALL:
+            payload = payload_as(ToolCallPayload, message)
+            self.tool_callback(payload.name, payload.arguments)
+
+        elif message.name == Event.TOOL_RESULT:
+            payload = payload_as(ToolResultPayload, message)
+            self.tool_result_callback(
+                payload.id, payload.name, payload.content,
+                payload.is_error, payload.duration,
+            )
+
+        elif message.name == Event.CANCELLED:
+            print("[warn]⏹  Turn cancelled by user  ⏹[/warn]")
+
+        # TURN_START / TURN_END / STATUS are consumed by the turn runner
+        # (run_interactive), which reads the TurnResult directly in phase 1.
+
+    # ── stage handlers (extracted from the old callbacks) ───────────────────
+
+    def _spinner(self, text: str):
+        """Start a status spinner on the active output adapter, if supported."""
+        console = getattr(self.output, "_console", None)
+        return console.status(text) if console else None
+
+    def _prompt_start(self) -> None:
+        self.spinner_prompt = self._spinner("⏳ Processing prompt...")
+        if self.spinner_prompt:
+            self.spinner_prompt.start()
+
+    def _prompt_stop(self) -> None:
+        if self.spinner_prompt:
+            self.spinner_prompt.stop()
+            self.spinner_prompt = None
+        ok("⏳ Prompt processed")
+
+    def _reasoning_start(self, visible: bool) -> None:
+        if visible:
+            info("💡 Thinking...\n")
+        else:
+            self.spinner_thinking = self._spinner("💡 Thinking...")
+            if self.spinner_thinking:
+                self.spinner_thinking.start()
+
+    def _reasoning_stop(self) -> None:
+        if self.spinner_thinking:
+            self.spinner_thinking.stop()
+            self.spinner_thinking = None
+        ok("💡 Done thinking\n")
 
     def content_callback(self, content:str=""):
         """Called when new chunks arrive in streaming mode."""
@@ -102,19 +206,17 @@ class Agent:
         else:
             info(f"🛠️ [weak]Activating tool:[/weak]  [tool]{tool_name}[/tool]")
 
-    def cancel_callback(self, e: KeyboardInterrupt):
-        """Handles the Control+c during inference, as a keyboard interrupt"""
-        print("[warn]⏹  Turn cancelled by user  ⏹[/warn]")
-        raise TurnCancelled() from e
-
-    def error_callback(self, e, msg):
-        raise RuntimeError(msg) from e
-
+    def tool_result_callback(self, tool_id, tool_name, content, is_error, duration):
+        """Called after a tool finishes (event: TOOL_RESULT)."""
+        if is_error:
+            self.output.err(f"Tool {tool_name} failed: {content}")
+        else:
+            self.output.ok(f"Tool {tool_name} finished in {duration:.1f}s")
 
     def _statusline(self, total_tokens, ntools, total_gen_time):
         length, max, rate = self.core.memory.get_chat_stats()
         title = f"  {total_gen_time:.1f}s   |   {total_tokens} tokens   |   {ntools} tools   |   Mem: {length}/{max} ({rate:.2f}%)  "
-        console.rule(title=title, style="status")
+        self.output.rule(title=title, style="status")
 
     def _cancel_all_spinners(self):
         if self.spinner_prompt:
@@ -280,15 +382,15 @@ class Agent:
             def get_input(): return str(self._session.prompt()).strip()
         else:
             # Rich
-            def get_input(): return Prompt.ask(prompt="[user]⩥ [bold]You[/bold] ⩤[/user]\n❯", console=console)
+            def get_input(): return Prompt.ask(prompt="[user]⩥ [bold]You[/bold] ⩤[/user]\n❯", console=self.output._console)
 
-        # Wrap each callback to pass self
-        prompt_cb = partial(self.prompt_callback)
-        reasoning_cb = partial(self.reasoning_callback)
-        content_cb = partial(self.content_callback)
-        tool_cb = partial(self.tool_callback)
-        cancel_cb = partial(self.cancel_callback)
-        error_cb = partial(self.error_callback)
+        # Phase 1 (client/server): the turn is driven through the event
+        # emitter. The core's callbacks are wired to the emitter, whose events
+        # are rendered by the event pump (self._event_loop). Cancellation is
+        # state: Ctrl+C calls emitter.cancel(), which poll() surfaces to the
+        # core between streamed chunks. The TurnResult reports the outcome.
+        self.emitter.reset()
+        self.start_events()
 
         # Main loop
         while True:
@@ -299,6 +401,12 @@ class Agent:
                 break
 
             if not user_input:
+                continue
+
+            # Ctrl+C while a turn is running: cancel the turn (state, not an
+            # exception — the core observes it via poll() between chunks).
+            if self._turn_in_progress:
+                self.emitter.cancel("user")
                 continue
 
             # Process slash commands
@@ -348,26 +456,30 @@ class Agent:
 
             else:
                 self.output.newline()
-                console.rule(style="agent")
+                self.output.rule(style="agent")
                 self.output.print(f"[agent]⩥ [bold]Wisemonkey[/bold] ⩤ [/agent]  [accent]⇒ {self.core.config.get('model.name')}[/accent]")
                 self.output.print("  [kbd]Ctrl[/kbd]+[kbd]C[/kbd]: Cancel turn\n")
                 try:
-                    (response,
-                        total_tokens,
-                        ntools,
-                        total_gen_time) = self.core.run_turn(
-                                                          user_input,
-                                                          prompt_cb,
-                                                          reasoning_cb,
-                                                          content_cb,
-                                                          tool_cb,
-                                                          cancel_cb,
-                                                          error_cb
-                                                      )
+                    self._turn_in_progress = True
+                    result = self.core.run_turn(
+                        user_input,
+                        self.emitter.prompt,
+                        self.emitter.reasoning,
+                        self.emitter.content,
+                        self.emitter.tool_call,
+                        self.emitter.cancelled,
+                        self.emitter.error,
+                        tool_result_callback=self.emitter.tool_result,
+                        poll=self.emitter.poll,
+                    )
+                    response = result.response
+                    total_tokens = result.total_tokens
+                    ntools = result.n_tools
+                    total_gen_time = result.gen_time
                     self.output.newline()
 
                     self.output.newline()
-                    if response == "[Cancelled]":
+                    if result.cancelled:
                         continue  # skip status line, go straight back to prompt
 
                     self._statusline(total_tokens, ntools, total_gen_time)
@@ -386,13 +498,17 @@ class Agent:
                         self._statusline(total_tokens, ntools, total_gen_time)
                 except Exception as e:
                     self._cancel_all_spinners()
+                    self.emitter.cancel("error")
                     self.output.err(f"Error sending prompt: {e}")
                     # The turn's partial conversation has already been persisted
                     # by core.run_turn(), so we just continue to the next prompt.
                     self.output.print("  [dim]Partial response was saved to chat history.[/dim]")
-                    
+                finally:
+                    self._turn_in_progress = False
+                    self._cancel_all_spinners()
 
-        # Persist memory and shut down core on session exit
+        # Persist memory, stop the event pump, and shut down core on exit
         if self.core:
+            self.stop_events()
             self.core.save_memory()
             self.core.shutdown()

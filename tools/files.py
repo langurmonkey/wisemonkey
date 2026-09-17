@@ -12,11 +12,11 @@ from textwrap import indent
 
 from agent.utils import contractuser
 from agent.tools import tool
-from agent.output import get_output
+from agent.output import get_output_or_ipc
 
 def _prompt_user(command: str, reason: str) -> bool:
     """Ask the user to confirm (or reject) a search."""
-    output = get_output()
+    output = get_output_or_ipc()
     output.newline()
     output.print("⚠️ [warn]Search outside cwd requires confirmation[/warn]", indent=2)
     output.print(f"[weak]Reason[/weak]: {reason}", indent=2)
@@ -76,7 +76,7 @@ def read_file_handler(args):
     path = args.get("path", "")
     show_line_numbers = args.get("show_line_numbers", False)
     max_lines = args.get("max_lines", 0)
-    output = get_output()
+    output = get_output_or_ipc()
 
     if not path:
         output.err("Path not given :/")
@@ -162,7 +162,7 @@ def read_file_handler(args):
 def list_dir_handler(args):
     """List contents of a directory."""
     path = args.get("path", "")
-    output = get_output()
+    output = get_output_or_ipc()
 
     if not path:
         output.err("Path not given :/")
@@ -231,7 +231,7 @@ def write_file_handler(args):
     """Write or overwrite a file with new content. Creates parent directories."""
     path = args.get("path", "")
     content = args.get("content", "")
-    output = get_output()
+    output = get_output_or_ipc()
 
     if not path:
         output.err("Path not given :/")
@@ -293,7 +293,7 @@ def patch_file_handler(args):
     path = args.get("path", "")
     old_string = args.get("old_string", "")
     new_string = args.get("new_string", "")
-    output = get_output()
+    output = get_output_or_ipc()
 
     if not path:
         output.err("Path not given :/")
@@ -389,7 +389,7 @@ def find_files_handler(args):
     root = args.get("root", "")
     pattern = args.get("pattern", "")
     max_depth = args.get("max_depth", -1)
-    output = get_output()
+    output = get_output_or_ipc()
 
     if not root or not pattern:
         output.err("Both 'path' and 'pattern' are required")
@@ -520,7 +520,7 @@ def search_content_handler(args):
     if not os.path.isdir(root):
         return {"error": f"Directory does not exist: {contractuser(root)}"}
 
-    output = get_output()
+    output = get_output_or_ipc()
     output.print(f"[weak]Searching for[/weak] [path]'{query}'[/path] [weak]in[/weak] [path]{contractuser(root)}[/path]",
                  indent=2)
 

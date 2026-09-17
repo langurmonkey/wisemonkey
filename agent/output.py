@@ -34,6 +34,20 @@ def get_output() -> OutputAdapter:
 
     raise RuntimeError("Output adapter can't be None")
 
+
+def get_output_or_ipc() -> OutputAdapter:
+    """Return the active output adapter, falling back to a loopback IPC one.
+
+    Code running outside a configured frontend (scripts, headless turns,
+    background threads) gets an :class:`IpcOutputAdapter` wired to a private
+    loopback transport instead of crashing or scribbling on a shared console.
+    The adapter drains its own events, so writes are effectively no-ops
+    visually but remain observable (e.g. via ``drain()`` in tests or tools).
+    """
+    if _active_output:
+        return _active_output
+    return IpcOutputAdapter()
+
 class OutputAdapter(Protocol):
     """Abstract interface for output adapters.
 
@@ -119,7 +133,7 @@ class RichOutputAdapter(OutputAdapter):
         self._console.print(f"{' ' * indent}[ok]✓[/ok] {text}")
 
     def rule(self, style: str = "dim", title: str = "") -> None:
-        self._console.rule(style=style)
+        self._console.rule(title=title, style=style)
 
     def ask_string(self, message: str, default: str = "") -> str:
         return RichPrompt.ask(message, default=default, console=console)
@@ -397,3 +411,100 @@ class TuiOutputAdapter(OutputAdapter):
             return _do()
         else:
             return self._app.call_from_thread(_do)
+
+
+class IpcOutputAdapter(OutputAdapter):
+    """OutputAdapter that routes UI interactions through IPC payloads.
+
+    Print-style methods are encoded as :class:`agent.ipc.OutputPayload`
+    events on a transport (a loopback pair by default, later a real socket).
+    Interactive requests (``ask_*``) are emitted as server requests and, in
+    non-interactive contexts, return safe defaults immediately.
+    """
+
+    def __init__(self, transport=None) -> None:
+        from agent.ipc import loopback_pair
+
+        if transport is None:
+            transport, _peer = loopback_pair()
+        self.transport = transport
+        self._interactive = False
+
+    def _send(self, payload) -> None:
+        from agent.ipc import Event, Message
+
+        try:
+            self.transport.send(Message.event(Event.OUTPUT, payload))
+        except Exception:
+            pass
+
+    def _output(self, fmt: str, text: str, level: str = "normal", indent: int = 0, **extra) -> None:
+        from agent.ipc import OutputPayload
+
+        self._send(OutputPayload(format=fmt, text=text, level=level, indent=indent, **extra))
+
+    # ── print-style ─────────────────────────────────────────────────────────
+    def print(self, text: str = "", end: str = "\n", indent: int = 0) -> None:
+        self._output("text", text, end=end, indent=indent)
+
+    def print_rich(self, renderable) -> None:
+        self._output("text", str(renderable))
+
+    def newline(self) -> None:
+        self._output("text", "")
+
+    def rule(self, style: str = "dim", title: str = "") -> None:
+        self._output("rule", "", style=style, title=title)
+
+    def info(self, text: str, indent: int = 0) -> None:
+        self._output("text", text, level="info", indent=indent)
+
+    def err(self, text: str, indent: int = 0) -> None:
+        self._output("text", text, level="err", indent=indent)
+
+    def ok(self, text: str, indent: int = 0) -> None:
+        self._output("text", text, level="ok", indent=indent)
+
+    # ── interactive (non-interactive defaults in phase 1) ──────────────────
+    def _deny(self, message: str) -> bool:
+        self._output("text", f"[denied] {message}", level="warn")
+        return False
+
+    def ask_string(self, message: str, default: str = "") -> str:
+        self._output("text", f"[ask] {message}", level="warn")
+        return default
+
+    def ask_float(self, message: str, default: float = 0.0) -> float:
+        self._output("text", f"[ask] {message}", level="warn")
+        return default
+
+    def ask_choice(
+        self,
+        message: str,
+        options: list[tuple[str, str]],
+        default: str | None = None,
+    ) -> str:
+        self._output("text", f"[ask] {message}", level="warn")
+        return options[0][0] if options else ""
+
+    def ask_confirm(self, message: str, default: bool = False) -> bool:
+        self._output("text", f"[ask] {message}", level="warn")
+        return default
+
+    def run_subprocess(self, cmd: list[str]):
+        self._output("text", f"[subprocess denied in non-interactive context] {' '.join(cmd)}", level="err")
+        raise RuntimeError("run_subprocess is not available in non-interactive IPC context")
+
+    # ── observability ───────────────────────────────────────────────────────
+    def drain(self, timeout: float = 0.0):
+        """Consume pending events (useful for tests and recording)."""
+        out = []
+        while True:
+            try:
+                msg = self.transport.recv(timeout=timeout)
+            except Exception:
+                break
+            if msg is None:
+                break
+            out.append(msg)
+        return out

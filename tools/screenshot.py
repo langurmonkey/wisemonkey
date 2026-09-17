@@ -10,7 +10,7 @@ from PIL import ImageGrab
 
 from agent.tools import tool
 from agent.utils import resize_image
-from agent.output import get_output
+from agent.output import get_output_or_ipc
 
 
 @tool(
@@ -30,7 +30,7 @@ def screenshot_handler(args):
     """
 
     # User confirmation
-    output = get_output()
+    output = get_output_or_ipc()
     output.newline()
     output.print("📷 [warn]Screenshot requested[/warn]", indent=2)
     output.print("[weak]The agent wants to capture your current screen.[/weak]", indent=2)

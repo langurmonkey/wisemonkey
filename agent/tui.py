@@ -30,7 +30,19 @@ from textual.binding import Binding
 from textual.timer import Timer
 from textual.events import Paste as PasteEvent
 
-from agent.core import Core, Stage, TurnCancelled
+from agent.core import Core, Stage
+from agent.emitter import TurnEmitter
+from agent.ipc import (
+    ContentPayload,
+    Event,
+    ReasoningPayload,
+    StageKind,
+    StagePayload,
+    ToolCallPayload,
+    ToolResultPayload,
+    loopback_pair,
+    payload_as,
+)
 from agent.commands import registry, Command
 from agent.history import History
 from agent.output import TuiOutputAdapter, set_output
@@ -326,6 +338,16 @@ class WisemonkeyTui(App):
             self.output._write(f"[err]Agent initialisation failed: {e}[/]")
             return
 
+        # Event emitter (phase 1 of the client/server split): core callbacks
+        # are translated into IPC events on a loopback transport and rendered
+        # by an event pump running on a background thread.
+        transport, peer = loopback_pair()
+        self.emitter = TurnEmitter(transport=transport)
+        self._event_peer = peer
+        self._event_thread: threading.Thread | None = None
+        self._events_running = False
+        self.start_events()
+
         # Render startup info via the shared module
         startup_info(self.core, self.output)
         self._update_status()
@@ -353,6 +375,96 @@ class WisemonkeyTui(App):
 
         self._cancel_event = threading.Event()
         self._turn_active = False
+
+    # ── event handling (IPC phase 1) ────────────────────────────────────────
+
+    def start_events(self) -> None:
+        """Start the event pump that renders IPC events from the emitter."""
+        if self._event_thread is not None:
+            return
+        self._events_running = True
+        self._event_thread = threading.Thread(
+            target=self._event_loop, name="wisemonkey-tui-events", daemon=True
+        )
+        self._event_thread.start()
+
+    def stop_events(self, timeout: float = 2.0) -> None:
+        """Stop the event pump and close the loopback transport."""
+        self._events_running = False
+        transport = self.emitter.transport
+        if transport is not None:
+            try:
+                transport.close()
+            except Exception:
+                pass
+        if self._event_thread is not None:
+            self._event_thread.join(timeout=timeout)
+            self._event_thread = None
+
+    def _event_loop(self) -> None:
+        """Drain events from the loopback peer until stopped.
+
+        Runs on a dedicated thread; every UI mutation is marshalled onto the
+        Textual main thread via ``call_from_thread``.
+        """
+        peer = self._event_peer
+        while self._events_running:
+            try:
+                message = peer.recv(timeout=0.1)
+            except Exception:
+                break
+            if message is None:
+                continue
+            try:
+                self._handle_event(message)
+            except Exception:
+                # A rendering error must never take down the event pump.
+                pass
+
+    def _handle_event(self, message) -> None:
+        """Dispatch a single protocol event to the UI."""
+        if message.name == Event.STAGE:
+            payload = payload_as(StagePayload, message)
+            if payload.name == "prompt":
+                if payload.stage == StageKind.START:
+                    self.call_from_thread(self._prompt_callback, Stage.START)
+                elif payload.stage == StageKind.STOP:
+                    self.call_from_thread(self._prompt_callback, Stage.STOP)
+
+        elif message.name == Event.REASONING:
+            payload = payload_as(ReasoningPayload, message)
+            self.call_from_thread(
+                self._reasoning_callback, payload.stage, payload.text, payload.visible
+            )
+
+        elif message.name == Event.CONTENT:
+            self.call_from_thread(self._append_content,
+                                  payload_as(ContentPayload, message).text)
+
+        elif message.name == Event.TOOL_CALL:
+            payload = payload_as(ToolCallPayload, message)
+            self.call_from_thread(self._append_tool, payload.name, payload.arguments)
+
+        elif message.name == Event.TOOL_RESULT:
+            payload = payload_as(ToolResultPayload, message)
+            self.call_from_thread(self._append_tool_result, payload.name,
+                                  payload.content, payload.is_error, payload.duration)
+
+        elif message.name == Event.CANCELLED:
+            self.output.err("Turn cancelled")
+
+        # TURN_START / TURN_END / STATUS are consumed by the turn runner
+        # (_run_turn), which reads the TurnResult directly in phase 1.
+
+    def _append_tool_result(self, tool_name: str, content: str,
+                            is_error: bool, duration: float) -> None:
+        """Render a finished tool execution (event: TOOL_RESULT)."""
+        from rich.markup import escape
+        summary = escape(content if len(content) <= 120 else content[:117] + "…")
+        if is_error:
+            self.output.print(f"[red]✗ Tool {tool_name} failed ({duration:.1f}s): {summary}[/red]")
+        else:
+            self.output.print(f"[dim]✓ Tool {tool_name} finished ({duration:.1f}s)[/dim]")
 
     # Reasoning callback
 
@@ -607,21 +719,21 @@ class WisemonkeyTui(App):
             return self._cancel_event.is_set()
 
         try:
-            (response, total_tokens, ntools, total_gen_time) = self.core.run_turn(
+            result = self.core.run_turn(
                 user_input,
-                prompt_callback=lambda s: self.call_from_thread(self._prompt_callback, s),
-                reasoning_callback=self._reasoning_callback,
-                content_callback=self._append_content,
-                tool_callback=self._append_tool,
-                cancel_callback=self._cancel_cb,
-                error_callback=None,
-                poll=poll
+                self.emitter.prompt,
+                self.emitter.reasoning,
+                self.emitter.content,
+                self.emitter.tool_call,
+                self.emitter.cancelled,
+                self.emitter.error,
+                tool_result_callback=self.emitter.tool_result,
+                poll=poll,
             )
             self.call_from_thread(
-                self._finish_turn, response, total_tokens, ntools, total_gen_time
+                self._finish_turn, result.response, result.total_tokens,
+                result.n_tools, result.gen_time, result.cancelled
             )
-        except TurnCancelled:
-            self.output.err("Turn cancelled")
         except Exception as e:
             self.output.err(f"Error: {e}")
         finally:
@@ -666,9 +778,14 @@ class WisemonkeyTui(App):
         self.output.print(text)
 
     def _finish_turn(
-        self, response: str, tokens: int, ntools: int, gen_time: float
+        self, response: str, tokens: int, ntools: int, gen_time: float,
+        result_cancelled: bool = False,
     ) -> None:
         """Called on the main thread after a turn completes."""
+        if result_cancelled:
+            self._stream_buffer = ""
+            return
+
         if self._cancel_event.is_set():
             self._stream_buffer = ""  # discard anything left
             return
@@ -678,7 +795,7 @@ class WisemonkeyTui(App):
             self.output.print(self._stream_buffer)
             self._stream_buffer = ""
 
-        if response == "[Cancelled]":
+        if result_cancelled:
             return
 
         if self.core:
@@ -696,10 +813,6 @@ class WisemonkeyTui(App):
                         subtitle=f"Markdown",
                         highlight=True)
             self.output.print_rich(md)
-
-    def _cancel_cb(self, e) -> None:
-        self.output.err("Turn cancelled")
-        raise TurnCancelled() from e
 
     # Lifecycle
 

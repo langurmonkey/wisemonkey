@@ -12,7 +12,7 @@ import datetime
 
 from agent.memory import Memory
 from agent.tools import tool
-from agent.output import get_output
+from agent.output import get_output_or_ipc
 
 
 def _get_plans_dir():
@@ -63,7 +63,7 @@ def save_session_plan_handler(args):
     """Save a session plan to the plans directory."""
     name = args.get("name", "").strip().upper().replace(" ", "_")
     content = args.get("content", "")
-    output = get_output()
+    output = get_output_or_ipc()
     
     if not name:
         output.err("Plan name is required")

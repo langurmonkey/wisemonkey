@@ -11,7 +11,7 @@ import html as html_lib
 import re
 
 from agent.tools import tool
-from agent.output import get_output
+from agent.output import get_output_or_ipc
 
 def _strip_scripts_and_styles(html):
     html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
@@ -67,7 +67,7 @@ def fetch_url_handler(args):
     if not url:
         return {"error": "No URL provided"}
     try:
-        output = get_output()
+        output = get_output_or_ipc()
         output.print(f"[weak]Accessing[/weak] [link]{url}[/link]", indent=2)
         req = urllib.request.Request(url, headers={'User-Agent': 'Wisemonkey/1.0'})
         with urllib.request.urlopen(req, timeout=10) as response:
@@ -169,7 +169,7 @@ def web_search_handler(args):
     max_results = max(1, min(max_results, 20))
 
     try:
-        output = get_output()
+        output = get_output_or_ipc()
         output.print(f"[weak]Searching the web for[/weak] [accent]{query}[/accent]", indent=2)
 
         data = urllib.parse.urlencode({"q": query}).encode("utf-8")
