@@ -47,10 +47,11 @@ wisemonkey/
 
 The system prompt is built in `Core._build_system_prompt()` each turn. It assembles, in order:
 1. Base system prompt from config
-2. `AGENTS.md` workspace instructions (if found)
-3. Formatted memory (user profile, notes)
-4. Chat history
-5. Loaded skills
+2. Soul files (`Core._load_soul_files()`: global `$XDG_CONFIG_HOME/wisemonkey/SOUL.md`, then workspace `SOUL.md`) — identity/persona
+3. `AGENTS.md` workspace instructions (if found)
+4. Formatted memory (user profile, notes)
+5. Chat history
+6. Loaded skills
 
 ### Tool System (`agent/tools.py` + `tools/`)
 
@@ -105,7 +106,7 @@ Sessions are directories under `~/.local/share/wisemonkey/sessions/`. Each sessi
 Configuration lives in `$XDG_CONFIG_HOME/wisemonkey/config.yaml` (created on first run). Key sections:
 - `model` — provider, name, base_url, temperature, reasoning
 - `embedding` — embedding model name and endpoint
-- `agent` — max_turns, system_prompt, max_chat_history, vi_mode
+- `agent` — max_turns, system_prompt, max_chat_history, vi_mode, soul_file, global_soul_file, context_files
 
 Run `wisemonkey --onboard` for interactive configuration.
 

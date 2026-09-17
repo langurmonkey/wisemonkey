@@ -43,6 +43,12 @@ agent:
   chat_history_full_tool_results: false
   # Maximum characters kept per tool result in the formatted chat history
   chat_history_tool_result_max_chars: 500
+  # Soul file: identity/persona file loaded into the system prompt before the
+  # workspace context files. The workspace soul is discovered by walking up
+  # from the working directory; the global soul lives in the wisemonkey config
+  # directory (~/.config/wisemonkey/). Set to an empty string to disable.
+  soul_file: SOUL.md
+  global_soul_file: SOUL.md
   # Context files to load into the system prompt (relative to workspace root)
   context_files:
     - AGENTS.md

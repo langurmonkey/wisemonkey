@@ -22,6 +22,7 @@ The sections of this document are:
 - [Quickstart](#quickstart)
 - [Run from source](#run-from-source)
 - [Configuration](#configuration)
+- [Soul file](#soul-file)
 - [Usage and commands](#usage-and-commands)
 - [Global memory](#global-memory)
 - [Rolling chat memory](#rolling-chat-memory)
@@ -113,6 +114,35 @@ Wisemonkey also supports MCP. Use the following commands to manage the MCP integ
 - `/mcp tools`: List all MCP tools available. Alias: `/tools mcp`
 
 MCP servers are started when the agent boots. You need to restart the agent if you add new servers.
+
+## Soul file
+
+Wisemonkey supports a **soul file** — a markdown file that defines the agent's identity and persona. It is injected into the system prompt *before* the workspace instructions, so it takes precedence over `AGENTS.md` without replacing it.
+
+Two soul files are considered, in order:
+
+1. **Global soul** — `$XDG_CONFIG_HOME/wisemonkey/SOUL.md`. Applies to every session on the machine.
+2. **Workspace soul** — `SOUL.md` in the working directory or any parent directory (same walk-up lookup as `AGENTS.md`). Applies to the project.
+
+Both are loaded when present; the global soul comes first. If neither exists, nothing is added.
+
+```markdown
+<!-- ~/.config/wisemonkey/SOUL.md -->
+# Soul
+
+You are Wisemonkey, a terse and precise engineering assistant.
+You prefer concrete answers over hedging, and you never invent facts.
+```
+
+Configure the file names (or disable with an empty string) in `config.yaml`:
+
+```yaml
+agent:
+  soul_file: SOUL.md          # Workspace soul file name
+  global_soul_file: SOUL.md   # Global soul file name in the config directory
+```
+
+> The soul file is identity, not task instructions. Keep workspace rules in `AGENTS.md` and task-specific procedures in skills.
 
 ## Usage and commands
 

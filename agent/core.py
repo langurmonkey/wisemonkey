@@ -15,7 +15,7 @@ import tiktoken
 from enum import Enum
 from pathlib import Path
 
-from agent.config import get_config, get_mcp_config_path
+from agent.config import get_config, get_mcp_config_path, BASE_CONFIG_DIR
 from agent.memory import Memory
 from agent.skills import SkillLoader
 from agent.mcp import MCPClient
@@ -112,10 +112,18 @@ class Core:
         context file, or ``start`` (or cwd) if none are found.
         """
         context_files = self.config.get("agent.context_files", ["AGENTS.md"])
+        return self._walk_up_for(context_files, start)
+
+    def _walk_up_for(self, names: list[str], start: Path | None = None) -> Path:
+        """Walk up from *start* (or cwd) and return the deepest directory
+        containing at least one of *names*.
+
+        Falls back to *start* (or cwd) if none of the names are found.
+        """
         current = (start or Path.cwd()).resolve()
         for parent in [current, *current.parents]:
-            for name in context_files:
-                if (parent / name).is_file():
+            for name in names:
+                if name and (parent / name).is_file():
                     return parent
         return current
 
@@ -145,9 +153,61 @@ class Core:
         self._context_files_cache = "\n\n".join(parts) if parts else ""
         return self._context_files_cache
 
+    def _load_soul_files(self) -> str:
+        """Load and cache the global and workspace soul files.
+
+        The soul file defines the agent's identity/persona. Two files are
+        considered, in order:
+
+        1. The global soul (``agent.global_soul_file``) in the wisemonkey
+           config directory.
+        2. The workspace soul (``agent.soul_file``), discovered by walking up
+           from the working directory (same lookup as context files).
+
+        Returns the concatenated contents separated by headings, or an empty
+        string if none are found.
+        """
+        if hasattr(self, "_soul_files_cache"):
+            return self._soul_files_cache
+
+        parts: list[str] = []
+
+        global_soul = self.config.get("agent.global_soul_file", "SOUL.md")
+        if global_soul:
+            path = BASE_CONFIG_DIR / global_soul
+            content = self._read_text(path)
+            if content:
+                parts.append(f"## Global Soul ({global_soul})\n{content}")
+
+        soul_file = self.config.get("agent.soul_file", "SOUL.md")
+        if soul_file:
+            workspace_root = self._walk_up_for([soul_file])
+            path = workspace_root / soul_file
+            content = self._read_text(path)
+            if content:
+                parts.append(f"## Workspace Soul ({soul_file})\n{content}")
+
+        self._soul_files_cache = "\n\n".join(parts) if parts else ""
+        return self._soul_files_cache
+
+    @staticmethod
+    def _read_text(path: Path) -> str:
+        """Read a text file, returning an empty string if it is missing or unreadable."""
+        if not path.is_file():
+            return ""
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError:
+            return ""
+
     def _build_system_prompt(self):
         """Build the system prompt with personality, skills, and memory."""
         parts = [self.system_prompt]
+
+        # Add soul (identity/persona) before workspace instructions
+        soul = self._load_soul_files()
+        if soul:
+            parts.append(soul)
 
         # Add workspace context files
         context = self._load_context_files()

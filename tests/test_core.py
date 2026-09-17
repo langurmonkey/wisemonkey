@@ -154,6 +154,89 @@ class TestLoadContextFiles(BaseTest):
         return result
 
 
+class TestLoadSoulFiles(BaseTest):
+    """Test the _load_soul_files global + workspace soul loading."""
+
+    def setUp(self):
+        super().setUp()
+        self.config = Config()
+        # Build a Core-like object without running __init__ (no router needed).
+        from agent.core import Core
+        self.core = Core.__new__(Core)
+        self.core.config = self.config
+
+    def _patch_paths(self, tmpdir):
+        """Patch cwd and the global config dir used by _load_soul_files."""
+        from unittest.mock import patch
+        return patch.multiple(
+            "agent.core",
+            BASE_CONFIG_DIR=tmpdir,
+        )
+
+    def test_workspace_soul_loaded(self):
+        (self._tmpdir / "SOUL.md").write_text("# I am a soul", encoding="utf-8")
+        with patch("agent.core.Path.cwd", return_value=self._tmpdir):
+            result = self.core._load_soul_files()
+        assert "# I am a soul" in result
+        assert "## Workspace Soul (SOUL.md)" in result
+
+    def test_global_soul_loaded(self):
+        global_dir = self._tmpdir / "global"
+        global_dir.mkdir()
+        (global_dir / "SOUL.md").write_text("# Global soul", encoding="utf-8")
+        with patch("agent.core.BASE_CONFIG_DIR", global_dir), \
+             patch("agent.core.Path.cwd", return_value=self._tmpdir):
+            result = self.core._load_soul_files()
+        assert "# Global soul" in result
+        assert "## Global Soul (SOUL.md)" in result
+
+    def test_global_and_workspace_soul_combined(self):
+        global_dir = self._tmpdir / "global"
+        global_dir.mkdir()
+        (global_dir / "SOUL.md").write_text("# Global", encoding="utf-8")
+        (self._tmpdir / "SOUL.md").write_text("# Workspace", encoding="utf-8")
+        with patch("agent.core.BASE_CONFIG_DIR", global_dir), \
+             patch("agent.core.Path.cwd", return_value=self._tmpdir):
+            result = self.core._load_soul_files()
+        assert "# Global" in result
+        assert "# Workspace" in result
+        # Global comes first
+        assert result.index("# Global") < result.index("# Workspace")
+
+    def test_empty_when_no_soul(self):
+        with patch("agent.core.BASE_CONFIG_DIR", self._tmpdir / "nope"), \
+             patch("agent.core.Path.cwd", return_value=self._tmpdir):
+            result = self.core._load_soul_files()
+        assert result == ""
+
+    def test_disabled_with_empty_config(self):
+        self.config.set_no_save("agent.soul_file", "")
+        self.config.set_no_save("agent.global_soul_file", "")
+        (self._tmpdir / "SOUL.md").write_text("# Should not load", encoding="utf-8")
+        with patch("agent.core.Path.cwd", return_value=self._tmpdir):
+            result = self.core._load_soul_files()
+        assert result == ""
+
+    def test_custom_soul_file_name(self):
+        self.config.set_no_save("agent.soul_file", "IDENTITY.md")
+        (self._tmpdir / "IDENTITY.md").write_text("# Custom", encoding="utf-8")
+        with patch("agent.core.BASE_CONFIG_DIR", self._tmpdir / "nope"), \
+             patch("agent.core.Path.cwd", return_value=self._tmpdir):
+            result = self.core._load_soul_files()
+        assert "# Custom" in result
+        assert "IDENTITY.md" in result
+
+    def test_caching(self):
+        (self._tmpdir / "SOUL.md").write_text("# Cached", encoding="utf-8")
+        with patch("agent.core.BASE_CONFIG_DIR", self._tmpdir / "nope"), \
+             patch("agent.core.Path.cwd", return_value=self._tmpdir):
+            first = self.core._load_soul_files()
+            (self._tmpdir / "SOUL.md").write_text("# Modified", encoding="utf-8")
+            second = self.core._load_soul_files()
+        assert first == second
+        assert "# Cached" in second
+
+
 class TestBuildSystemPrompt(BaseTest):
     """Test that _build_system_prompt assembles all sections correctly."""
 
