@@ -12,8 +12,10 @@ import re
 import time
 import tiktoken
 
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import Any, Iterator
 
 from agent.config import get_config, get_mcp_config_path, BASE_CONFIG_DIR
 from agent.memory import Memory
@@ -39,6 +41,34 @@ class Stage(Enum):
     START = 0
     PROCESS = 1
     STOP = 2
+
+
+@dataclass
+class TurnResult:
+    """Outcome of a single agent turn.
+
+    Unpacks as ``(response, total_tokens, n_tools, gen_time)``, so existing
+    callers that do ``response, tokens, tools, gen_time = core.run_turn(...)``
+    keep working, while newer drivers (and the IPC server) can read
+    :attr:`cancelled` and :attr:`error` directly instead of string-matching on
+    ``"[Cancelled]"``.
+    """
+
+    response: str = ""
+    total_tokens: int = 0
+    n_tools: int = 0
+    gen_time: float = 0.0
+    cancelled: bool = False
+    error: str = ""
+
+    def __iter__(self) -> Iterator[Any]:
+        return iter((self.response, self.total_tokens, self.n_tools, self.gen_time))
+
+    def __len__(self) -> int:
+        return 4
+
+    def __getitem__(self, index: Any) -> Any:
+        return (self.response, self.total_tokens, self.n_tools, self.gen_time)[index]
 
 class Core:
     """Agent core, which manages tools, skills, memory, and API communication."""
@@ -75,6 +105,10 @@ class Core:
             # Status
             self.thinking = False
             self.generating = False
+            # Set when the current turn's stream was interrupted. Cancellation
+            # is observable state rather than an exception, so that it can
+            # survive a process boundary (see agent/emitter.py).
+            self._turn_cancelled = False
 
             # Pending image to attach to the next user prompt
             self._pending_image: dict | None = None
@@ -252,8 +286,12 @@ class Core:
         try:
             for chunk in response:
                 if poll and poll():
+                    # Cancellation is state, not an exception: record it, close
+                    # the stream and stop, so the caller can unwind cleanly and
+                    # the transport never has to carry a raised exception.
+                    self._turn_cancelled = True
                     response.close()
-                    raise KeyboardInterrupt
+                    break
 
                 # Stop prompt spinner
                 if not prompt_stopped and prompt_callback:
@@ -370,6 +408,10 @@ class Core:
         tools = get_tool_schemas()
         start = time.time()
         model_name = self.config.get("model.name", "qwen/qwen3.6-35b-a3b")
+        response = None
+        first_chunk_time = None
+        tool_calls: dict = {}
+        stream_error: Exception | None = None
 
         try:
 
@@ -410,6 +452,14 @@ class Core:
                 if cancel_callback:
                     cancel_callback(e)
                 stream_error = None
+            except Exception as e:
+                # A malformed SSE chunk mid-stream: keep whatever we collected.
+                stream_error = e
+
+            if self._turn_cancelled:
+                # Poll-driven cancellation: stop the spinners but leave
+                # unwinding to run_turn(), which owns the cancellation state.
+                self._cancel_prompts(prompt_callback, reasoning_callback)
 
         return self._finish_inference(start, first_chunk_time, tool_calls, stream_error)
 
@@ -433,7 +483,10 @@ class Core:
         
         # Convert indexed dict to list
         tc_list = list(tool_calls.values()) if tool_calls else None
-        
+        # A cancelled stream must not look like a normal completion with tools.
+        if self._turn_cancelled:
+            tc_list = None
+
         return ({"text": self.response_buffer, "tool_calls": tc_list}, tokens, gen_elapsed, stream_error)
 
 
@@ -445,7 +498,8 @@ class Core:
             tool_callback=None,
             cancel_callback=None,
             error_callback=None,
-            poll=None):
+            tool_result_callback=None,
+            poll=None) -> TurnResult:
         """
         Run a turn interaction with a user message. All callbacks are Agent methods, so
         they take the agent as the first parameter.
@@ -458,10 +512,19 @@ class Core:
             tool_callback: Callback to run during tool activations. Gets tool name and args.
             cancel_callback: Callback for user-canceled inference.
             error_callback: Callback on error.
+            tool_result_callback: Callback after each tool finishes. Gets
+                ``(tool_id, tool_name, content, is_error, duration)``.
+            poll: Callable returning True to request cancellation of the turn.
 
         Returns:
-            The final text response from the LLM, or "[Error]" on failure.
+            A :class:`TurnResult`. It unpacks as the historical
+            ``(response, total_tokens, n_tools, gen_time)`` tuple, and
+            additionally reports ``cancelled`` and ``error``.
         """
+
+        # Reset per-turn cancellation state. Cancellation is observable state
+        # (see agent/emitter.py) so that it can cross a process boundary.
+        self._turn_cancelled = False
 
         # Initialize with system prompt
         system_msg = {"role": "system", "content": self._build_system_prompt()}
@@ -509,10 +572,22 @@ class Core:
                                                                                     poll=poll)
                 except TurnCancelled:
                     # User canceled turn: don't persist anything, return immediately
-                    return ("[Canceled]", 0, 0, 0.0)
+                    return TurnResult(response="[Cancelled]", cancelled=True)
 
                 total_tokens += tokens
                 total_gen_time += gen_elapsed
+
+                # Poll-driven cancellation: the stream was cut short. Do not
+                # persist a partial answer, but report it as cancelled so the
+                # caller can skip the status line without string matching.
+                if self._turn_cancelled:
+                    return TurnResult(
+                        response=self.response_buffer or "[Cancelled]",
+                        total_tokens=total_tokens,
+                        n_tools=n_tools,
+                        gen_time=total_gen_time,
+                        cancelled=True,
+                    )
 
                 # Normalize tool calls from both streaming (plain dicts) and
                 # non-streaming (OpenAI API objects) into a common format
@@ -548,7 +623,7 @@ class Core:
                     # Record intermediate assistant narration (if any)
                     if response_text:
                         self.memory.add_chat_exchange(self, "assistant", response_text)
-                    n_tools += self._tool_calls(tool_calls, tool_callback)
+                    n_tools += self._tool_calls(tool_calls, tool_callback, tool_result_callback)
                     continue  # Loop back to LLM with tool results
 
                 # No tool calls - this is the final response
@@ -596,14 +671,34 @@ class Core:
                     # Not image-related — propagate the error
                     raise stream_error
 
-                return (response_text, total_tokens, n_tools, total_gen_time)
+                return TurnResult(
+                    response=response_text,
+                    total_tokens=total_tokens,
+                    n_tools=n_tools,
+                    gen_time=total_gen_time,
+                )
 
             # Max turns reached!
             # Persist memory
             self.memory.save()
-            return "I've reached the maximum number of turns. Please rephrase your request."
+            return TurnResult(
+                response="I've reached the maximum number of turns. Please rephrase your request.",
+                total_tokens=total_tokens,
+                n_tools=n_tools,
+                gen_time=total_gen_time,
+            )
 
-        except Exception:
+        except Exception as e:
+            # Cancellation may surface as a TurnCancelled raised by a
+            # raise_on_cancel emitter; treat it as a clean cancellation.
+            if isinstance(e, TurnCancelled) or self._turn_cancelled:
+                return TurnResult(
+                    response=self.response_buffer or "[Cancelled]",
+                    total_tokens=total_tokens,
+                    n_tools=n_tools,
+                    gen_time=total_gen_time,
+                    cancelled=True,
+                )
             # An error occurred mid-turn (e.g. SSE/JSON parse error from provider).
             # Persist whatever we have so the partial conversation is not lost.
             self._persist_partial_turn(user_input)
@@ -647,7 +742,7 @@ class Core:
 
         self.memory.save()
 
-    def _tool_calls(self, tool_calls, tool_callback=None):
+    def _tool_calls(self, tool_calls, tool_callback=None, tool_result_callback=None):
         """Handle tool calls"""
         # Append the assistant message with tool calls as plain dictionaries
         self.messages.append({
@@ -672,7 +767,9 @@ class Core:
             if tool_callback:
                 tool_callback(tool_name, tool_args)
 
+            started = time.time()
             result = execute_tool(tool_name, json.loads(tool_args) if isinstance(tool_args, str) else tool_args)
+            duration = time.time() - started
 
             # Check if the result contains an image (e.g. screenshot tool)
             if isinstance(result, dict) and "image_base64" in result:
@@ -697,13 +794,18 @@ class Core:
                     "content": content,
                 })
                 # Record a short placeholder for the image tool result
+                summary = result.get("text", f"[Tool '{tool_name}' returned an image]")
                 self.memory.add_chat_exchange(
-                    self, "tool_result",
-                    result.get("text", f"[Tool '{tool_name}' returned an image]"),
-                    name=tool_name,
+                    self, "tool_result", summary, name=tool_name,
                 )
+                if tool_result_callback:
+                    tool_result_callback(
+                        tc["id"], tool_name, summary, False, duration,
+                        b64_data, mime_type,
+                    )
             else:
                 # Standard text/JSON tool result
+                is_error = isinstance(result, dict) and bool(result.get("error"))
                 result_str = result if isinstance(result, str) else json.dumps(result)
                 self.messages.append({
                     "role": "tool",
@@ -714,6 +816,10 @@ class Core:
                 self.memory.add_chat_exchange(
                     self, "tool_result", result_str, name=tool_name,
                 )
+                if tool_result_callback:
+                    tool_result_callback(
+                        tc["id"], tool_name, result_str, is_error, duration,
+                    )
 
         return n_tools
 

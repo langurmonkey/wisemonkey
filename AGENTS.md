@@ -14,6 +14,8 @@ wisemonkey/
 │   ├── config.py           # Configuration loading and handling.
 │   ├── console.py          # Rich console output with themed formatting.
 │   ├── core.py             # Core agent functions, like API connection and tool calls.
+│   ├── emitter.py          # Turn event emitter: core callbacks -> IPC events.
+│   ├── ipc.py              # Client/server protocol: messages, payloads, transports.
 │   ├── mcp.py              # MCP server support.
 │   ├── memory.py           # Session memory, paste file creation.
 │   ├── router.py           # API router implementation for OpenAI, Ollama, and Anthropic.
@@ -52,6 +54,26 @@ The system prompt is built in `Core._build_system_prompt()` each turn. It assemb
 4. Formatted memory (user profile, notes)
 5. Chat history
 6. Loaded skills
+
+### IPC Protocol (`agent/ipc.py`)
+
+Phase 0 of the client/server split (see the `CLIENT_SERVER` session plan). Defines the wire protocol that lets a client (REPL/TUI) talk to a server that owns `Core`/`Memory`/`Config`:
+
+- `Message` envelope: `kind` (`event`/`request`/`response`/`error`), `name`, `payload`, `id`, `reply_to`, `turn_id`, `ts`.
+- Framing: newline-delimited JSON via `encode_message()` / `decode_message()`.
+- `PROTOCOL_VERSION` + `check_protocol_version()` (major must match).
+- Events (`Event`), client requests (`ClientRequest`), server requests (`ServerRequest`, mirrors `OutputAdapter`), `InjectWhen` for mid-turn/between-turn injection.
+- `OutputPayload` carries pre-rendered output (`format`, `level`, `indent`, panel/rule fields) so the server needs no Rich console.
+- `Transport` Protocol (`send`/`recv(timeout)`/`close`/`closed`) with an in-process `LoopbackTransport` / `loopback_pair()` for phase-1 work.
+- `payload_as()` reconstructs a payload dataclass, ignoring unknown keys (forward compatibility).
+
+### Turn results and cancellation (`agent/core.py`, `agent/emitter.py`)
+
+`Core.run_turn()` returns a `TurnResult` (`response`, `total_tokens`, `n_tools`, `gen_time`, plus `cancelled` and `error`). It **unpacks as the historical 4-tuple**, so existing callers keep working, but new drivers should read `.cancelled` instead of string-matching on `"[Cancelled]"`.
+
+Cancellation is **observable state, not an exception**: `_stream_handler()` sets `self._turn_cancelled` and stops the stream when `poll()` returns True, and `run_turn()` returns `TurnResult(cancelled=True)` without persisting a partial answer. `cancel_callback` remains supported (legacy `raise_on_cancel` emitters still raise `TurnCancelled`, which `run_turn()` converts into a cancelled result).
+
+`run_turn()` accepts an optional `tool_result_callback` invoked as `(tool_id, tool_name, content, is_error, duration[, image_base64, mime_type])` after each tool finishes, so tool results can be streamed as events.
 
 ### Tool System (`agent/tools.py` + `tools/`)
 
@@ -148,9 +170,12 @@ tests/
 ├── conftest.py          # Shared fixtures (mock config, temp dirs, singleton resets)
 ├── test_config.py       # Config singleton, load/save, dot-notation get/set
 ├── test_core.py         # Workspace root finding, context file loading, prompt building
+├── test_core_turn.py    # run_turn: TurnResult, cancellation state, tool result callbacks
 ├── test_memory.py       # Memory, ChatMemory persistence and trimming
 ├── test_skills.py       # SkillLoader frontmatter parsing, load_all
 ├── test_files.py        # read_file handler (full read + head-style max_lines)
+├── test_ipc.py          # IPC protocol: message factories, serialization, loopback transport
+├── test_emitter.py      # TurnEmitter: core callbacks -> events, cancel state
 └── test_tools.py        # Tool registration, discovery, execution
 ```
 

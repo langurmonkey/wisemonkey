@@ -259,7 +259,7 @@ def _cmd_reasoning(core, params, output: OutputAdapter | None = None) -> tuple[b
         visible_bool = visible == "true"
         config.set("model.thinking.display", visible_bool)
     except Exception as e:
-        err(e)
+        ui.err(str(e))
 
     return True, f"reasoning effort: {effort}, show reasoning: {visible}", None, None
 
