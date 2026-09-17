@@ -92,15 +92,17 @@ def startup_info(core, output: OutputAdapter):
     new_session = core.memory.session_is_new
     d_created = pretty_timedelta(now - created) if created else "?"
     d_accessed = pretty_timedelta(now - accessed) if accessed else "?"
+    length, max, rate = core.memory.get_chat_stats()
     if new_session:
         output.info(f"Session created: [accent-bold]'{core.memory.session}'[/accent-bold]")
     else:
         output.info(f"Session restored: [accent-bold]'{core.memory.session}'[/accent-bold]")
-    output.print(f"[dim]   location:      {contractuser(session_dir)}[/dim]")
-    output.print(f"[dim]   working dir:   {working_dir}[/dim]")
-    output.print(f"[dim]   created:[/dim]       [time]{d_created}[/time]")
+    output.print(f"[dim]   location:       {contractuser(session_dir)}[/dim]")
+    output.print(f"[dim]   working dir:    {working_dir}[/dim]")
+    output.print(f"[dim]   created:[/dim]        [time]{d_created}[/time]")
     if not new_session:
-        output.print(f"[dim]   last accessed:[/dim] [time]{d_accessed}[/time]")
+        output.print(f"[dim]   last accessed:[/dim]  [time]{d_accessed}[/time]")
+    output.print(f"[dim]   memory status:  {length}/{max} ({rate:.2f}%)[/dim]")
     output.rule()
 
     # Chat history
