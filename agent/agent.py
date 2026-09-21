@@ -277,7 +277,8 @@ class Agent:
             "bottom-toolbar": "#ffffff bg:#262626 noreverse",
             "kbd": "#ffd787 bold",
             "model": "#005faf",
-            "weak": "#393939"
+            "weak": "#393939",
+            "unsafe-warn": "bold bg:#8b0000 #ffffff"
         })
 
         # Vi mode
@@ -350,12 +351,17 @@ class Agent:
 
         # Toolbar
         def prompt_toolbar():
-            return HTML("  <kbd>Alt</kbd>+<kbd>↵</kbd>: new line | <kbd>↵</kbd>: submit | <kbd>Ctrl</kbd>+<kbd>C</kbd>: clear / double-tap to quit")
+            return HTML("  <kbd>Alt</kbd>+<kbd>↵</kbd>: new line | <kbd>↵</kbd>: submit | <kbd>!</kbd>: shell command | <kbd>Ctrl</kbd>+<kbd>C</kbd>: clear / double-tap to quit")
 
         model = self.core.config.get("model.name")
+        unsafe = self.core.config.get("agent.unsafe", False)
+        unsafe_warn = (
+            HTML('  <unsafe-warn>⚠ UNSAFE MODE</unsafe-warn>')
+            if unsafe else ""
+        )
         self._session = PromptSession(
                     style=style,
-                    message=HTML(f"⩥ You ⩤   <weak>model:</weak> <model>{model}</model>  <weak>session:</weak> <model>{self.core.memory.session}</model>\n❯ "),
+                    message=HTML(f"⩥ You ⩤   <weak>model:</weak> <model>{model}</model>  <weak>session:</weak> <model>{self.core.memory.session}</model>{unsafe_warn}\n❯ "),
                     history=FileHistory(str(history_path)),
                     show_frame=True,
                     multiline=True,

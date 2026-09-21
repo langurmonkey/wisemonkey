@@ -557,8 +557,14 @@ class WisemonkeyTui(App):
             return
         model = self.core.config.get("model.name", "?")
         sess = self.core.memory.session
+        unsafe = self.core.config.get("agent.unsafe", False)
+        unsafe_warn = (
+            "  |  [bold #ffffff on #8b0000]⚠ UNSAFE MODE[/bold #ffffff on #8b0000]"
+            if unsafe else ""
+        )
         self.query_one("#status-bar", Static).update(
             f" Model: [bold]{model}[/bold]  |  Session: [bold]{sess}[/bold]"
+            f"{unsafe_warn}  |  [bold]![/bold]: shell command"
         )
 
     # Input handling
