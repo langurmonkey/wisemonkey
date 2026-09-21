@@ -1,5 +1,9 @@
 """Tests for agent/skills.py — frontmatter parsing, skill loading, formatting."""
 
+import os
+
+from pathlib import Path
+
 from agent.skills import SkillLoader
 from tests.conftest import BaseTest
 

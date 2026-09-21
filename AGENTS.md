@@ -52,8 +52,8 @@ The system prompt is built in `Core._build_system_prompt()` each turn. It assemb
 2. Soul files (`Core._load_soul_files()`: global `$XDG_CONFIG_HOME/wisemonkey/SOUL.md`, then workspace `SOUL.md`) — identity/persona
 3. `AGENTS.md` workspace instructions (if found)
 4. Formatted memory (user profile, notes)
-5. Chat history
-6. Loaded skills
+5. Loaded skills
+6. Chat history (last — it changes every turn, keeping the static prefix cacheable)
 
 ### IPC Protocol (`agent/ipc.py`)
 

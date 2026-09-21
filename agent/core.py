@@ -96,8 +96,9 @@ class Core:
             max_chat_history = self.config.get("agent.max_chat_history", 300000)
             self.memory = Memory(max_chat_history=max_chat_history, session=session)
 
-            # Initialize skills
-            self.skills = SkillLoader()
+            # Initialize skills (can be disabled via config)
+            skills_enabled = self.config.get("agent.skills", True)
+            self.skills = SkillLoader(enabled=skills_enabled)
 
             # Conversation history
             self.messages = []
@@ -254,15 +255,19 @@ class Core:
         if memory_text:
             parts.append(memory_text)
 
-        # Add chat history
-        chat_text = self.memory.get_chat_formatted(timestamps=False)
-        if chat_text:
-            parts.append(chat_text)
-
         # Add skills
+        # NOTE: skills come before the chat history so that the static prefix
+        # of the prompt (identity, context, memory, skills) stays stable and
+        # prompt caches are not invalidated on every turn.
         skills_text = self.skills.load_all()
         if skills_text:
             parts.append(skills_text)
+
+        # Add chat history last: it changes every turn, so it must be the
+        # tail of the prompt to keep the prefix cacheable.
+        chat_text = self.memory.get_chat_formatted(timestamps=False)
+        if chat_text:
+            parts.append(chat_text)
 
         return "\n".join(parts)
 

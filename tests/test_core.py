@@ -274,3 +274,32 @@ class TestBuildSystemPrompt(BaseTest):
             parts.append("\n\n".join(ctx_parts))
 
         return "\n".join(parts)
+
+
+class TestSystemPromptOrder(BaseTest):
+    """Chat history must be the tail of the prompt so the static prefix
+    (identity, context, memory, skills) stays stable for prompt caching."""
+
+    def test_chat_history_is_last_section(self):
+        from typing import Any, cast
+
+        from agent.core import Core
+
+        core = Core.__new__(Core)
+        fake = cast(Any, core)
+        fake.system_prompt = "BASE"
+        fake._load_soul_files = lambda: "SOUL"
+        fake._load_context_files = lambda: "CONTEXT"
+        fake.memory = type("M", (), {
+            "get_formatted": lambda self, notes=False: "MEMORY",
+            "get_chat_formatted": lambda self, timestamps=False: "CHAT_HISTORY",
+        })()
+        fake.skills = type("S", (), {"load_all": lambda self: "SKILLS"})()
+
+        prompt = core._build_system_prompt()
+        sections = prompt.split("\n")
+        self.assertEqual(
+            sections, ["BASE", "SOUL", "CONTEXT", "MEMORY", "SKILLS", "CHAT_HISTORY"]
+        )
+        self.assertGreater(prompt.index("SKILLS"), prompt.index("MEMORY"))
+        self.assertGreater(prompt.index("CHAT_HISTORY"), prompt.index("SKILLS"))

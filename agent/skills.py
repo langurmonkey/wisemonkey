@@ -27,8 +27,17 @@ class SkillNotFoundError(KeyError):
 class SkillLoader:
     """Load and manage skills from markdown files."""
 
-    def __init__(self, skills_dir=None):
+    def __init__(self, skills_dir=None, enabled=True):
+        """Initialize the skill loader.
+
+        When ``enabled`` is False, no directories are created or scanned and
+        no skills are loaded — useful to disable skills entirely via config.
+        """
+        self.enabled = enabled
         self.skills_dirs = []
+        self._loaded = {}
+        if not enabled:
+            return
 
         dedicated_dir = skills_dir is not None
 
@@ -43,8 +52,6 @@ class SkillLoader:
             if local is not skills_dir:
                 self.skills_dirs.append(local)
 
-        self._loaded = {}
-
     def _find_skill_files(self):
         """Find all skill files: *.md in root, SKILL.md in subdirectories.
 
@@ -53,6 +60,8 @@ class SkillLoader:
         from frontmatter, falling back to filename stem or directory name.
         """
         found = []
+        if not self.enabled:
+            return found
         seen = set()
 
         def _add(name, path):
@@ -168,6 +177,8 @@ class SkillLoader:
 
     def load_all(self):
         """Load all skills and return formatted block for system prompt."""
+        if not self.enabled:
+            return None
         skills = self.list_skills()
         if not skills:
             return None

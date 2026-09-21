@@ -691,10 +691,27 @@ class WisemonkeyTui(App):
         self.output.print(f"{user_input}")
         self.output.newline()
 
-        if user_input.startswith("/"):
+        if user_input.startswith("!"):
+            self._handle_shell_command(user_input[1:].strip())
+        elif user_input.startswith("/"):
             self._handle_command(user_input)
         else:
             self._handle_prompt(user_input)
+
+    @work(thread=True, exit_on_error=False)
+    def _handle_shell_command(self, command: str) -> None:
+        """Run a user-invoked shell command (`!` prefix) on a worker thread."""
+        if not command:
+            self.output.err("Empty shell command")
+            return
+        if not self.core:
+            self.output.err("Core not initialised")
+            return
+
+        from agent.shellcmd import append_to_memory, run_shell_command
+
+        result = run_shell_command(command, self.output)
+        append_to_memory(self.core, command, result)
 
     def set_special_suggestions(self, sp: list[str] | None):
         inp = self.query_one("#input", _PromptInput)

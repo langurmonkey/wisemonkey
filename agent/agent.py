@@ -409,6 +409,19 @@ class Agent:
                 self.emitter.cancel("user")
                 continue
 
+            # Process user-invoked shell commands (`!` prefix)
+            if user_input.startswith("!"):
+                from agent.shellcmd import append_to_memory, run_shell_command
+
+                command = user_input[1:].strip()
+                if command:
+                    result = run_shell_command(command, self.output)
+                    append_to_memory(self.core, command, result)
+                    self.output.newline()
+                else:
+                    self.output.err("Empty shell command")
+                continue
+
             # Process slash commands
             if user_input.startswith("/"):
                 tokens = user_input.split()

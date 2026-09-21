@@ -49,6 +49,9 @@ agent:
   # directory (~/.config/wisemonkey/). Set to an empty string to disable.
   soul_file: SOUL.md
   global_soul_file: SOUL.md
+  # Skills: set to false to disable skill loading entirely (no skills
+  # directories are created or scanned, and no skills enter the prompt)
+  skills: true
   # Context files to load into the system prompt (relative to workspace root)
   context_files:
     - AGENTS.md

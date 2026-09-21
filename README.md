@@ -202,6 +202,18 @@ You can enable `vi` mode for the current session with the [command](#commands) `
 
 There are a few commands available to use in the agent loop. You can list them with `/help`. Also, use `/[command-name] help` (e.g. `/config help`) to show additional help for a command.
 
+### Shell commands
+
+Prefix an input with `!` to run it directly in the shell instead of sending it to the model:
+
+```
+!git status
+!ls -la
+!docker ps
+```
+
+The command runs synchronously (60 s timeout by default), its stdout, stderr, and exit code are printed, and the command together with its result is appended to the session chat memory, so the model can use it as context on the next turn. Since you type the command yourself, no confirmation is requested — this is the same trust model as running it in a terminal.
+
 ## Session memory
 
 Persistent memory follows XDG Base Directory spec in `~/.local/share/wisemonkey/session/$SESSION_NAME`:
@@ -234,7 +246,7 @@ In addition to persistent memory, the agent maintains a **chat history** of rece
 - Reasoning is omitted from chat memory
 - Automatically compacted when exceeding the configured character limit
 - The user can trigger the compaction any time with `/memory compact`
-- Chat memory is attached to the system prompt on each turn
+- Chat memory is attached to the system prompt on each turn, as the **last section** (after identity, workspace instructions, memory, and skills) so the static prompt prefix stays stable and provider prompt caches are not invalidated on every turn
 - The agent displays the last 10 exchanges, with long messages truncated
 - Tool results are truncated in the formatted history unless `chat_history_full_tool_results` is enabled (see below)
 - Large file reads can be limited with the `read_file` tool's `max_lines` parameter (like `head`)
@@ -355,7 +367,7 @@ Decorated commands are automatically registered, and auto-completed in the input
 
 ### Adding skills
 
-Skills are loaded from the `skills/` directory of the wisemonkey project, as well as the `./skills/` folder within the current working directory.
+Skills are loaded from the `skills/` directory of the wisemonkey project, as well as the `./skills/` folder within the current working directory. Skill loading can be disabled entirely with `agent.skills: false` in the config — no skills directories are created or scanned, and no skills enter the system prompt.
 
 To create a new skill, add a `.md` file in `skills/` with YAML front matter, following the [agentskills.io](https://agentskills.io) standard:
 
