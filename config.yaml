@@ -35,8 +35,8 @@ agent:
       - Use `save_note` to store important new information the user wants you to remember long-term.
   # Display formatted output at the end of generation
   markdown: false
-  # Length of chat history kept for context, in characters
-  max_chat_history: 320000
+  # Length of chat history kept for context, in tokens
+  max_chat_history: 80000
   # Include full tool call/result content in the chat history injected into
   # the system prompt. When false, tool results are truncated to
   # chat_history_tool_result_max_chars.

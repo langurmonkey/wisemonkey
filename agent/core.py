@@ -93,7 +93,7 @@ class Core:
             self.initialize_mcp()
 
             # Initialize memory
-            max_chat_history = self.config.get("agent.max_chat_history", 300000)
+            max_chat_history = self.config.get("agent.max_chat_history", 80000)
             self.memory = Memory(max_chat_history=max_chat_history, session=session)
 
             # Initialize skills (can be disabled via config)

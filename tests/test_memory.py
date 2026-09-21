@@ -121,7 +121,7 @@ class TestChatMemory(BaseTest):
     def setUp(self):
         super().setUp()
         self.session_dir = self._tmpdir / "sessions" / "chat"
-        self.cm = ChatMemory(self.session_dir, max_chars=500)
+        self.cm = ChatMemory(self.session_dir, max_tokens=200)
 
     def test_add_exchange(self):
         self.cm.add_exchange(None, "user", "Hello")
@@ -134,19 +134,24 @@ class TestChatMemory(BaseTest):
         self.cm.add_exchange(None, "assistant", "Hello!")
         assert len(self.cm._exchanges) == 2
 
-    def test_total_chars_tracks_content(self):
-        self.cm.add_exchange(None, "user", "abc")
-        self.cm.add_exchange(None, "assistant", "def")
-        assert self.cm.total_chars == 6
+    def test_total_tokens_tracks_content(self):
+        self.cm.add_exchange(None, "user", "abc def ghi")
+        self.cm.add_exchange(None, "assistant", "one two three four")
+        # Exact token counts (tiktoken), so just check they are positive and
+        # grow with content.
+        assert self.cm.total_tokens > 0
+        before = self.cm.total_tokens
+        self.cm.add_exchange(None, "user", "more text here")
+        assert self.cm.total_tokens > before
 
     def test_trim_removes_oldest(self):
         # Directly test _trim() instead of add_exchange (which triggers
         # /session-chat-compact via the command registry and needs a real core).
         for i in range(20):
             self.cm._exchanges.append({"role": "user", "content": "x" * 50})
-            self.cm.total_chars += 50
+            self.cm.total_tokens += 12
         self.cm._trim()
-        assert self.cm.total_chars <= 500
+        assert self.cm.total_tokens <= 200
 
     def test_clear_n_exchanges(self):
         for i in range(5):
@@ -171,7 +176,7 @@ class TestChatMemory(BaseTest):
         self.cm.add_exchange(None, "user", "persist me")
         self.cm.save()
 
-        cm2 = ChatMemory(self.session_dir, max_chars=500)
+        cm2 = ChatMemory(self.session_dir, max_tokens=200)
         assert len(cm2._exchanges) == 1
         assert cm2._exchanges[0]["content"] == "persist me"
 
@@ -208,7 +213,7 @@ class TestChatMemory(BaseTest):
         assert "result body" in result
 
     def test_tool_result_truncated_by_default(self):
-        cm = ChatMemory(self.session_dir / "big", max_chars=100000)
+        cm = ChatMemory(self.session_dir / "big", max_tokens=25000)
         long_result = "z" * 5000
         cm.add_exchange(None, "tool_result", long_result, name="big")
         result = cm.get_formatted(0, timestamps=False, width=0)
@@ -216,25 +221,24 @@ class TestChatMemory(BaseTest):
         # Should be far shorter than the original
         assert len(result) < len(long_result)
 
-    def test_tool_call_counts_extra_chars(self):
+    def test_tool_call_counts_extra_tokens(self):
         self.cm.add_exchange(None, "user", "hi")
-        before = self.cm.total_chars
+        before = self.cm.total_tokens
         self.cm.add_exchange(None, "tool_call", "", name="x", arguments="abcd")
         # role/utc aren't counted, but the extra string fields are
-        assert self.cm.total_chars == before + len("abcd") + len("x")
+        assert self.cm.total_tokens > before
 
     def test_large_tool_result_counted_as_truncated(self):
-        """A huge tool result must not inflate total_chars beyond the limit.
+        """A huge tool result must not inflate total_tokens beyond the limit.
 
-        total_chars tracks what is actually injected into the prompt, where
-        tool results are truncated to chat_history_tool_result_max_chars
-        (default 500). Otherwise a single big read_file would trigger
-        premature compaction.
+        total_tokens tracks what is actually injected into the prompt, where
+        tool results are truncated to chat_history_tool_result_max_chars.
+        Otherwise a single big read_file would trigger premature compaction.
         """
-        cm = ChatMemory(self.session_dir / "big", max_chars=100000)
+        cm = ChatMemory(self.session_dir / "big", max_tokens=25000)
         cm.add_exchange(None, "tool_result", "z" * 100000, name="read_file")
-        # Should be counted as ~500 chars (+ the tool name), not 100000.
-        assert cm.total_chars < 1000
+        # Truncated to 200 chars -> well under 25000 tokens.
+        assert cm.total_tokens < 500
 
     def test_get_unformatted(self):
         self.cm.add_exchange(None, "user", "raw")

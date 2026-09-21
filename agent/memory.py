@@ -10,6 +10,8 @@ when save() is called. On init, state is loaded from disk.
 """
 
 import json
+
+from agent.tokens import count_tokens
 import datetime
 import os
 
@@ -67,13 +69,13 @@ class Memory:
     _notes_path = Path()
     _notes = []
 
-    def __new__(cls, max_chat_history=300000, session_dir=None, session='default'):
+    def __new__(cls, max_chat_history=80000, session_dir=None, session='default'):
         global _instance
         if _instance is None:
             _instance = super().__new__(cls)
         return _instance
 
-    def __init__(self, max_chat_history=300000, session_dir=None, session='default'):
+    def __init__(self, max_chat_history=80000, session_dir=None, session='default'):
         # Only initialize on first creation
         if hasattr(self, "_initialized"):
             return
@@ -129,7 +131,7 @@ class Memory:
         # Persistent notes
         self._notes_path = self.session_dir / "notes.json"
         # Chat history
-        self._chat_history = ChatMemory(self.session_dir, max_chars=max_chat_history)
+        self._chat_history = ChatMemory(self.session_dir, max_tokens=max_chat_history)
         # Document vector store (lazy, optional)
         self.vectorstore = None
 
@@ -257,14 +259,14 @@ class Memory:
 
     def get_chat_stats(self):
         """
-        Returns the current chat memory length, the maximum length, and the
-        fill percentage
+        Returns the current chat memory size in tokens, the maximum size,
+        and the fill percentage
         """
-        curr_length = self._chat_history.total_chars
-        max_chars = self._chat_history.max_chars
-        fill_rate = float(curr_length) * 100.0 / float(max_chars)
+        curr = self._chat_history.total_tokens
+        max_tokens = self._chat_history.max_tokens
+        fill_rate = float(curr) * 100.0 / float(max_tokens)
 
-        return curr_length, max_chars, fill_rate
+        return curr, max_tokens, fill_rate
 
     def create_pasted_file(self, content):
         """Save pasted content to a file in the session's pasted directory.
@@ -294,20 +296,19 @@ class ChatMemory:
     """Rolling chat memory that stores recent exchanges.
     
     Maintains a rolling window of recent user input/assistant output pairs,
-    limited by character count from configuration. Automatically trimmed
+    limited by token count from configuration. Automatically trimmed
     when the window is exceeded. Persisted to disk.
     """
     
-    def __init__(self, session_dir, max_chars=300000):
+    def __init__(self, session_dir, max_tokens=80000):
         """Initialize chat memory.
-        
+
         Args:
-            max_chars: Maximum total characters to keep in memory (default: 320000)
-            memory_dir: Directory to persist chat history (default: ~/.local/share/wisemonkey/memory/)
+            max_tokens: Maximum total tokens to keep in memory (default: 80000)
         """
         self._exchanges = []  # list of {"role": "user"|"assistant"|"summary", "content": str}
-        self.total_chars = 0
-        self.max_chars = max_chars
+        self.total_tokens = 0
+        self.max_tokens = max_tokens
         
         # Set up persistence
         self._chat_path = Path(session_dir) / "chat_history.json"
@@ -317,7 +318,7 @@ class ChatMemory:
 
     def set_exchanges(self, content):
         self._exchanges = content
-        self.total_chars = sum(self._entry_len(e) for e in self._exchanges)
+        self.total_tokens = sum(self._entry_tokens(e) for e in self._exchanges)
 
     @staticmethod
     def _entry_len(entry) -> int:
@@ -326,9 +327,6 @@ class ChatMemory:
         Tool results are counted as they are actually injected into the
         system prompt (see ``get_formatted``): truncated to
         ``_tool_result_limit()`` chars unless full tool results are enabled.
-        Keeping the rolling-window accounting in sync with what is really
-        sent to the model prevents a single large tool result (e.g. a big
-        ``read_file``) from triggering premature compaction.
         """
         content = entry.get("content") or ""
         if entry.get("role") == "tool_result":
@@ -345,6 +343,28 @@ class ChatMemory:
                 total += len(json.dumps(value, default=str))
         return total
 
+    @classmethod
+    def _entry_tokens(cls, entry) -> int:
+        """Token cost of an exchange, mirroring prompt injection.
+
+        Same truncation rules as ``_entry_len`` (tool results truncated
+        unless full results are enabled), but measured in tokens.
+        """
+        content = entry.get("content") or ""
+        if entry.get("role") == "tool_result":
+            limit = _tool_result_limit()
+            if limit > 0 and len(content) > limit:
+                content = content[:limit]
+        total = count_tokens(content)
+        for key, value in entry.items():
+            if key in ("role", "utc", "content"):
+                continue
+            if isinstance(value, str):
+                total += count_tokens(value)
+            elif isinstance(value, (list, dict)):
+                total += count_tokens(json.dumps(value, default=str))
+        return total
+
     def _load(self):
         """Load chat history from disk."""
         if self._chat_path.exists():
@@ -352,7 +372,7 @@ class ChatMemory:
                 with open(self._chat_path, "r") as f:
                     data = json.load(f)
                     self._exchanges = data.get("exchanges", [])
-                    self.total_chars = sum(self._entry_len(e) for e in self._exchanges)
+                    self.total_tokens = sum(self._entry_tokens(e) for e in self._exchanges)
             except (json.JSONDecodeError, IOError):
                 pass
     
@@ -388,10 +408,10 @@ class ChatMemory:
         self._exchanges.append(entry)
         # Account for the exchange exactly as it will be injected into the
         # prompt (tool results are truncated unless full results are enabled).
-        self.total_chars += self._entry_len(entry)
+        self.total_tokens += self._entry_tokens(entry)
         
         # Compact if exceeded
-        if self.total_chars > self.max_chars:
+        if self.total_tokens > self.max_tokens:
             from agent.commands import registry
             _, _, _, _, _ = registry.run_command(core, "/session-chat-compact")
         
@@ -399,11 +419,11 @@ class ChatMemory:
         self.save()
     
     def _trim(self):
-        """Remove oldest exchanges until under the character limit."""
+        """Remove oldest exchanges until under the token limit."""
 
-        while self.total_chars > self.max_chars and self._exchanges:
+        while self.total_tokens > self.max_tokens and self._exchanges:
             oldest = self._exchanges.pop(0)
-            self.total_chars -= self._entry_len(oldest)
+            self.total_tokens -= self._entry_tokens(oldest)
         
         # Save after trimming
         self.save()
@@ -423,7 +443,7 @@ class ChatMemory:
         for i in range(n):
             if self._exchanges:
                 out = self._exchanges.pop(0)
-                self.total_chars -= self._entry_len(out)
+                self.total_tokens -= self._entry_tokens(out)
                 cleared += 1
             else:
                 # We ran out of items

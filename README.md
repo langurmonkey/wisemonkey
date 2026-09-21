@@ -260,12 +260,12 @@ In addition to persistent memory, the agent maintains a **chat history** of rece
 **Configuration:**
 ```yaml
 agent:
-  max_chat_history: 128000                    # Maximum history characters to keep for context
+  max_chat_history: 80000                     # Maximum history tokens to keep for context
   chat_history_full_tool_results: false       # Include full tool call/result content in the prompt
   chat_history_tool_result_max_chars: 500     # Max chars per tool result when the above is false
 ```
 
-> The character accounting used for compaction matches what is actually injected into the prompt. When `chat_history_full_tool_results` is `false`, tool results are counted (and injected) truncated to `chat_history_tool_result_max_chars`, so a single large tool result does not trigger premature compaction.
+> Chat history is accounted in **tokens**, counted exactly with tiktoken (o200k encoding) when available, falling back to a chars/4 estimate otherwise. The token accounting used for compaction matches what is actually injected into the prompt: when `chat_history_full_tool_results` is `false`, tool results are counted (and injected) truncated to `chat_history_tool_result_max_chars`, so a single large tool result does not trigger premature compaction.
 
 ## Structure
 

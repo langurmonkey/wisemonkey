@@ -315,7 +315,7 @@ def _cmd_session(core, params, output: OutputAdapter | None = None) -> tuple[boo
     result += f"Working dir:    {working_dir}\n"
     result += f"Created:        {created}\n"
     result += f"Last accessed:  {accessed}\n"
-    result += f"Memory status:  {length}/{max} ({rate:.2f}%)"
+    result += f"Memory status:  {length}/{max} tokens ({rate:.2f}%)"
     return True, None, result, None
 
 
@@ -352,8 +352,8 @@ def _cmd_session_chat(core, params, output: OutputAdapter | None = None) -> tupl
             return False, f"Parameter must be integer: {params[0]}", None, None
 
     mem = core.memory.get_chat_formatted(num_exchanges=n, timestamps=True)
-    chars, max, rate = core.memory.get_chat_stats()
-    stats = f"Memory status: {chars}/{max} ({rate:.2f}%)"
+    tokens, max, rate = core.memory.get_chat_stats()
+    stats = f"Memory status: {tokens}/{max} tokens ({rate:.2f}%)"
     # Format in Markdown
     return True, stats, None, mem
 
