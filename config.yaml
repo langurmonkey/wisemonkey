@@ -43,6 +43,11 @@ agent:
   chat_history_full_tool_results: false
   # Maximum characters kept per tool result in the formatted chat history
   chat_history_tool_result_max_chars: 200
+  # @-references: writing @path/to/file in a prompt inlines the file content
+  # into the message sent to the model. Files larger than this many chars
+  # inject only a stub (the model can read them with read_file). Directories
+  # inject a shallow listing. Set to 0 to disable the feature.
+  at_file_max_chars: 8000
   # Soul file: identity/persona file loaded into the system prompt before the
   # workspace context files. The workspace soul is discovered by walking up
   # from the working directory; the global soul lives in the wisemonkey config

@@ -31,6 +31,8 @@ from textual.timer import Timer
 from textual.events import Paste as PasteEvent
 
 from agent.core import Core, Stage
+from agent.completion import complete_path, _last_token
+from agent.at_files import expand_at_references
 from agent.emitter import TurnEmitter
 from agent.ipc import (
     ContentPayload,
@@ -54,7 +56,6 @@ PASTE_THRESHOLD = 1000
 # Regex to find a path-like token immediately left of the cursor.
 # Matches an optional ~ or leading / followed by any non-whitespace chars
 # that look like path components.
-_PATH_RE = re.compile(r'(?:^|(?<=\s))(~?/?(?:[^\s]*/)+[^\s]*|~?/[^\s]*)$')
 # Spinner characters
 SPINNER_CHARS ="⣾⣽⣻⢿⡿⣟⣯⣷"
 
@@ -236,53 +237,15 @@ class _PromptInput(TextArea):
                 self.suggestion = ""
                 return
 
-            # File system paths
-            m = _PATH_RE.search(current)
-            if m:
-                token = m.group(0)
-                suffix = self._path_suggestions(token)
-                self.suggestion = suffix
-                return
-
+            # File system paths (last token; handles ~/..., relative paths,
+            # and bare words >= 2 chars via the shared completer logic)
+            token, _offset = _last_token(current)
+            if token:
+                _completions, common = complete_path(current)
+                if common and common != token:
+                    self.suggestion = common[len(token):]
+                    return
             self.suggestion = ""
-
-    @staticmethod
-    def _path_suggestions(token: str) -> str:
-        """Return the completion suffix for *token*, or '' if none."""
-        expanded = os.path.expanduser(token)
-
-        # Decide what directory to scan and what prefix to match against.
-        if expanded.endswith("/"):
-            # User typed a full dir path ending in /  -> list contents
-            directory = expanded
-            prefix = ""
-            # The suggestion should start with nothing (entries are below the slash)
-            offset = 0
-        else:
-            directory = os.path.dirname(expanded) or "."
-            prefix = os.path.basename(expanded)
-            offset = len(prefix)
-
-        try:
-            entries = os.scandir(directory)
-        except (PermissionError, FileNotFoundError, NotADirectoryError):
-            return ""
-
-        matches = []
-        with entries:
-            for entry in entries:
-                if entry.name.startswith(prefix) and entry.name != prefix:
-                    name = entry.name
-                    if entry.is_dir(follow_symlinks=False):
-                        name += "/"
-                    matches.append(name)
-
-        if not matches:
-            return ""
-
-        # Prefer the shortest match so Tab always advances one component.
-        best = min(matches, key=len)
-        return best[offset:]
 
     def watch_selection(self) -> None:
         # selection changes whenever the cursor moves (typing, arrows, etc.)
@@ -742,9 +705,10 @@ class WisemonkeyTui(App):
             return self._cancel_event.is_set()
 
         try:
+            max_at = self.core.config.get("agent.at_file_max_chars", 8000)
+            prompt = expand_at_references(user_input, max_at) if max_at > 0 else user_input
             result = self.core.run_turn(
-                user_input,
-                self.emitter.prompt,
+                prompt,
                 self.emitter.reasoning,
                 self.emitter.content,
                 self.emitter.tool_call,

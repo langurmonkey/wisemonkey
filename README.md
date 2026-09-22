@@ -115,6 +115,17 @@ Wisemonkey also supports MCP. Use the following commands to manage the MCP integ
 
 MCP servers are started when the agent boots. You need to restart the agent if you add new servers.
 
+## File references (`@path`)
+
+You can attach files directly to a prompt with `@`-references: writing `@agent/agent.py` (or the backtick-quoted `@\`agent/agent.py\``) in your message inlines the file content into the context sent to the model — no extra tool-call round-trip needed.
+
+- **Small files** (up to `agent.at_file_max_chars`, default 8000) are inlined as fenced code blocks appended to your message.
+- **Large files** inject only a stub (path, size, first lines) so the model knows the file exists and can read it itself with the `read_file` tool.
+- **Directories** inject a shallow listing.
+- Non-existent or handle-like tokens (`@langur`, `a@b.com`) are left untouched.
+
+The typed text stays as-is on screen and in chat history — only the message sent to the model carries the attachment. Set `agent.at_file_max_chars: 0` to disable the feature. Path completion works after `@` too (`@ag` → `@agent/`), in both the REPL and the TUI.
+
 ## Soul file
 
 Wisemonkey supports a **soul file** — a markdown file that defines the agent's identity and persona. It is injected into the system prompt *before* the workspace instructions, so it takes precedence over `AGENTS.md` without replacing it.

@@ -14,6 +14,8 @@ from rich.panel import Panel
 from pubsub import pub
 
 from agent.core import Core
+from agent.completion import SmartPathCompleter
+from agent.at_files import expand_at_references
 from agent.emitter import TurnEmitter
 from agent.ipc import (
     ContentPayload,
@@ -39,7 +41,7 @@ try:
     from prompt_toolkit.history import FileHistory
     from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
     from prompt_toolkit.styles import Style
-    from prompt_toolkit.completion import NestedCompleter, PathCompleter, Completer
+    from prompt_toolkit.completion import NestedCompleter
     from prompt_toolkit.clipboard import InMemoryClipboard
     from prompt_toolkit.formatted_text import HTML
     from prompt_toolkit.keys import Keys
@@ -292,12 +294,13 @@ class Agent:
         commands_dict = collapse_none_dicts(commands_dict)
         slash_completer = NestedCompleter.from_nested_dict(commands_dict)
 
-        # Path auto completer (for file system paths)
-        path_completer = PathCompleter()
+        # Smart path completer: completes the last token, handles ~/ expansion
+        # and paths embedded mid-sentence (see agent/completion.py).
+        path_completer = SmartPathCompleter()
 
-        # Hybrid completer: detects if the current word looks like a path and uses
-        # PathCompleter, otherwise falls back to slash commands completer.
-        from prompt_toolkit.document import Document
+        # Hybrid completer: slash commands when the line starts with '/',
+        # smart path completion otherwise.
+        from prompt_toolkit.completion import Completer
 
         class HybridCompleter(Completer):
             def __init__(self, slash_comp, path_comp):
@@ -312,35 +315,8 @@ class Agent:
                     cmds = list(self.slash_completer.get_completions(document, complete_event))
                     if cmds:
                         return cmds
-                    # If no slash completions match, fall through to path check below
+                    # If no slash completions match, fall through to path check
 
-                # Extract the last word/token being typed (strip leading '/' for path detection)
-                words = text.rsplit(None, 1)
-                last_word = words[-1] if words else ""
-                # Remove leading slash so "/embed ~/Doc" doesn't trigger path on "/embed"
-                last_word_stripped = last_word.lstrip('/')
-
-                # If the last word looks like a path, use PathCompleter.
-                # We create a synthetic Document containing only the path portion,
-                # because PathCompleter checks the full text and fails when there's
-                # non-path text (like "/embed ") before the cursor.
-                if last_word_stripped and ('/' in last_word_stripped or last_word_stripped.startswith('~') or last_word_stripped.startswith('.')):
-                    fake_doc = Document(
-                        text=last_word_stripped,
-                        cursor_position=len(last_word_stripped),
-                    )
-                    path_completions = list(self.path_completer.get_completions(fake_doc, complete_event))
-                    if path_completions:
-                        offset = len(text) - len(last_word_stripped)
-                        for c in path_completions:
-                            c.start_position += offset
-                        return path_completions
-
-                # If the whole line starts with a path prefix (no command), use PathCompleter
-                if text.startswith('~') or text.startswith('.') or text.startswith('..'):
-                    return self.path_completer.get_completions(document, complete_event)
-
-                # Fall back to path completer
                 return self.path_completer.get_completions(document, complete_event)
 
         completer = HybridCompleter(slash_completer, path_completer)
@@ -480,8 +456,12 @@ class Agent:
                 self.output.print("  [kbd]Ctrl[/kbd]+[kbd]C[/kbd]: Cancel turn\n")
                 try:
                     self._turn_in_progress = True
+                    # Expand @file references into attached context (model
+                    # sees the content; the typed text stays as-is on screen).
+                    max_at = self.core.config.get("agent.at_file_max_chars", 8000)
+                    prompt = expand_at_references(user_input, max_at) if max_at > 0 else user_input
                     result = self.core.run_turn(
-                        user_input,
+                        prompt,
                         self.emitter.prompt,
                         self.emitter.reasoning,
                         self.emitter.content,
