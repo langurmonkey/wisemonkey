@@ -31,7 +31,9 @@ from __future__ import annotations
 
 import json
 import queue
+import socket
 import time
+from pathlib import Path
 import uuid
 
 from dataclasses import asdict, dataclass, field
@@ -779,3 +781,116 @@ def loopback_pair() -> tuple[LoopbackTransport, LoopbackTransport]:
         LoopbackTransport(inbox=b_to_a, outbox=a_to_b),
         LoopbackTransport(inbox=a_to_b, outbox=b_to_a),
     )
+
+
+# ----------------------------------------------------------------
+# Unix domain socket transport (phase 2)
+# ----------------------------------------------------------------
+
+def socket_path(session: str = "default") -> Path:
+    """Return the UDS path for a session's server.
+
+    Uses ``$XDG_RUNTIME_DIR/wisemonkey/<session>.sock`` when available
+    (Linux), falling back to a user-private directory under the system
+    temp dir (macOS, where ``XDG_RUNTIME_DIR`` is typically unset).
+    """
+    import getpass
+    import os
+    import tempfile
+
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime:
+        base = Path(runtime) / "wisemonkey"
+    else:
+        base = Path(tempfile.gettempdir()) / f"wisemonkey-{getpass.getuser()}"
+    base.mkdir(mode=0o700, exist_ok=True)
+    return base / f"{session}.sock"
+
+
+class UnixTransport:
+    """NDJSON message transport over a connected Unix domain socket.
+
+    Implements the :class:`Transport` protocol (``send``/``recv``/``close``)
+    using newline-delimited JSON, exactly like the loopback transport but
+    across process boundaries.
+    """
+
+    def __init__(self, sock: "socket.socket") -> None:
+        self._sock = sock
+        self._buffer = b""
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    # -- factories ---------------------------------------------------------
+
+    @classmethod
+    def connect(cls, path: Path | str, timeout: float = 5.0) -> "UnixTransport":
+        """Connect to a server socket at *path*."""
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        sock.connect(str(path))
+        sock.settimeout(None)
+        return cls(sock)
+
+    @classmethod
+    def from_server(cls, sock: "socket.socket") -> "UnixTransport":
+        """Wrap an already-accepted server-side connection."""
+        return cls(sock)
+
+    # -- Transport protocol --------------------------------------------------
+
+    def send(self, message: Message) -> None:
+        if self._closed:
+            raise TransportClosed("Transport is closed")
+        try:
+            self._sock.sendall(encode_message(message).encode("utf-8"))
+        except (OSError, BrokenPipeError) as e:
+            self._closed = True
+            raise TransportClosed(f"Socket send failed: {e}") from e
+
+    def recv(self, timeout: float | None = None) -> Message | None:
+        """Receive the next message, or None on timeout.
+
+        Raises :class:`TransportClosed` when the peer disconnects or the
+        transport was closed locally.
+        """
+        if self._closed:
+            raise TransportClosed("Transport is closed")
+        try:
+            self._sock.settimeout(timeout)
+            while b"\n" not in self._buffer:
+                try:
+                    chunk = self._sock.recv(65536)
+                except socket.timeout:
+                    return None
+                if not chunk:
+                    self._closed = True
+                    raise TransportClosed("Peer closed the connection")
+                self._buffer += chunk
+            self._sock.settimeout(None)
+        except TransportClosed:
+            raise
+        except OSError as e:
+            self._closed = True
+            raise TransportClosed(f"Socket recv failed: {e}") from e
+
+        line, self._buffer = self._buffer.split(b"\n", 1)
+        if not line.strip():
+            return self.recv(timeout=0.0)
+        return decode_message(line.decode("utf-8"))
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            self._sock.close()
+        except OSError:
+            pass

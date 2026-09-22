@@ -87,6 +87,11 @@ def main():
         help='WIP/EXPERIMENTAL! Launch the Textual full-screen TUI',
     )
     parser.add_argument(
+        '--server',
+        action='store_true',
+        help='Run as a server process owning the session (client/server mode)',
+    )
+    parser.add_argument(
         '-ls', '--ls',
         action='store_true',
         help='List existing sessions',
@@ -193,6 +198,11 @@ def main():
             err(f"Session does not exist: [accent-bold]{args.rm}[/]")
 
         return
+
+    # Run as server (client/server mode)
+    if args.server:
+        from agent.server import main as server_main
+        sys.exit(server_main(config_path=args.config, session=args.session))
 
     # Launch TUI
     if args.tui:

@@ -422,14 +422,25 @@ class IpcOutputAdapter(OutputAdapter):
     non-interactive contexts, return safe defaults immediately.
     """
 
-    def __init__(self, transport=None) -> None:
+    def __init__(self, transport=None, ask_handler=None) -> None:
+        """Create the adapter.
+
+        Parameters:
+            transport: Transport  - Where OUTPUT events are sent. Defaults to
+                                    a private loopback pair.
+            ask_handler: callable - Optional ``(name, payload) -> value`` used
+                                    to answer interactive ``ask_*`` requests
+                                    (e.g. the server's ``ask_client`` RPC
+                                    relay). When None, requests are answered
+                                    with safe non-interactive defaults.
+        """
         from agent.ipc import loopback_pair
 
         if transport is None:
             transport, _peer = loopback_pair()
         self.transport = transport
-        self._interactive = False
-
+        self.ask_handler = ask_handler
+        self._interactive = ask_handler is not None
     def _send(self, payload) -> None:
         from agent.ipc import Event, Message
 
@@ -470,11 +481,29 @@ class IpcOutputAdapter(OutputAdapter):
         self._output("text", f"[denied] {message}", level="warn")
         return False
 
+    def _ask(self, name, payload):
+        """Route an interactive request to the handler, if configured."""
+        from agent.ipc import ServerRequest
+
+        if self.ask_handler is None:
+            return None
+        return self.ask_handler(ServerRequest(name), payload)
+
     def ask_string(self, message: str, default: str = "") -> str:
+        from agent.ipc import AskStringPayload, ServerRequest
+
+        value = self._ask(ServerRequest.ASK_STRING, AskStringPayload(message=message, default=default))
+        if value is not None:
+            return str(value)
         self._output("text", f"[ask] {message}", level="warn")
         return default
 
     def ask_float(self, message: str, default: float = 0.0) -> float:
+        from agent.ipc import AskFloatPayload, ServerRequest
+
+        value = self._ask(ServerRequest.ASK_FLOAT, AskFloatPayload(message=message, default=default))
+        if value is not None:
+            return float(value)
         self._output("text", f"[ask] {message}", level="warn")
         return default
 
@@ -484,14 +513,37 @@ class IpcOutputAdapter(OutputAdapter):
         options: list[tuple[str, str]],
         default: str | None = None,
     ) -> str:
+        from agent.ipc import AskChoicePayload, ServerRequest
+
+        payload = AskChoicePayload(
+            message=message,
+            options=[[v, l] for v, l in options],
+            default=default or "",
+        )
+        value = self._ask(ServerRequest.ASK_CHOICE, payload)
+        if value is not None:
+            return str(value)
         self._output("text", f"[ask] {message}", level="warn")
         return options[0][0] if options else ""
 
     def ask_confirm(self, message: str, default: bool = False) -> bool:
+        from agent.ipc import ConfirmPayload, ServerRequest
+
+        value = self._ask(ServerRequest.CONFIRM, ConfirmPayload(message=message, default=default))
+        if value is not None:
+            return bool(value)
         self._output("text", f"[ask] {message}", level="warn")
         return default
 
     def run_subprocess(self, cmd: list[str]):
+        from agent.ipc import RunSubprocessPayload, ServerRequest
+
+        value = self._ask(
+            ServerRequest.RUN_SUBPROCESS,
+            RunSubprocessPayload(cmd=list(cmd), cwd=""),
+        )
+        if value is not None:
+            return value
         self._output("text", f"[subprocess denied in non-interactive context] {' '.join(cmd)}", level="err")
         raise RuntimeError("run_subprocess is not available in non-interactive IPC context")
 
