@@ -8,7 +8,7 @@ Provides a full-screen terminal UI with:
   - Text input at the bottom
 
 Coexists with the terminal-based agent (agent/agent.py).
-Launch with: wisemonkey --tui <session>
+Launch with: wmk --tui <session>
 """
 
 

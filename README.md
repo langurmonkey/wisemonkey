@@ -44,7 +44,7 @@ On Linux or macOS, install `uv` and run the agent:
 ```bash
 # Install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
-# Run wisemonkey
+# Run wmk
 uvx wisemonkey
 ```
 
@@ -53,10 +53,10 @@ You can also install it with our script:
 ```bash
 curl -fsSL https://codeberg.org/langurmonkey/wisemonkey/raw/branch/master/install.sh | sh
 ```
-This installs wisemonkey to `~/.local/share/wisemonkey/repository`. It adds a `wisemonkey` binary to `~/.local/bin/wisemonkey`. If you have `~/.local/bin` in your `$PATH`, you can launch the onboarding process to configure the agent interactively:
+This installs wisemonkey to `~/.local/share/wisemonkey/repository`. It adds a `wmk` binary to `~/.local/bin/wmk`. If you have `~/.local/bin` in your `$PATH`, you can launch the onboarding process to configure the agent interactively:
 
 ```bash
-wisemonkey --onboard
+wmk --onboard
 ```
 
 ### Running
@@ -67,9 +67,9 @@ Run the agent with the default session:
 # Using uvx
 uvx wisemonkey
 # If installed, simply do
-wisemonkey
+wmk
 ```
-For the rest of this document, we assume that `wisemonkey` is in your path. You can substitute it with `uvx wisemonkey` if you use the `uvx` method.
+For the rest of this document, we assume that `wmk` is in your path. You can substitute it with `uvx wisemonkey` if you use the `uvx` method.
 
 If you need an API key to access the endpoint, put it in the `.env` file. Wisemonkey looks for the `.env` file in the following locations, in order:
 
@@ -96,12 +96,12 @@ uv build
 # Set API key:
 export OPENAI_API_KEY=your-api-key
 # Run the agent with the default session:
-uv run wisemonkey
+uv run wmk
 ```
 
 ## Configuration
 
-You can configure the agent interactively before the first run with `wisemonkey --onboard`. On first run, the configuration file is created in `$XDG_CONFIG_HOME/wisemonkey/config.yaml` from the default configuration (`config.yaml`) in the root of this repository.
+You can configure the agent interactively before the first run with `wmk --onboard`. On first run, the configuration file is created in `$XDG_CONFIG_HOME/wisemonkey/config.yaml` from the default configuration (`config.yaml`) in the root of this repository.
 
 Additionally, the configuration directory holds the `mcp.json` (see next section), and the `.updates.yml`, which holds information about the last update time and status.
 
@@ -160,21 +160,21 @@ Internally, Wisemonkey uses sessions to separate different memory histories. Ses
 
 ```bash
 # Start in a specific session named 'my-project'
-wisemonkey my-project
+wmk my-project
 ```
 
 The default session's name is `default`, so the following two commands are equivalent:
 ```bash
 # These two commands start the 'default' session
-wisemonkey
-wisemonkey default
+wmk
+wmk default
 ```
 
 You can also list the existing sessions with `-ls`:
 
 ```bash
 # List sessions
-wisemonkey --ls           
+wmk --ls           
 Sessions:
 - my-project - ~/.local/share/wisemonkey/sessions/my-project
 - default - ~/.local/share/wisemonkey/sessions/default

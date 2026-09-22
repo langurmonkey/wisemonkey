@@ -140,7 +140,7 @@ class UpdatesManager:
         install_dir = Path(f"{XDG_DATA}/wisemonkey/repository")
 
         if not install_dir.exists():
-            aprint(f"wisemonkey not installed. Installing to {install_dir}...")
+            aprint(f"wmk not installed. Installing to {install_dir}...")
             subprocess.run(
                 [
                     "bash", "-c",
@@ -152,7 +152,7 @@ class UpdatesManager:
                 check=True,
             )
         else:
-            aprint(f"Updating wisemonkey in {install_dir}...")
+            aprint(f"Updating wmk in {install_dir}...")
             subprocess.run(["git", "pull"], cwd=install_dir, check=True)
             aprint("Update complete.")
 

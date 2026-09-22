@@ -22,7 +22,8 @@ dependencies = [
 ]
 
 [project.scripts]
-wisemonkey = "agent.__main__:main"
+wmk = "agent.__main__:main"
+wisemonkey = "agent.__main__:main"  # deprecated alias
 
 [build-system]
 requires = ["hatchling"]

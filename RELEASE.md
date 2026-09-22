@@ -43,7 +43,7 @@ Stale artifacts in `dist/` will otherwise be re-uploaded, so remove them first:
 
 ```bash
 rm -rf dist/
-uv build           # produces dist/wisemonkey-<version>-py3-none-any.whl + .tar.gz
+uv build           # produces dist/wisemonkey-<version>-py3-none-any.whl + .tar.gz (binary: `wmk`)
 ```
 
 ### 5. Publish to PyPI

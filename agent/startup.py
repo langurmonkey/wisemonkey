@@ -82,7 +82,7 @@ def startup_info(core, output: OutputAdapter):
     output.print(version_str)
     if updates_available:
         output.print(f"   [warn]↳ Updates available![/warn] [time](last check: {d_check})[/time]")
-        output.print("     [weak]run [accent]wisemonkey -u[/accent] to update[/weak]")
+        output.print("     [weak]run [accent]wmk -u[/accent] to update[/weak]")
     elif commit_hash:
         output.print(f"   [dim]✓ Up to date[/dim] [time](last check: {d_check})[/time]")
 

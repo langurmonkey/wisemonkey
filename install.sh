@@ -47,7 +47,7 @@ else
 fi
 
 # Create venv and install with uv
-echo "Installing wisemonkey with uv..."
+echo "Installing wmk with uv..."
 cd "$INSTALL_DIR"
 if [ ! -d ".venv" ]; then
     uv venv
@@ -65,17 +65,17 @@ fi
 
 # Create wrapper script in ~/.local/bin
 mkdir -p "$BIN_DIR"
-cat > "$BIN_DIR/wisemonkey" << WRAPPER
+cat > "$BIN_DIR/wmk" << WRAPPER
 #!/bin/bash
 INSTALL_DIR="$INSTALL_DIR"
 if [ ! -d "\$INSTALL_DIR" ] || [ ! -f "\$INSTALL_DIR/pyproject.toml" ]; then
-    echo "Error: Could not find wisemonkey installation"
+    echo "Error: Could not find wmk installation"
     exit 1
 fi
-WISEMONKEY_INSTALLED=yes exec uv --project "\$INSTALL_DIR/pyproject.toml" run wisemonkey "\$@"
+WISEMONKEY_INSTALLED=yes exec uv --project "\$INSTALL_DIR/pyproject.toml" run wmk "\$@"
 WRAPPER
-chmod +x "$BIN_DIR/wisemonkey"
-echo "Created wrapper: $BIN_DIR/wisemonkey"
+chmod +x "$BIN_DIR/wmk"
+echo "Created wrapper: $BIN_DIR/wmk"
 
 # Ensure ~/.local/bin is in PATH
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
@@ -86,9 +86,9 @@ fi
 
 # Show next steps
 echo ""
-echo "✅ wisemonkey installed successfully!"
+echo "✅ wmk installed successfully!"
 echo ""
 echo "Next steps:"
-echo "  1. Edit config: wisemonkey --edit-config"
-echo "  2. Run: wisemonkey"
-echo "  3. Update: wisemonkey --update"
+echo "  1. Edit config: wmk --edit-config"
+echo "  2. Run: wmk"
+echo "  3. Update: wmk --update"

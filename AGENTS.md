@@ -130,15 +130,15 @@ Configuration lives in `$XDG_CONFIG_HOME/wisemonkey/config.yaml` (created on fir
 - `embedding` — embedding model name and endpoint
 - `agent` — max_turns, system_prompt, max_chat_history, vi_mode, soul_file, global_soul_file, context_files
 
-Run `wisemonkey --onboard` for interactive configuration.
+Run `wmk --onboard` for interactive configuration.
 
 ## Development
 
 - Requires Python 3.13+ and `uv`
 - Dependencies: `uv sync`
-- Run from source: `uv run wisemonkey`
+- Run from source: `uv run wmk`
 - Build: `uv build`
-- Entry point: `agent.__main__:main` → `wisemonkey` CLI command
+- Entry point: `agent.__main__:main` → `wmk` CLI command (with a deprecated `wisemonkey` alias)
 
 ## Type checking
 

@@ -79,7 +79,7 @@ def main():
     parser.add_argument(
         '-u', '--update',
         action='store_true',
-        help='Update wisemonkey from upstream and reinstall',
+        help='Update wmk from upstream and reinstall',
     )
     parser.add_argument(
         '-t', '--tui',
@@ -128,7 +128,7 @@ def main():
         if cool:
             ok(msg)
             newline()
-            print("Start the agent with [accent-bold]wisemonkey \\[session-name][/accent-bold]")
+            print("Start the agent with [accent-bold]wmk \\[session-name][/accent-bold]")
         else:
             err(msg)
 
