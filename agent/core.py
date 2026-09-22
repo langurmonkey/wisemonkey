@@ -271,6 +271,46 @@ class Core:
 
         return "\n".join(parts)
 
+    def get_context_breakdown(self) -> list[tuple[str, int]]:
+        """Break down the full context (system prompt + tool schemas) in tokens.
+
+        Returns a list of ``(name, tokens)`` tuples, one per section of the
+        assembled context, in the same order as ``_build_system_prompt()``
+        plus the tool schemas. Token counts use ``agent.tokens.count_tokens``
+        (exact with tiktoken, chars/4 estimate otherwise).
+        """
+        from agent.tokens import count_tokens
+
+        sections: list[tuple[str, int]] = []
+
+        sections.append(("Base system prompt", count_tokens(self.system_prompt)))
+
+        soul = self._load_soul_files()
+        if soul:
+            sections.append(("Soul files", count_tokens(soul)))
+
+        context = self._load_context_files()
+        if context:
+            sections.append(("Context files (AGENTS.md)", count_tokens(context)))
+
+        memory_text = self.memory.get_formatted(notes=False)
+        if memory_text:
+            sections.append(("Memory (user profile)", count_tokens(memory_text)))
+
+        skills_text = self.skills.load_all()
+        if skills_text:
+            sections.append(("Skills", count_tokens(skills_text)))
+
+        chat_text = self.memory.get_chat_formatted(timestamps=False)
+        if chat_text:
+            sections.append(("Chat history", count_tokens(chat_text)))
+
+        schemas = json.dumps(get_tool_schemas(), indent=2)
+        if schemas:
+            sections.append(("Tool schemas", count_tokens(schemas)))
+
+        return sections
+
     def _stream_handler(self,
                         response,
                         prompt_callback=None,

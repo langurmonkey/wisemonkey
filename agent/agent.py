@@ -217,7 +217,7 @@ class Agent:
 
     def _statusline(self, total_tokens, ntools, total_gen_time):
         length, max, rate = self.core.memory.get_chat_stats()
-        title = f"  {total_gen_time:.1f}s   |   {total_tokens} tokens   |   {ntools} tools   |   Mem: {length}/{max} ({rate:.2f}%)  "
+        title = f"  {total_gen_time:.1f}s   |   {total_tokens} tokens   |   {ntools} tools   |   Mem: {length}/{max} tks ({rate:.2f}%)  "
         self.output.rule(title=title, style="status")
 
     def _cancel_all_spinners(self):
@@ -332,7 +332,7 @@ class Agent:
         model = self.core.config.get("model.name")
         unsafe = self.core.config.get("agent.unsafe", False)
         unsafe_warn = (
-            "  <unsafe-warn>⚠ UNSAFE</unsafe-warn>"
+            "  <unsafe-warn> ⚠ UNSAFE </unsafe-warn>"
             if unsafe else ""
         )
         self._session = PromptSession(
@@ -385,6 +385,8 @@ class Agent:
             if not user_input:
                 continue
 
+            user_input = str(user_input)
+
             # Ctrl+C while a turn is running: cancel the turn (state, not an
             # exception — the core observes it via poll() between chunks).
             if self._turn_in_progress:
@@ -403,6 +405,10 @@ class Agent:
                 else:
                     self.output.err("Empty shell command")
                 continue
+
+            # Conflate ? with help command
+            if user_input == "?":
+                user_input = "/help"
 
             # Process slash commands
             if user_input.startswith("/"):

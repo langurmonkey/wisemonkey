@@ -114,10 +114,13 @@ def startup_info(core, output: OutputAdapter):
         output.print_rich(Panel(Markdown(chat_history),
                                 border_style="output-frame",
                                 title="Previous conversation (last 3 exchanges, truncated)",
-                                subtitle=f"Previous conversation stats: {curr}/{max_sz} - {rate:.2f}%"))
+                                subtitle=f"Previous conversation stats: {curr}/{max_sz} tks - {rate:.2f}%"))
 
     output.newline()
     output.rule()
-    output.info("[weak]Type [accent]/configure[/accent] to configure the agent interactively[/weak]")
-    output.info("[weak]Type [accent]/help[/accent] for command information[/weak]")
+    output.info(" [accent]/[/accent] [weak]slash commands[/weak]")
+    output.info(" [accent]![/accent] [weak]shell command, attach output to context[/weak]")
+    output.info(" [accent]@[/accent] [weak]reference file/directory, attach to context[/weak]")
+    output.info(" [accent]?[/accent] [weak]show help[/weak]")
+    output.info(" [accent]/configure[/accent]  [weak]configure the agent interactively[/weak]")
     output.rule()

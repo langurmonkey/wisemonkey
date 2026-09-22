@@ -931,3 +931,28 @@ def _cmd_attach_image(core, params, output: OutputAdapter | None = None) -> tupl
 )
 def _cmd_help(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
     return True, None, registry.get_commands_str(), None
+
+
+@cmd(
+    "/context",
+    "Show context usage: token breakdown per section of the prompt",
+)
+def _cmd_context(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+    if params:
+        return False, no_params_error, None, None
+
+    sections = core.get_context_breakdown()
+    total = sum(tokens for _, tokens in sections)
+
+    max_tokens = core.config.get("agent.max_chat_history", 80000)
+    rate = (total / max_tokens * 100) if max_tokens else 0.0
+
+    result = f"Context budget (agent.max_chat_history): [accent-bold]{max_tokens}[/accent-bold] tokens\n\n"
+    for name, tokens in sections:
+        pct = (tokens / total * 100) if total else 0.0
+        bar_len = int(pct / 2.5)  # 40-char bar max
+        bar = "█" * bar_len + "·" * (40 - bar_len)
+        result += f"{name:<28} {tokens:>7}  {pct:5.1f}%  [grey39]{bar}[/grey39]\n"
+    result += f"\n{'Total':<28} [accent-bold]{total:>7}[/accent-bold]  {100.0:5.1f}%  of budget: {rate:.2f}%"
+
+    return True, None, result, None
