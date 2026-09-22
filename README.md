@@ -3,6 +3,7 @@
 <p align="center">
 <a href="https://codeberg.org/langurmonkey/wisemonkey/releases"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcodeberg.org%2Fapi%2Fv1%2Frepos%2Flangurmonkey%2Fwisemonkey%2Freleases%2Flatest&query=%24.tag_name&label=latest%20release" alt="Latest release" /></a>
 <a href="https://codeberg.org/langurmonkey/wisemonkey/issues"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcodeberg.org%2Fapi%2Fv1%2Frepos%2Flangurmonkey%2Fwisemonkey%2Fissues&query=%24.length&label=open%20issues" alt="Open issues" /></a>
+<a href="https://pypi.org/project/wisemonkey/"><img src="https://img.shields.io/pypi/v/wisemonkey?label=PyPI" alt="PyPI" /></a>
 <a href="https://opensource.org/licenses/MPL-2.0"><img src="https://img.shields.io/badge/license-MIT-brightgreen.svg" alt="License: MPL2.0" /></a>
 <img alt="Static Badge" src="https://img.shields.io/badge/OS-Linux-blue">
 <img alt="Static Badge" src="https://img.shields.io/badge/OS-macOS-yellow">
@@ -47,6 +48,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # Run wmk
 uvx wisemonkey
 ```
+
+Wisemonkey is available on [PyPI](https://pypi.org/project/wisemonkey/).
 
 You can also install it with our script:
 
