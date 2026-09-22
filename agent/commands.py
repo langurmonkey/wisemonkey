@@ -19,6 +19,7 @@ from pubsub import pub
 from agent.output import get_output_or_ipc
 from agent.utils import resize_image
 from agent.output import OutputAdapter
+from agent.tokens import count_tokens
 
 # Global error messages for commands
 no_params_error = "This command does not take any parameters"
@@ -387,7 +388,8 @@ def _cmd_session_chat_compact(core, params, output: OutputAdapter | None = None)
         return False, no_params_error, None, None
 
     history_text = core.memory.get_chat_formatted()
-    len_before = len(history_text) if history_text else 0
+    chars_before = len(history_text) if history_text else 0
+    tks_before = count_tokens(history_text) if history_text else 0
 
     content = (
         "You are a technical editor. Summarize and compact this conversation as a dense agent briefing. Follow these guidelines:\n"
@@ -412,11 +414,13 @@ def _cmd_session_chat_compact(core, params, output: OutputAdapter | None = None)
         response = core.llm_chat_raw(messages)
 
         summary = response.choices[0].message.content
-        len_after = len(summary)
+        chars_after = len(summary)
+        tks_after = count_tokens(summary)
 
         core.memory.reset_chat_memory(content=[{"role": "summary", "content": summary}])
 
-        return True, f"Memory compacted successfully from {len_before} to {len_after}", None, None
+
+        return True, f"Memory compacted successfully from {chars_before} to {chars_after} chars ({tks_before} -> {tks_after} tks)", None, None
     except Exception as e:
         return False, f"Memory compact operation failed: {e}", None, None
 
