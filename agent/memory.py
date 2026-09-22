@@ -397,6 +397,15 @@ class ChatMemory:
         if content is None:
             content = ""
 
+        # Truncate tool results at storage time so the persisted JSON
+        # is consistent with what actually reaches the model. The token
+        # accounting in _entry_tokens() applies the same truncation, so
+        # this keeps total_tokens accurate without double-counting.
+        if role == "tool_result":
+            limit = _tool_result_limit()
+            if limit > 0 and len(content) > limit:
+                content = content[:limit]
+
         now_utc = datetime.datetime.now(datetime.UTC)
         # Add the new exchange
         entry = {

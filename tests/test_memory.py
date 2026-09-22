@@ -216,10 +216,10 @@ class TestChatMemory(BaseTest):
         cm = ChatMemory(self.session_dir / "big", max_tokens=25000)
         long_result = "z" * 5000
         cm.add_exchange(None, "tool_result", long_result, name="big")
-        result = cm.get_formatted(0, timestamps=False, width=0)
-        assert "[truncated]" in result
-        # Should be far shorter than the original
-        assert len(result) < len(long_result)
+        # Content is truncated at storage time to the config limit (200).
+        stored = cm._exchanges[-1]["content"]
+        assert len(stored) == 200
+        assert stored == "z" * 200
 
     def test_tool_call_counts_extra_tokens(self):
         self.cm.add_exchange(None, "user", "hi")
