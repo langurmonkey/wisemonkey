@@ -356,7 +356,7 @@ class Agent:
         model = self.core.config.get("model.name")
         unsafe = self.core.config.get("agent.unsafe", False)
         unsafe_warn = (
-            HTML('  <unsafe-warn>⚠ UNSAFE MODE</unsafe-warn>')
+            "  <unsafe-warn>⚠ UNSAFE</unsafe-warn>"
             if unsafe else ""
         )
         self._session = PromptSession(
