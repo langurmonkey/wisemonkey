@@ -206,6 +206,34 @@ For now, the configuration file is the same for all sessions.
 
 > Sessions are matched by the directory name in the sessions location (`~/.local/share/wisemonkey/sessions`). You can rename a session by just renaming the directory! 
 
+### Client/server mode
+
+Wisemonkey can run as a client/server split: a **server** owns the session (chat memory, profile, notes, vector store, model connection), and **clients** are thin frontends that connect to it and render the UI.
+
+Start a persistent daemon server with `--server`:
+
+```bash
+# Start a daemon server for the 'default' session
+wmk --server
+# Or for a named session
+wmk --server my-project
+```
+
+The server binds a Unix domain socket at `$XDG_RUNTIME_DIR/wisemonkey/$SESSION.sock` (e.g. `/run/user/1000/wisemonkey/default.sock`) and stays running until stopped.
+
+Any client started afterwards (REPL `wmk` or TUI `wmk --tui`) **tries to attach to an existing daemon for its session first**. If a server is up, the client runs as a thin remote client: turns, slash commands, cancellation, and memory stats all flow over the socket, while shell commands (`!`) run locally and their results are recorded in the server's chat history. If no server is up, the client falls back to the normal mode, where an ephemeral server is spawned for the duration of the client's lifespan.
+
+```bash
+# Terminal 1: start the daemon
+wmk --server my-project
+# Terminal 2: attach to it (same session name!)
+wmk my-project
+```
+
+> Clients attach by **session name**: a client for `session2` will never connect to a daemon running `session1` — it simply starts its own independent session.
+
+This also means several clients can share a single session state through one daemon, and the session's chat history survives client restarts while the daemon keeps running.
+
 ### `vi` mode
 
 You can enable `vi` mode for the current session with the [command](#commands) `/vi on`, or permanently in the [configuration](#configuration).
@@ -288,10 +316,22 @@ Wisemonkey is built to be modular and hackable. Here is an overview of the main 
 ```
 wisemonkey/
 ├── agent/                  # Core agent code.
-│   ├── agent.py            # Main agent loop, prompt handling, key bindings.
+│   ├── agent.py            # REPL frontend: agent loop, prompt handling, key bindings.
+│   ├── tui.py              # Textual TUI frontend.
+│   ├── client.py           # Client-side connection to a daemon server.
+│   ├── server.py           # Daemon server (UDS) owning the session Core.
+│   ├── ipc.py              # IPC protocol: messages, payloads, transports.
+│   ├── emitter.py          # Turn event emitter: core callbacks -> IPC events.
 │   ├── commands.py         # Slash commands (e.g. /embed, /quit).
+│   ├── completion.py       # Smart path completion for the prompt.
+│   ├── at_files.py         # @file/@dir reference expansion.
+│   ├── shellcmd.py         # `!` shell command handling.
+│   ├── startup.py          # Startup banner and info rendering.
+│   ├── tokens.py           # Token counting (tiktoken).
+│   ├── history.py          # Input history handling.
 │   ├── config.py           # Configuration loading and handling.
 │   ├── console.py          # Rich console output with themed formatting.
+│   ├── output.py           # Output adapter protocol (REPL, TUI, IPC).
 │   ├── core.py             # Core agent functions, like API connection and tool calls.
 │   ├── mcp.py              # MCP server support.
 │   ├── memory.py           # Session memory, paste file creation.

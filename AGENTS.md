@@ -9,13 +9,23 @@ Wisemonkey is a simple, extensible CLI AI agent for Linux and macOS terminals. I
 ```
 wisemonkey/
 ├── agent/                  # Core agent code.
-│   ├── agent.py            # Main agent loop, prompt handling, key bindings.
+│   ├── agent.py            # REPL frontend: agent loop, prompt handling, key bindings.
+│   ├── tui.py              # Textual TUI frontend.
+│   ├── client.py           # Client-side connection to a daemon server.
+│   ├── server.py           # Daemon server (UDS) owning the session Core.
+│   ├── ipc.py              # Client/server protocol: messages, payloads, transports.
+│   ├── emitter.py          # Turn event emitter: core callbacks -> IPC events.
 │   ├── commands.py         # Slash commands (e.g. /embed, /quit).
+│   ├── completion.py       # Smart path completion for the prompt.
+│   ├── at_files.py         # @file/@dir reference expansion.
+│   ├── shellcmd.py         # `!` shell command handling.
+│   ├── startup.py          # Startup banner and info rendering.
+│   ├── tokens.py           # Token counting (tiktoken).
+│   ├── history.py          # Input history handling.
 │   ├── config.py           # Configuration loading and handling.
 │   ├── console.py          # Rich console output with themed formatting.
+│   ├── output.py           # Output adapter protocol (REPL, TUI, IPC).
 │   ├── core.py             # Core agent functions, like API connection and tool calls.
-│   ├── emitter.py          # Turn event emitter: core callbacks -> IPC events.
-│   ├── ipc.py              # Client/server protocol: messages, payloads, transports.
 │   ├── mcp.py              # MCP server support.
 │   ├── memory.py           # Session memory, paste file creation.
 │   ├── router.py           # API router implementation for OpenAI, Ollama, and Anthropic.
@@ -66,6 +76,18 @@ Phase 0 of the client/server split (see the `CLIENT_SERVER` session plan). Defin
 - `OutputPayload` carries pre-rendered output (`format`, `level`, `indent`, panel/rule fields) so the server needs no Rich console.
 - `Transport` Protocol (`send`/`recv(timeout)`/`close`/`closed`) with an in-process `LoopbackTransport` / `loopback_pair()` for phase-1 work.
 - `payload_as()` reconstructs a payload dataclass, ignoring unknown keys (forward compatibility).
+
+### Client/server modes (`agent/server.py`, `agent/client.py`, `agent/agent.py`, `agent/tui.py`)
+
+Phase 2/3 of the client/server split. The **server owns the session authoritatively**: `Core`, `ChatMemory`, profile/notes, vector store, tool execution, and persistence all live in the daemon process.
+
+- `wmk --server [session]` runs the daemon: binds a UDS at `$XDG_RUNTIME_DIR/wisemonkey/$SESSION.sock`, serves requests until stopped.
+- Clients (REPL `agent.py`, TUI `tui.py`) try `ServerConnection.connect(session, spawn=False)` at startup. On success they run as thin remote clients (turns via `remote.prompt`, commands via `remote.command`, cancel via `remote.cancel`, memory stats via `MEMORY_STATS`); on failure they fall back to local mode (in-process `Core` + loopback emitter).
+- `ServerConnection` uses a **single reader thread** that dispatches all incoming messages: replies → per-request queues, events → the current turn's `on_event`, server requests → RPC handlers. Never `recv()` from multiple threads.
+- Client requests: `PROMPT`, `COMMAND`, `CANCEL`, `PING`, `MEMORY_STATS`, `RECORD` (records a client-side exchange, e.g. a locally run `!` shell command, into the server's chat history), `SHUTDOWN`.
+- `ServerRequest` RPCs (confirmations, questions, subprocess runs) are relayed to the attached client and answered there; `run_subprocess` executes client-side with full terminal control.
+- In remote mode, frontends build a lightweight stub `Core` (`SimpleNamespace(config=local Config, memory=session-scoped Memory)`) for purely client-side UI concerns (prompt session, completions, paste files, startup banner). The stub never runs turns or persists chat history — the server does.
+- Session matching is by name: a client only attaches to a daemon running the **same session name**; otherwise it starts its own independent session.
 
 ### Turn results and cancellation (`agent/core.py`, `agent/emitter.py`)
 
