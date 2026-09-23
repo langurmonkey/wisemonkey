@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import re
 import threading
+from typing import cast
 
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -31,11 +32,13 @@ from textual.timer import Timer
 from textual.events import Paste as PasteEvent
 
 from agent.core import Core, Stage
+from agent.client import ServerConnection
 from agent.completion import complete_path, _last_token
 from agent.at_files import expand_at_references
 from agent.emitter import TurnEmitter
 from agent.ipc import (
     ContentPayload,
+    HandshakePayload,
     Event,
     ReasoningPayload,
     StageKind,
@@ -278,6 +281,19 @@ class WisemonkeyTui(App):
         self.core: Core | None = None
         self.output: TuiOutputAdapter = TuiOutputAdapter(self)
 
+        # Client/server phase 3: attach to a running daemon server for this
+        # session if one exists; otherwise run in local mode (in-process Core
+        # + loopback emitter).
+        self.remote: ServerConnection | None = None
+        try:
+            conn = ServerConnection.connect(
+                session, spawn=False, config_path=config_path
+            )
+            conn.attach(client="tui")
+            self.remote = conn
+        except Exception:
+            self.remote = None
+
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield RichLog(id="output", highlight=True, markup=True, wrap=True)
@@ -296,23 +312,49 @@ class WisemonkeyTui(App):
         self.sub_title = f"Session: {self.session}"
 
         try:
-            self.core = Core(self.config_path, self.session)
+            if self.remote is not None:
+                # Remote mode: the server owns the real Core. The client
+                # still needs a config and a session-scoped Memory for
+                # purely local UI concerns (status bar, completions,
+                # history, paste files).
+                from types import SimpleNamespace
+                from agent.config import Config as _Config
+                from agent.memory import Memory as _Memory
+                cfg = _Config()
+                cfg.load(self.config_path)
+                self.core = cast(
+                    Core,
+                    SimpleNamespace(
+                        config=cfg, memory=_Memory(session=self.session)
+                    ),
+                )
+            else:
+                self.core = Core(self.config_path, self.session)
         except Exception as e:
             self.output._write(f"[err]Agent initialisation failed: {e}[/]")
             return
 
-        # Event emitter (phase 1 of the client/server split): core callbacks
-        # are translated into IPC events on a loopback transport and rendered
-        # by an event pump running on a background thread.
-        transport, peer = loopback_pair()
-        self.emitter = TurnEmitter(transport=transport)
-        self._event_peer = peer
-        self._event_thread: threading.Thread | None = None
-        self._events_running = False
-        self.start_events()
+        if self.remote is None:
+            # Event emitter (phase 1 of the client/server split): core callbacks
+            # are translated into IPC events on a loopback transport and rendered
+            # by an event pump running on a background thread.
+            transport, peer = loopback_pair()
+            self.emitter = TurnEmitter(transport=transport)
+            self._event_peer = peer
+            self._event_thread: threading.Thread | None = None
+            self._events_running = False
+            self.start_events()
 
         # Render startup info via the shared module
         startup_info(self.core, self.output)
+        if self.remote is not None:
+            handshake = cast(HandshakePayload, self.remote.handshake)
+            self.output.print(
+                f"[server]Attached to daemon server for session "
+                f"[accent-bold]{handshake.session}[/accent-bold] "
+                f"(pid {handshake.server_pid}, model [accent]{handshake.model}[/accent])[/server]"
+            )
+            self.output.newline()
         self._update_status()
 
         # Stream buffers: accumulate content until a newline is hit
@@ -338,6 +380,7 @@ class WisemonkeyTui(App):
 
         self._cancel_event = threading.Event()
         self._turn_active = False
+        self._last_response = ""
 
     # ── event handling (IPC phase 1) ────────────────────────────────────────
 
@@ -550,6 +593,36 @@ class WisemonkeyTui(App):
     @work(thread=True, exit_on_error=False)
     def _run_command_in_thread(self, command: Command, params: list[str]) -> None:
         """Run a slash command on a worker thread."""
+        if self.remote is not None:
+            # Remote mode: execute the command on the daemon server.
+            try:
+                result = self.remote.command(
+                    f"{command.name} {' '.join(params)}".strip()
+                )
+            except Exception as e:
+                self.output.err(f"Command failed: {e}")
+                return
+            if result.should_exit:
+                self.output.print("[bold]Goodbye![/bold]")
+                self.call_from_thread(self.exit)
+                return
+            if result.ok:
+                if result.content or result.markdown:
+                    cont = result.content if result.content else Markdown(result.markdown)
+                    panel = Panel(cont,
+                                border_style="output-frame",
+                                title=f"{result.command}",
+                                subtitle=f"{result.command}",
+                                highlight=True)
+                    self.output.print_rich(panel)
+                if result.msg:
+                    self.output.ok(result.msg)
+            else:
+                if result.msg:
+                    self.output.err(result.msg)
+            self.call_from_thread(self._update_status)
+            return
+
         ok_flag, msg, content, md, should_exit = registry.execute(
             self.core, command, params, self._prompt_ui
         )
@@ -602,6 +675,9 @@ class WisemonkeyTui(App):
 
     def action_cancel_turn(self) -> None:
         """Signal the running worker thread to cancel the current turn."""
+        if self.remote is not None:
+            self.remote.cancel("user")
+            return
         if self._cancel_event:
             self._cancel_event.set()
 
@@ -677,10 +753,19 @@ class WisemonkeyTui(App):
             self.output.err("Core not initialised")
             return
 
-        from agent.shellcmd import append_to_memory, run_shell_command
+        from agent.shellcmd import run_shell_command
 
         result = run_shell_command(command, self.output)
-        append_to_memory(self.core, command, result)
+        if self.remote is not None:
+            # Remote mode: record the exchange in the server's chat history.
+            try:
+                self.remote.record("user", result.get("_chat_content", ""))
+            except Exception as e:
+                self.output.err(f"Could not record command in server history: {e}")
+        else:
+            from agent.shellcmd import append_to_memory
+
+            append_to_memory(self.core, command, result)
 
     def set_special_suggestions(self, sp: list[str] | None):
         inp = self.query_one("#input", _PromptInput)
@@ -707,20 +792,33 @@ class WisemonkeyTui(App):
         try:
             max_at = self.core.config.get("agent.at_file_max_chars", 8000)
             prompt = expand_at_references(user_input, max_at) if max_at > 0 else user_input
-            result = self.core.run_turn(
-                prompt,
-                self.emitter.reasoning,
-                self.emitter.content,
-                self.emitter.tool_call,
-                self.emitter.cancelled,
-                self.emitter.error,
-                tool_result_callback=self.emitter.tool_result,
-                poll=poll,
-            )
-            self.call_from_thread(
-                self._finish_turn, result.response, result.total_tokens,
-                result.n_tools, result.gen_time, result.cancelled
-            )
+            if self.remote is not None:
+                # Remote mode: run the turn on the daemon server, streaming
+                # events through the same UI handlers via call_from_thread.
+                def on_event(message) -> None:
+                    self.call_from_thread(self._handle_event, message)
+
+                end = self.remote.prompt(text=prompt, on_event=on_event)
+                self._last_response = end.response
+                self.call_from_thread(
+                    self._finish_turn, end.response, end.total_tokens,
+                    end.n_tools, end.gen_time, end.cancelled
+                )
+            else:
+                result = self.core.run_turn(
+                    prompt,
+                    self.emitter.reasoning,
+                    self.emitter.content,
+                    self.emitter.tool_call,
+                    self.emitter.cancelled,
+                    self.emitter.error,
+                    tool_result_callback=self.emitter.tool_result,
+                    poll=poll,
+                )
+                self.call_from_thread(
+                    self._finish_turn, result.response, result.total_tokens,
+                    result.n_tools, result.gen_time, result.cancelled
+                )
         except Exception as e:
             self.output.err(f"Error: {e}")
         finally:
@@ -786,15 +884,20 @@ class WisemonkeyTui(App):
             return
 
         if self.core:
-            length, max_sz, rate = self.core.memory.get_chat_stats()
+            if self.remote is not None:
+                length, max_sz, rate = self.remote.memory_stats()
+            else:
+                length, max_sz, rate = self.core.memory.get_chat_stats()
             label = f"{gen_time:.1f}s  |  {tokens} tokens  |  {ntools} tools  |  Mem: {length}/{max_sz} tks ({rate:.2f}%)"
             self.output.newline()
             self.output.rule(style="agent", title=label)
 
         if self.core and self.core.config.get("agent.markdown", False):
-            # Print markdown
-            md = self.core.memory.get_chat_unformatted()[-1]['content']
-            md = Panel(Markdown(md),
+            if self.remote is not None and not result_cancelled:
+                md_text = self._last_response
+            else:
+                md_text = self.core.memory.get_chat_unformatted()[-1]['content']
+            md = Panel(Markdown(md_text),
                         border_style="output-frame",
                         title=f"Markdown",
                         subtitle=f"Markdown",
@@ -805,6 +908,11 @@ class WisemonkeyTui(App):
 
     def on_exit(self) -> None:
         """Persist memory and shut down before quitting."""
-        if self.core:
+        if self.core and self.remote is None:
             self.core.save_memory()
             self.core.shutdown()
+        if self.remote is not None:
+            try:
+                self.remote.close()
+            except Exception:
+                pass

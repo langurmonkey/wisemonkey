@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 import traceback
+from typing import cast
 from pathlib import Path
 
 from agent.commands import registry
@@ -36,7 +37,9 @@ from agent.ipc import (
     Event,
     HandshakePayload,
     Message,
+    MemoryStatsPayload,
     PingPayload,
+    RecordPayload,
     PromptPayload,
     ProtocolError,
     ReplyPayload,
@@ -184,6 +187,21 @@ class WisemonkeyServer:
         elif name == ClientRequest.PING:
             payload = payload_as(PingPayload, message)
             self._send(Message.response(message.id, payload))
+        elif name == ClientRequest.MEMORY_STATS:
+            used, max_tokens, fill_rate = cast(Core, self.core).memory.get_chat_stats()
+            self._send(
+                Message.response(
+                    message.id,
+                    MemoryStatsPayload(
+                        used=used, max_tokens=max_tokens, fill_rate=fill_rate
+                    ),
+                )
+            )
+        elif name == ClientRequest.RECORD:
+            payload = payload_as(RecordPayload, message)
+            core = cast(Core, self.core)
+            core.memory.add_chat_exchange(core, payload.role, payload.content)
+            self._send(Message.response(message.id, ReplyPayload(ok=True)))
         elif name == ClientRequest.PROMPT:
             self._handle_prompt(message)
         elif name == ClientRequest.COMMAND:

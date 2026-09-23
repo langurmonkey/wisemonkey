@@ -6,6 +6,7 @@ handling to the core.
 
 import time
 import threading
+from typing import Any, Callable, cast
 
 from rich.prompt import Prompt
 from rich.markdown import Markdown
@@ -27,6 +28,8 @@ from agent.ipc import (
     ToolResultPayload,
     loopback_pair,
     payload_as,
+    LoopbackTransport,
+    TransportClosed,
 )
 from agent.commands import registry
 from agent.utils import add_command, collapse_none_dicts, format_tool_args
@@ -60,12 +63,45 @@ PASTE_THRESHOLD = 1500
 
 class Agent:
     def __init__(self, config_path=None, session='default'):
-        self.core = Core(config_path, session)
+        self.session = session
         self.spinner_prompt = None
         self.spinner_thinking = None
         self._last_ctrl_c_time = 0  # Timestamp of last Control+C for double-tap detection
         self.output = RichOutputAdapter()
         set_output(self.output)
+        self._turn_in_progress = False
+
+        # Client/server phase 3: if a daemon server is already running for
+        # this session, attach to it and run as a thin remote client. If not,
+        # fall back to the local mode (Core in-process, loopback emitter).
+        self.remote = None
+        try:
+            from agent.client import ServerConnection
+            conn = ServerConnection.connect(
+                session, spawn=False, config_path=config_path
+            )
+            conn.attach(client="cli")
+            self.remote: ServerConnection | None = conn
+        except Exception:
+            self.remote = None
+
+        if self.remote is not None:
+            # Remote mode: the server owns the real Core. The client still
+            # needs a config and a session-scoped Memory for purely local UI
+            # concerns (prompt session, completions, paste files, history).
+            from types import SimpleNamespace
+            from agent.config import Config as _Config
+            from agent.memory import Memory as _Memory
+            cfg = _Config()
+            cfg.load(config_path)
+            self.core = cast(Core, SimpleNamespace(config=cfg, memory=_Memory(session=session)))
+            self.emitter = cast(TurnEmitter, None)
+            self._event_peer = cast(LoopbackTransport, None)
+            self._event_thread = None
+            self._events_running = False
+            return
+
+        self.core = Core(config_path, session)
         # Event emitter (phase 1 of the client/server split): core callbacks
         # are translated into IPC events on a loopback transport and dispatched
         # by an event pump running on a background thread.
@@ -74,7 +110,6 @@ class Agent:
         self._event_peer = peer
         self._event_thread = None
         self._events_running = False
-        self._turn_in_progress = False
         pub.subscribe(self._create_prompt_session, "prompt-update")
 
     # ── event handling (IPC phase 1) ────────────────────────────────────────
@@ -216,7 +251,10 @@ class Agent:
             self.output.ok(f"Tool {tool_name} finished in {duration:.1f}s")
 
     def _statusline(self, total_tokens, ntools, total_gen_time):
-        length, max, rate = self.core.memory.get_chat_stats()
+        if self.remote is not None:
+            length, max, rate = self.remote.memory_stats()
+        else:
+            length, max, rate = self.core.memory.get_chat_stats()
         title = f"  {total_gen_time:.1f}s   |   {total_tokens} tokens   |   {ntools} tools   |   Mem: {length}/{max} tks ({rate:.2f}%)  "
         self.output.rule(title=title, style="status")
 
@@ -356,6 +394,10 @@ class Agent:
         
     def run_interactive(self):
         """Run the agent in interactive mode."""
+
+        if self.remote is not None:
+            self._run_interactive_remote()
+            return
 
         startup_info(self.core, self.output)
 
@@ -517,3 +559,197 @@ class Agent:
             self.stop_events()
             self.core.save_memory()
             self.core.shutdown()
+        if self.remote is not None:
+            self.remote.close()
+
+    # ── remote (daemon) mode ────────────────────────────────────────────────
+
+    def _run_interactive_remote(self):
+        """Run the REPL against a remote daemon server."""
+        from agent.client import ServerConnection
+        from agent.ipc import HandshakePayload
+
+        remote = cast(ServerConnection, self.remote)
+        handshake = cast(HandshakePayload, remote.handshake)
+        # Startup banner: reuse the standard one, but with server-side
+        # memory stats (the client's stub Memory has no chat history).
+        startup_info(self.core, self.output)
+        remote_stats = remote.memory_stats()
+        self.output.print(
+            f"[server]Attached to daemon server for session "
+            f"[accent-bold]{handshake.session}[/accent-bold] "
+            f"(pid {handshake.server_pid}, model [accent]{handshake.model}[/accent])[/server]"
+        )
+        self.output.newline()
+
+        if _HAS_PROMPT_TOOLKIT:
+            self._create_prompt_session()
+
+            def get_input():
+                return str(self._session.prompt()).strip()
+        else:
+            def get_input():
+                return Prompt.ask(
+                    prompt="[user]⨯ [bold]You[/bold] ⨯[/user]\n❯",
+                    console=self.output._console,
+                )
+
+        # Background thread answering ServerRequest RPCs (confirmations,
+        # questions, subprocess runs) relayed by the server.
+        self._remote_stop = False
+        rpc_thread = threading.Thread(
+            target=self._remote_serve_requests, name="wisemonkey-rpc", daemon=True
+        )
+        rpc_thread.start()
+
+        try:
+            while True:
+                try:
+                    user_input = get_input()
+                except (EOFError, KeyboardInterrupt):
+                    self.output.print(txt_goodbye)
+                    break
+
+                if not user_input:
+                    continue
+
+                if self._turn_in_progress:
+                    remote.cancel("user")
+                    continue
+
+                if user_input.startswith("!"):
+                    from agent.shellcmd import run_shell_command
+
+                    command = user_input[1:].strip()
+                    if command:
+                        # Run locally with full terminal control, then record
+                        # the exchange in the server's chat history.
+                        result = run_shell_command(command, self.output)
+                        try:
+                            remote.record("user", result.get("_chat_content", ""))
+                        except Exception as e:
+                            self.output.err(
+                                f"Could not record command in server history: {e}"
+                            )
+                        self.output.newline()
+                    else:
+                        self.output.err("Empty shell command")
+                    continue
+
+                if user_input == "?":
+                    user_input = "/help"
+
+                if user_input.startswith("/"):
+                    try:
+                        result = remote.command(user_input)
+                    except TransportClosed:
+                        self.output.err("Connection to server lost.")
+                        self.output.print(txt_goodbye)
+                        break
+                    if result.should_exit:
+                        self.output.print(txt_goodbye)
+                        break
+                    if result.ok:
+                        if result.content or result.markdown:
+                            cont = (
+                                result.content
+                                if result.content
+                                else Markdown(result.markdown)
+                            )
+                            self.output.print_rich(
+                                Panel(
+                                    cont,
+                                    border_style="output-frame",
+                                    title=f"{result.command}",
+                                    subtitle=f"{result.command}",
+                                    highlight=True,
+                                )
+                            )
+                        if result.msg:
+                            self.output.ok(result.msg)
+                        self.output.newline()
+                    else:
+                        if result.msg:
+                            self.output.err(result.msg)
+                    continue
+
+                self.output.newline()
+                self.output.rule(style="agent")
+                self.output.print(
+                    f"[agent]⨯ [bold]Wisemonkey[/bold] ⨯ [/agent]  "
+                    f"[accent]⇒ {handshake.model}[/accent]"
+                )
+                self.output.print("  [kbd]Ctrl[/kbd]+[kbd]C[/kbd]: Cancel turn\n")
+                self._turn_in_progress = True
+                try:
+                    end = remote.prompt(text=user_input, on_event=self._handle_event)
+                    self.output.newline()
+                    if not end.cancelled:
+                        self._statusline(
+                            end.total_tokens, end.n_tools, end.gen_time
+                        )
+                        self.output.newline()
+                        self.output.newline()
+
+                        # Markdown summary (same as local mode), using the
+                        # response carried in the turn-end payload.
+                        if self.core.config.get("agent.markdown", False):
+                            md = Panel(
+                                Markdown(end.response),
+                                border_style="output-frame",
+                                title="Markdown",
+                                subtitle="Markdown",
+                                highlight=True,
+                            )
+                            self.output.print_rich(md)
+                            self._statusline(
+                                end.total_tokens, end.n_tools, end.gen_time
+                            )
+                            self.output.newline()
+                            self.output.newline()
+                except Exception as e:
+                    self._cancel_all_spinners()
+                    self.output.err(f"Error sending prompt: {e}")
+                finally:
+                    self._turn_in_progress = False
+                    self._cancel_all_spinners()
+        finally:
+            self._remote_stop = True
+            remote.close()
+
+    def _remote_serve_requests(self):
+        """Answer ServerRequest RPCs from the daemon until shutdown."""
+        from agent.client import _PAYLOAD_TYPES, ServerConnection
+        from agent.ipc import ServerRequest, ReplyPayload, payload_as
+
+        def handle_confirm(payload):
+            return self.output.ask_confirm(payload.message, payload.default)
+
+        def handle_ask_string(payload):
+            return self.output.ask_string(payload.message, payload.default)
+
+        def handle_ask_float(payload):
+            return self.output.ask_float(payload.message, payload.default)
+
+        def handle_ask_choice(payload):
+            return self.output.ask_choice(
+                payload.message,
+                [(o[0], o[1]) for o in payload.options],
+                payload.default or None,
+            )
+
+        def handle_run_subprocess(payload):
+            # Client-local: run with full terminal control here.
+            import subprocess
+
+            return subprocess.run(payload.cmd)
+
+        handlers: dict[ServerRequest, Callable[[Any], Any]] = {
+            ServerRequest.CONFIRM: handle_confirm,
+            ServerRequest.ASK_STRING: handle_ask_string,
+            ServerRequest.ASK_FLOAT: handle_ask_float,
+            ServerRequest.ASK_CHOICE: handle_ask_choice,
+            ServerRequest.RUN_SUBPROCESS: handle_run_subprocess,
+        }
+        remote = cast(ServerConnection, self.remote)
+        remote.serve_requests(handlers, should_stop=lambda: self._remote_stop)

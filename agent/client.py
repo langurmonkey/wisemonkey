@@ -12,9 +12,11 @@ spawns a server process when none is running and waits for its socket.
 from __future__ import annotations
 
 import os
+import queue
 import signal
 import subprocess
 import sys
+import threading
 import time
 from typing import Any, Callable
 
@@ -29,7 +31,9 @@ from agent.ipc import (
     Event,
     HandshakePayload,
     Message,
+    MemoryStatsPayload,
     PingPayload,
+    RecordPayload,
     PromptPayload,
     ReplyPayload,
     ServerRequest,
@@ -48,6 +52,18 @@ class ServerConnection:
     def __init__(self, transport: UnixTransport) -> None:
         self.transport = transport
         self.handshake: HandshakePayload | None = None
+        self._pending: dict[str, queue.Queue[Message | None]] = {}
+        self._on_event: Callable[[Message], None] | None = None
+        self._req_handlers: dict[ServerRequest, Callable[[Any], Any]] = {}
+        self._stop = False
+        # Single reader thread: all messages from the server are received
+        # here and dispatched (replies -> waiters, events -> callback,
+        # server requests -> handlers). Concurrent recv from multiple
+        # threads would steal each other's messages.
+        self._reader = threading.Thread(
+            target=self._read_loop, name="wisemonkey-client-reader", daemon=True
+        )
+        self._reader.start()
 
     # ── connection management ───────────────────────────────────────────────
 
@@ -88,22 +104,64 @@ class ServerConnection:
     def _request(self, name: ClientRequest, payload: Any = None) -> Message:
         """Send a request and wait for its reply."""
         request = Message.request(name, payload)
-        self.transport.send(request)
+        q: queue.Queue[Message | None] = queue.Queue()
+        self._pending[request.id] = q
+        try:
+            self.transport.send(request)
+            while True:
+                reply = q.get(timeout=600)
+                if reply is None:
+                    raise TransportClosed("Connection closed while waiting for reply")
+                if reply.reply_to == request.id:
+                    return reply
+        finally:
+            self._pending.pop(request.id, None)
+
+    # ── reader thread ────────────────────────────────────────────────────────
+
+    def _read_loop(self) -> None:
+        """Receive all server messages and dispatch them."""
         while True:
-            reply = self.transport.recv(timeout=600)
-            if reply is None:
+            try:
+                message = self.transport.recv(timeout=0.2)
+            except TransportClosed:
+                break
+            if message is None:
                 continue
-            if reply.reply_to == request.id:
-                return reply
-            # Not our reply (e.g. an interleaved event) — queue it for the
-            # event consumer.
-            self._on_early_event(reply)
+            if message.reply_to and message.reply_to in self._pending:
+                self._pending[message.reply_to].put(message)
+            elif message.is_request:
+                self._dispatch_server_request(message)
+            else:
+                if self._on_event is not None:
+                    self._on_event(message)
+
+        # Connection gone: wake up all waiters with None.
+        for q in self._pending.values():
+            q.put(None)
+        self._pending.clear()
+
+    def _dispatch_server_request(self, message: Message) -> None:
+        try:
+            name = ServerRequest(message.name)
+        except ValueError:
+            return
+        handler = self._req_handlers.get(name)
+        if handler is None:
+            self.transport.send(
+                Message.error(message.id, f"No handler for {name}")
+            )
+            return
+        payload = _PAYLOAD_TYPES[name]
+        value = handler(payload_as(payload, message))
+        self.transport.send(
+            Message.response(message.id, ReplyPayload(value=value))
+        )
 
     def _on_early_event(self, message: Message) -> None:
         """Hook for events arriving while waiting for a reply."""
-        self._early_events.append(message)
-
-    _early_events: list[Message] = []
+        if self._on_event is not None:
+            self._on_event(message)
 
     def attach(self, client: str = "cli", capabilities: list[str] | None = None) -> HandshakePayload:
         reply = self._request(
@@ -123,18 +181,32 @@ class ServerConnection:
         reply = self._request(ClientRequest.PING, PingPayload(nonce="x"))
         return reply.kind == "response"
 
+    def memory_stats(self) -> tuple[int, int, float]:
+        """Return (used, max, fill_rate) chat-memory tokens from the server."""
+        reply = self._request(ClientRequest.MEMORY_STATS)
+        if reply.kind != "response":
+            return 0, 0, 0.0
+        payload = payload_as(MemoryStatsPayload, reply)
+        return payload.used, payload.max_tokens, payload.fill_rate
+
     def prompt(self, text: str, on_event: Callable[[Message], None] | None = None) -> TurnEndPayload:
         """Run a turn on the server, streaming events to *on_event*."""
         request = Message.request(ClientRequest.PROMPT, PromptPayload(text=text))
-        self.transport.send(request)
-        while True:
-            message = self.transport.recv(timeout=600)
-            if message is None:
-                continue
-            if message.reply_to == request.id:
-                return payload_as(TurnEndPayload, message)
-            if message.is_event and on_event is not None:
-                on_event(message)
+        q: queue.Queue[Message | None] = queue.Queue()
+        self._pending[request.id] = q
+        prev_on_event = self._on_event
+        self._on_event = on_event
+        try:
+            self.transport.send(request)
+            while True:
+                message = q.get(timeout=600)
+                if message is None:
+                    raise TransportClosed("Connection closed during turn")
+                if message.reply_to == request.id:
+                    return payload_as(TurnEndPayload, message)
+        finally:
+            self._pending.pop(request.id, None)
+            self._on_event = prev_on_event
 
     def command(self, raw: str) -> CommandResultPayload:
         """Run a slash command server-side."""
@@ -152,6 +224,10 @@ class ServerConnection:
         self.transport.send(
             Message.request(ClientRequest.CANCEL, CancelPayload(reason=reason))
         )
+
+    def record(self, role: str, content: str) -> None:
+        """Record a client-side exchange into the server's chat history."""
+        self._request(ClientRequest.RECORD, RecordPayload(role=role, content=content))
 
     def shutdown(self) -> None:
         """Ask the server to shut down."""
@@ -176,37 +252,19 @@ class ServerConnection:
         handlers: dict[ServerRequest, Callable[[Any], Any]],
         should_stop: Callable[[], bool] | None = None,
     ) -> None:
-        """Answer ServerRequest RPCs on a background thread.
+        """Register *handlers* for server requests until shutdown.
 
-        *handlers* maps request kinds to functions taking the payload and
-        returning the reply value.
+        Requests are dispatched by the single reader thread, so this just
+        installs the handlers and blocks until the connection closes or
+        *should_stop* becomes true.
         """
+        self._req_handlers = handlers
         while True:
             if should_stop is not None and should_stop():
                 return
-            try:
-                message = self.transport.recv(timeout=0.2)
-            except TransportClosed:
+            if not self._reader.is_alive():
                 return
-            if message is None:
-                continue
-            if not message.is_request:
-                continue
-            try:
-                name = ServerRequest(message.name)
-            except ValueError:
-                continue
-            handler = handlers.get(name)
-            if handler is None:
-                self.transport.send(
-                    Message.error(message.id, f"No handler for {name}")
-                )
-                continue
-            payload = _PAYLOAD_TYPES[name]
-            value = handler(payload_as(payload, message))
-            self.transport.send(
-                Message.response(message.id, ReplyPayload(value=value))
-            )
+            time.sleep(0.2)
 
 
 from agent.ipc import (

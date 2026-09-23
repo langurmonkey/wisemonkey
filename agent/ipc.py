@@ -179,6 +179,8 @@ class ClientRequest(StrEnum):
     INJECT = "inject"
     CANCEL = "cancel"
     PING = "ping"
+    MEMORY_STATS = "memory_stats"
+    RECORD = "record"
     SHUTDOWN = "shutdown"
 
 
@@ -286,6 +288,27 @@ class TurnStartPayload:
 
     turn_id: str = ""
     prompt: str = ""
+
+
+@dataclass
+class RecordPayload:
+    """Client -> server ``record`` request.
+
+    Records a client-side exchange (e.g. a locally executed ``!`` shell
+    command) into the server's chat history without running a turn.
+    """
+
+    role: str = "user"
+    content: str = ""
+
+
+@dataclass
+class MemoryStatsPayload:
+    """Chat-memory usage of the server session (tokens)."""
+
+    used: int = 0
+    max_tokens: int = 0
+    fill_rate: float = 0.0
 
 
 @dataclass
