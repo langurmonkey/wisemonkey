@@ -123,6 +123,60 @@ class TestRunTurnReturnValues(unittest.TestCase):
         assert "maximum number of turns" in result.response
         assert isinstance(result, TurnResult)
 
+    def test_max_tool_calls_stops_execution(self):
+        """Hitting the tool-call cap must skip execution and let the model answer."""
+        tool_call = {"id": "1", "type": "function",
+                     "function": {"name": "t", "arguments": "{}"}}
+        replies = [
+            {"text": "narrate", "tool_calls": [tool_call]},
+            {"text": "narrate2", "tool_calls": [tool_call]},
+            {"text": "final answer"},
+        ]
+        core = make_core(replies, config=_Config({"agent.max_tool_calls": 1}))
+        with patch("agent.core.execute_tool", return_value="ok") as ex:
+            result = core.run_turn("go")
+        assert result.response == "final answer"
+        assert result.n_tools == 1  # only the first batch executed
+        ex.assert_called_once()
+        # The limit note was injected into the conversation and history
+        roles = [e["role"] for e in core.memory.exchanges]
+        assert "user" in roles
+        assert any(
+            "Tool call limit reached" in e["content"]
+            for e in core.memory.exchanges if e["role"] == "user"
+        )
+
+    def test_max_tool_calls_zero_is_unlimited(self):
+        """Default (0) must not restrict tool calls."""
+        tool_call = {"id": "1", "type": "function",
+                     "function": {"name": "t", "arguments": "{}"}}
+        replies = [
+            {"text": "narrate", "tool_calls": [tool_call]},
+            {"text": "answer"},
+        ]
+        core = make_core(replies, config=_Config({"agent.max_tool_calls": 0}))
+        with patch("agent.core.execute_tool", return_value="ok") as ex:
+            result = core.run_turn("go")
+        assert result.response == "answer"
+        assert result.n_tools == 1
+        ex.assert_called_once()
+
+    def test_max_tool_calls_partial_batch_blocked(self):
+        """A batch that would exceed the cap is blocked entirely (no partial execution)."""
+        tool_call = {"id": "1", "type": "function",
+                     "function": {"name": "t", "arguments": "{}"}}
+        replies = [
+            {"text": "narrate", "tool_calls": [tool_call]},
+            {"text": "narrate2", "tool_calls": [tool_call, tool_call]},
+            {"text": "final"},
+        ]
+        core = make_core(replies, config=_Config({"agent.max_tool_calls": 2}))
+        with patch("agent.core.execute_tool", return_value="ok") as ex:
+            result = core.run_turn("go")
+        assert result.response == "final"
+        assert result.n_tools == 1  # second batch of 2 would exceed cap of 2
+        ex.assert_called_once()
+
 
 class TestCancellation(unittest.TestCase):
     """Poll-driven cancellation must not persist a partial answer."""

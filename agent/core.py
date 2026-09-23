@@ -668,6 +668,22 @@ class Core:
                     # Record intermediate assistant narration (if any)
                     if response_text:
                         self.memory.add_chat_exchange(self, "assistant", response_text)
+
+                    # Per-turn tool call cap: if executing all of these would
+                    # exceed the limit, tell the model to stop and answer.
+                    max_tool_calls = self.config.get("agent.max_tool_calls", 0)
+                    if max_tool_calls > 0 and n_tools + len(tool_calls) > max_tool_calls:
+                        note = (
+                            f"Tool call limit reached "
+                            f"(agent.max_tool_calls = {max_tool_calls}). "
+                            "No further tools will be executed this turn. "
+                            "Answer the user's request with the information "
+                            "you already have."
+                        )
+                        self.messages.append({"role": "user", "content": note})
+                        self.memory.add_chat_exchange(self, "user", note)
+                        continue
+
                     n_tools += self._tool_calls(tool_calls, tool_callback, tool_result_callback)
                     continue  # Loop back to LLM with tool results
 
