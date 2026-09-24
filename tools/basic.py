@@ -2,27 +2,14 @@
 
 Basic example tools for Wisemonkey.
 
-Contains 2 tools:
+Contains 3 tools:
 
-- Echo: echoes a message
+- Datetime: returns the current date and time
 - List-skills: returns a list with all the skills
+- Read-skill: reads the full content of a skill markdown
 """
 
 from agent.tools import tool
-
-@tool(
-    name="echo",
-    description="Echo back the provided text.\nUseful for testing.",
-    parameters={
-      "type": "object",
-      "properties": {
-          "text": {"type": "string", "description": "Text to echo back"},
-      },
-      "required": ["text"],
-    })
-def echo_handler(args):
-    """Echo back the input text."""
-    return {"result": args.get("text", "")}
 
 @tool(
     name="datetime",
