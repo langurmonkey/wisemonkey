@@ -93,7 +93,7 @@ class Core:
             self.initialize_mcp()
 
             # Initialize memory
-            max_chat_history = self.config.get("agent.max_chat_history", 80000)
+            max_chat_history = self.config.get("agent.max_chat_history", 150000)
             self.memory = Memory(max_chat_history=max_chat_history, session=session)
 
             # Initialize skills (can be disabled via config)
@@ -131,9 +131,46 @@ class Core:
         self.mcp.start_all()
 
     def initialize_router(self):
-        """Initialize the model router."""
+        """Initialize the model router from the current in-memory config."""
         self.router = ModelRouter(self.config)
         return self.router.initialize()
+
+    def reload_config(self) -> tuple[bool, str | None]:
+        """Reload the edited config file and refresh config-derived Core state."""
+        previous_config = self.config.to_dict()
+        previous_router = getattr(self, "router", None)
+        try:
+            self.config.reload()
+            ok, message = self.initialize_router()
+        except Exception as exc:
+            ok, message = False, str(exc)
+
+        if not ok:
+            self.config._config = previous_config
+            if previous_router is not None:
+                self.router = previous_router
+            else:
+                self.initialize_router()
+            return False, message or "Could not initialize model router from edited config"
+
+        self.system_prompt = self.config.get(
+            "agent.system_prompt",
+            "You are a helpful assistant, expert in many areas of science. "
+            "Respond concisely and to the point. No fluff.",
+        )
+        if hasattr(self, "memory"):
+            self.memory._chat_history.max_tokens = self.config.get(
+                "agent.max_chat_history", 80000
+            )
+            self.memory._chat_history._trim()
+        if hasattr(self, "skills"):
+            self.skills = SkillLoader(enabled=self.config.get("agent.skills", True))
+
+        # These prompt sections are cached, but depend on config paths/content.
+        for cache_name in ("_context_files_cache", "_soul_files_cache"):
+            if hasattr(self, cache_name):
+                delattr(self, cache_name)
+        return True, None
 
     def shutdown(self):
         """Shutdown the agent core."""
@@ -823,6 +860,7 @@ class Core:
             self.memory.add_chat_exchange(
                 self, "tool_call", "", name=tool_name,
                 arguments=tool_args if isinstance(tool_args, str) else json.dumps(tool_args),
+                tool_call_id=tc["id"],
             )
 
             if tool_callback:
@@ -858,6 +896,7 @@ class Core:
                 summary = result.get("text", f"[Tool '{tool_name}' returned an image]")
                 self.memory.add_chat_exchange(
                     self, "tool_result", summary, name=tool_name,
+                    tool_call_id=tc["id"],
                 )
                 if tool_result_callback:
                     tool_result_callback(
@@ -876,6 +915,7 @@ class Core:
                 # Record the tool result to chat history
                 self.memory.add_chat_exchange(
                     self, "tool_result", result_str, name=tool_name,
+                    tool_call_id=tc["id"],
                 )
                 if tool_result_callback:
                     tool_result_callback(

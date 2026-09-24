@@ -318,52 +318,23 @@ class ChatMemory:
 
     def set_exchanges(self, content):
         self._exchanges = content
-        self.total_tokens = sum(self._entry_tokens(e) for e in self._exchanges)
+        self._recount_tokens()
+
+    def _recount_tokens(self) -> None:
+        """Count exactly the rendered history text injected into the prompt."""
+        formatted = self.get_formatted(0, timestamps=False, width=0)
+        self.total_tokens = count_tokens(formatted or "")
 
     @staticmethod
-    def _entry_len(entry) -> int:
-        """Character cost of an exchange, including structured extra fields.
-
-        Tool results are counted as they are actually injected into the
-        system prompt (see ``get_formatted``): truncated to
-        ``_tool_result_limit()`` chars unless full tool results are enabled.
-        """
-        content = entry.get("content") or ""
-        if entry.get("role") == "tool_result":
-            limit = _tool_result_limit()
-            if limit > 0 and len(content) > limit:
-                content = content[:limit]
-        total = len(content)
-        for key, value in entry.items():
-            if key in ("role", "utc", "content"):
-                continue
-            if isinstance(value, str):
-                total += len(value)
-            elif isinstance(value, (list, dict)):
-                total += len(json.dumps(value, default=str))
-        return total
-
-    @classmethod
-    def _entry_tokens(cls, entry) -> int:
-        """Token cost of an exchange, mirroring prompt injection.
-
-        Same truncation rules as ``_entry_len`` (tool results truncated
-        unless full results are enabled), but measured in tokens.
-        """
-        content = entry.get("content") or ""
-        if entry.get("role") == "tool_result":
-            limit = _tool_result_limit()
-            if limit > 0 and len(content) > limit:
-                content = content[:limit]
-        total = count_tokens(content)
-        for key, value in entry.items():
-            if key in ("role", "utc", "content"):
-                continue
-            if isinstance(value, str):
-                total += count_tokens(value)
-            elif isinstance(value, (list, dict)):
-                total += count_tokens(json.dumps(value, default=str))
-        return total
+    def _tool_entries_match(call: dict, result: dict) -> bool:
+        """Return whether adjacent tool-call/result records belong together."""
+        if call.get("role") != "tool_call" or result.get("role") != "tool_result":
+            return False
+        call_id = call.get("tool_call_id")
+        result_id = result.get("tool_call_id")
+        if call_id is not None or result_id is not None:
+            return call_id is not None and call_id == result_id
+        return call.get("name", "unknown") == result.get("name", "unknown")
 
     def _load(self):
         """Load chat history from disk."""
@@ -372,7 +343,7 @@ class ChatMemory:
                 with open(self._chat_path, "r") as f:
                     data = json.load(f)
                     self._exchanges = data.get("exchanges", [])
-                    self.total_tokens = sum(self._entry_tokens(e) for e in self._exchanges)
+                    self._recount_tokens()
             except (json.JSONDecodeError, IOError):
                 pass
     
@@ -397,10 +368,9 @@ class ChatMemory:
         if content is None:
             content = ""
 
-        # Truncate tool results at storage time so the persisted JSON
-        # is consistent with what actually reaches the model. The token
-        # accounting in _entry_tokens() applies the same truncation, so
-        # this keeps total_tokens accurate without double-counting.
+        # Truncate tool results at storage time so persisted JSON stays
+        # bounded. Rendered-history token accounting below uses the same
+        # formatter that injects history into the prompt.
         if role == "tool_result":
             limit = _tool_result_limit()
             if limit > 0 and len(content) > limit:
@@ -415,9 +385,9 @@ class ChatMemory:
         }
         entry.update(extra)
         self._exchanges.append(entry)
-        # Account for the exchange exactly as it will be injected into the
-        # prompt (tool results are truncated unless full results are enabled).
-        self.total_tokens += self._entry_tokens(entry)
+        # The formatter can compact adjacent tool call/result pairs, so count
+        # the complete rendered history rather than summing entry estimates.
+        self._recount_tokens()
         
         # Compact if exceeded
         if self.total_tokens > self.max_tokens:
@@ -430,9 +400,10 @@ class ChatMemory:
     def _trim(self):
         """Remove oldest exchanges until under the token limit."""
 
+        self._recount_tokens()
         while self.total_tokens > self.max_tokens and self._exchanges:
-            oldest = self._exchanges.pop(0)
-            self.total_tokens -= self._entry_tokens(oldest)
+            self._exchanges.pop(0)
+            self._recount_tokens()
         
         # Save after trimming
         self.save()
@@ -449,16 +420,14 @@ class ChatMemory:
         if n <= 0:
             n = len(self._exchanges)
 
-        for i in range(n):
+        for _ in range(n):
             if self._exchanges:
-                out = self._exchanges.pop(0)
-                self.total_tokens -= self._entry_tokens(out)
+                self._exchanges.pop(0)
                 cleared += 1
             else:
-                # We ran out of items
                 break
 
-        # Save after clearing
+        self._recount_tokens()
         self.save()
 
         return cleared
@@ -485,31 +454,43 @@ class ChatMemory:
         lines = []
         # Show most recent exchanges (num_exchanges == 0 -> all)
         history = self._exchanges[-num_exchanges:] if num_exchanges > 0 else self._exchanges
-        for turn in history:
-            t = f"`({turn['utc']})`" if timestamps and 'utc' in turn else ""
+        i = 0
+        while i < len(history):
+            turn = history[i]
             role = turn.get("role", "")
-            content = escape(turn.get("content") or "")
+            t = f"`({turn['utc']})`" if timestamps and "utc" in turn else ""
 
+            # Render adjacent matching tool call/result entries together.
+            if (i + 1 < len(history)
+                    and self._tool_entries_match(turn, history[i + 1])):
+                result = history[i + 1]
+                name = turn.get("name", "unknown")
+                args = escape(str(turn.get("arguments", "")))
+                result_content = escape(result.get("content") or "")
+                if tool_limit > 0 and len(result_content) > tool_limit:
+                    result_content = result_content[:tool_limit] + " …[truncated]"
+                lines.append(
+                    f"## Tool: {name}\n{t}\n"
+                    f"Args: {args}\n"
+                    f"Result: {result_content}\n\n"
+                )
+                i += 2
+                continue
+
+            content = escape(turn.get("content") or "")
             if role == "tool_result":
                 name = turn.get("name", "unknown")
                 if tool_limit > 0 and len(content) > tool_limit:
                     content = content[:tool_limit] + " …[truncated]"
-                header = f"## Tool Result ({name}):"
-                lines.append(f"{header}\n{t}\n")
-                lines.append(f"{content}\n\n")
-                continue
-
-            if role == "tool_call":
+                lines.append(f"## Tool Result ({name}):\n{t}\n{content}\n\n")
+            elif role == "tool_call":
                 name = turn.get("name", "unknown")
                 args = turn.get("arguments", "")
-                lines.append(f"## Tool Call ({name}):\n{t}\n")
-                lines.append(f"{escape(str(args))}\n\n")
-                continue
-
-            if width > 0:
-                content = shorten(content, width=width)
-
-            lines.append(f"## {role.capitalize()}:\n{t}\n")
-            lines.append(f"{content}\n\n")
+                lines.append(f"## Tool Call ({name}):\n{t}\n{escape(str(args))}\n\n")
+            else:
+                if width > 0:
+                    content = shorten(content, width=width)
+                lines.append(f"## {role.capitalize()}:\n{t}\n{content}\n\n")
+            i += 1
 
         return "\n".join(lines)

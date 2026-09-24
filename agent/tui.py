@@ -607,6 +607,11 @@ class WisemonkeyTui(App):
                 self.call_from_thread(self.exit)
                 return
             if result.ok:
+                if result.command == "/config-edit" and self.remote is not None:
+                    # The server reloads its authoritative config; refresh the
+                    # TUI's UI-only config shadow after the remote command.
+                    core = cast(Core, self.core)
+                    core.config.reload()
                 if result.content or result.markdown:
                     cont = result.content if result.content else Markdown(result.markdown)
                     panel = Panel(cont,

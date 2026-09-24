@@ -82,6 +82,24 @@ class TestConfigLoadSave(BaseTest):
         self.config.load(path)
         assert self.config.get("agent.max_turns") == 77
 
+    def test_reload_reads_changes_from_selected_file(self):
+        cfg = self._default_config()
+        cfg["agent"]["max_turns"] = 12
+        path = self._write_config(cfg)
+        self.config.load(path)
+
+        cfg["agent"]["max_turns"] = 27
+        self._write_config(cfg)
+        self.config.reload()
+
+        assert self.config.config_path == path
+        assert self.config.get("agent.max_turns") == 27
+
+    def test_config_path_returns_selected_file(self):
+        path = self._write_config(self._default_config())
+        self.config.load(path)
+        assert self.config.config_path == path
+
     def test_load_missing_file_falls_back_to_repo_config(self):
         fake_path = self._tmpdir / "nonexistent.yaml"
         self.config.load(fake_path)

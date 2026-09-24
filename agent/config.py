@@ -96,8 +96,8 @@ class Config:
 
     @property
     def config_path(self):
-        """Return the base config file path."""
-        return _ensure_base_config()
+        """Return the currently selected base config file path."""
+        return self._config_path or _ensure_base_config()
 
     @property
     def mcp_config_path(self):
@@ -116,12 +116,15 @@ class Config:
         if config_path.exists():
             with open(config_path, "r") as f:
                 file_config = yaml.safe_load(f)
-                if file_config:
-                    self._config = file_config
+                self._config = file_config if isinstance(file_config, dict) else _get_defaults()
         else:
             agent_dir = Path(__file__).resolve().parent
             repo_dir = agent_dir.parent
             self.load(repo_dir / "config.yaml")
+
+    def reload(self):
+        """Reload the currently selected configuration file."""
+        self.load(self._config_path)
 
     def save(self):
         """Persist current configuration to the file."""

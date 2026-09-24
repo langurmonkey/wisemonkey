@@ -732,12 +732,16 @@ def _cmd_config_edit(core, params, output: OutputAdapter | None = None) -> tuple
 
     from agent.config import edit_base_config_visual
     result = edit_base_config_visual(output)
-    ok = result.returncode == 0
+    if result.returncode != 0:
+        return False, result.stderr or "Configuration editor failed", None, None
+
+    ok, message = core.reload_config()
     if ok:
-        ok, _ = core.initialize_router()
-        return ok, "Configuration edited successfully", None, None
-    else:
-        return ok, result.stderr, None, None
+        # Refresh frontend settings (e.g. vi mode and prompt metadata).
+        from pubsub import pub
+        pub.sendMessage("prompt-update")
+        return True, "Configuration edited and reloaded successfully", None, None
+    return False, f"Configuration reload failed: {message}", None, None
 
 @cmd(
     "/config",

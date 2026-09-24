@@ -105,7 +105,7 @@ Tools are defined using the `@tool(name, description, parameters)` decorator. Th
 
 #### Chat memory accounting
 
-`ChatMemory` tracks `total_chars` and triggers `/session-chat-compact` when it exceeds `agent.max_chat_history`. To avoid premature compaction, `ChatMemory._entry_len()` counts tool results exactly as they are injected into the prompt — truncated to `agent.chat_history_tool_result_max_chars` unless `agent.chat_history_full_tool_results` is `true` (see `get_formatted()`). Keep this accounting in sync with `get_formatted()` if the formatting logic changes.
+`ChatMemory` tracks `total_tokens` and triggers `/session-chat-compact` when it exceeds `agent.max_chat_history`. `total_tokens` is computed by tokenizing the exact rendered history returned by `get_formatted(timestamps=False, width=0)`, including tool-result truncation and compact adjacent tool call/result blocks. Recount after changes to stored exchanges, loading, trimming, or clearing. Keep this accounting in sync with `get_formatted()` if its rendering changes.
 
 ### Slash Commands (`agent/commands.py`)
 

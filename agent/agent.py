@@ -650,6 +650,12 @@ class Agent:
                         self.output.print(txt_goodbye)
                         break
                     if result.ok:
+                        if result.command == "/config-edit":
+                            # The daemon reloads its authoritative config; refresh
+                            # this client's UI-only config shadow as well.
+                            self.core.config.reload()
+                            if _HAS_PROMPT_TOOLKIT:
+                                self._create_prompt_session()
                         if result.content or result.markdown:
                             cont = (
                                 result.content

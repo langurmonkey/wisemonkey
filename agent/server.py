@@ -313,12 +313,13 @@ class WisemonkeyServer:
             transport=self._client, ask_handler=self.ask_client
         )
         try:
+            command, params = registry.lookup(payload.raw.split())
             ok_flag, msg, content, markdown, should_exit = registry.run_command(
                 self.core, payload.raw, output
             )
             result = CommandResultPayload(
-                command=payload.name,
-                params=payload.params,
+                command=command.name if command else payload.name,
+                params=params or payload.params,
                 ok=bool(ok_flag),
                 msg=msg or "",
                 content=content or "",
