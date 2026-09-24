@@ -100,17 +100,17 @@ class TestMemoryFormatted(BaseTest):
         self.m = Memory(session_dir=session_dir)
 
     def test_empty_returns_none(self):
-        assert self.m.get_formatted() is None
+        assert self.m.get_user_profile_formatted() is None
 
     def test_user_profile_formatted(self):
         self.m.set_user_profile({"name": "Alice"})
-        result = self.m.get_formatted(notes=False)
+        result = self.m.get_user_profile_formatted(notes=False)
         assert "## User Profile" in result
         assert "name: Alice" in result
 
     def test_notes_formatted(self):
         self.m.add_note("Test note", category="test")
-        result = self.m.get_formatted(user_profile=False)
+        result = self.m.get_user_profile_formatted(user_profile=False)
         assert "## Persistent Notes" in result
         assert "[test] Test note" in result
 

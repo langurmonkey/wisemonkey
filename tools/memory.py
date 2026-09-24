@@ -335,7 +335,7 @@ def save_memory_handler(args):
 def get_memory_handler(args):
     """Read the agent's current memory (profile + notes)."""
     mem = Memory()
-    text = mem.get_formatted()
+    text = mem.get_user_profile_formatted()
     if text:
         return {"memory": text}
     return {"memory": None, "message": "No memory yet"}

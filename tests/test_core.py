@@ -291,8 +291,8 @@ class TestSystemPromptOrder(BaseTest):
         fake._load_soul_files = lambda: "SOUL"
         fake._load_context_files = lambda: "CONTEXT"
         fake.memory = type("M", (), {
-            "get_formatted": lambda self, notes=False: "MEMORY",
-            "get_chat_formatted": lambda self, timestamps=False: "CHAT_HISTORY",
+            "get_user_profile_formatted": lambda self, notes=False: "MEMORY",
+            "get_chat_history_formatted": lambda self, timestamps=False: "CHAT_HISTORY",
         })()
         fake.skills = type("S", (), {"load_all": lambda self: "SKILLS"})()
 

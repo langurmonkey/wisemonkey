@@ -211,7 +211,7 @@ class Memory:
         self._notes.append(note)
         return note
 
-    def get_formatted(self, user_profile=True, notes=True):
+    def get_user_profile_formatted(self, user_profile=True, notes=True):
         """Return all memory formatted for the system prompt."""
         lines = []
 
@@ -240,7 +240,7 @@ class Memory:
     def get_chat_unformatted(self):
         return self._chat_history.get_unformatted()
 
-    def get_chat_formatted(self,
+    def get_chat_history_formatted(self,
                            num_exchanges: int = 0,
                            timestamps: bool = False,
                            width: int = 0):

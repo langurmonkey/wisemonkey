@@ -251,7 +251,7 @@ class Core:
 
         # Add formatted memory
         # Only user profile, no notes
-        memory_text = self.memory.get_formatted(notes=False)
+        memory_text = self.memory.get_user_profile_formatted(notes=False)
         if memory_text:
             parts.append(memory_text)
 
@@ -265,7 +265,7 @@ class Core:
 
         # Add chat history last: it changes every turn, so it must be the
         # tail of the prompt to keep the prefix cacheable.
-        chat_text = self.memory.get_chat_formatted(timestamps=False)
+        chat_text = self.memory.get_chat_history_formatted(timestamps=False)
         if chat_text:
             parts.append(chat_text)
 
@@ -293,7 +293,7 @@ class Core:
         if context:
             sections.append(("Context files (AGENTS.md)", count_tokens(context)))
 
-        memory_text = self.memory.get_formatted(notes=False)
+        memory_text = self.memory.get_user_profile_formatted(notes=False)
         if memory_text:
             sections.append(("Memory (user profile)", count_tokens(memory_text)))
 
@@ -301,7 +301,7 @@ class Core:
         if skills_text:
             sections.append(("Skills", count_tokens(skills_text)))
 
-        chat_text = self.memory.get_chat_formatted(timestamps=False)
+        chat_text = self.memory.get_chat_history_formatted(timestamps=False)
         if chat_text:
             sections.append(("Chat history", count_tokens(chat_text)))
 
