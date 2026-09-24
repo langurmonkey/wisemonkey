@@ -106,7 +106,7 @@ def startup_info(core, output: OutputAdapter):
     output.rule()
 
     # Chat history
-    chat_history = core.memory.get_chat_formatted(num_exchanges=2,
+    chat_history = core.memory.get_chat_history_formatted(num_exchanges=2,
                                                   timestamps=False,
                                                   width=250)
     if chat_history:
