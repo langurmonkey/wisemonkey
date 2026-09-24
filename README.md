@@ -309,6 +309,10 @@ agent:
 
 > Chat history is accounted in **tokens**, counted exactly with tiktoken (o200k encoding) when available, falling back to a chars/4 estimate otherwise. The token accounting used for compaction matches what is actually injected into the prompt: when `chat_history_full_tool_results` is `false`, tool results are counted (and injected) truncated to `chat_history_tool_result_max_chars`, so a single large tool result does not trigger premature compaction.
 
+## Protocol
+
+The client/server wire protocol (Unix domain socket, newline-delimited JSON) is specified in [docs/PROTOCOL.md](docs/PROTOCOL.md). It is stable enough to build third-party frontends against: attach to a session's socket, send an `attach` request, and drive turns via `prompt` while streaming events come back.
+
 ## Structure
 
 Wisemonkey is built to be modular and hackable. Here is an overview of the main parts and their mapping to the file system.

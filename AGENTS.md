@@ -76,6 +76,7 @@ Phase 0 of the client/server split (see the `CLIENT_SERVER` session plan). Defin
 - `OutputPayload` carries pre-rendered output (`format`, `level`, `indent`, panel/rule fields) so the server needs no Rich console.
 - `Transport` Protocol (`send`/`recv(timeout)`/`close`/`closed`) with an in-process `LoopbackTransport` / `loopback_pair()` for phase-1 work.
 - `payload_as()` reconstructs a payload dataclass, ignoring unknown keys (forward compatibility).
+- **Full wire specification:** `docs/PROTOCOL.md` — message envelope, all requests/events/RPCs with payloads, handshake flow, transports, and the single-reader-thread rule. Keep it in sync when changing `agent/ipc.py`.
 
 ### Client/server modes (`agent/server.py`, `agent/client.py`, `agent/agent.py`, `agent/tui.py`)
 
