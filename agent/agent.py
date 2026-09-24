@@ -535,7 +535,7 @@ class Agent:
 
                     if self.core.config.get("agent.markdown", False):
                         # Print markdown
-                        md = self.core.memory.get_chat_unformatted()[-1]['content']
+                        md = self.core.memory.get_chat_history_unformatted()[-1]['content']
                         md = Panel(Markdown(md),
                                     border_style="output-frame",
                                     title=f"Markdown",

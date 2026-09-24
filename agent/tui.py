@@ -140,7 +140,7 @@ class _PromptInput(TextArea):
         if not self.core:
             return
 
-        history = self.core.memory.get_chat_unformatted()
+        history = self.core.memory.get_chat_history_unformatted()
 
         lines = []
         for turn in history:
@@ -896,7 +896,7 @@ class WisemonkeyTui(App):
             if self.remote is not None and not result_cancelled:
                 md_text = self._last_response
             else:
-                md_text = self.core.memory.get_chat_unformatted()[-1]['content']
+                md_text = self.core.memory.get_chat_history_unformatted()[-1]['content']
             md = Panel(Markdown(md_text),
                         border_style="output-frame",
                         title=f"Markdown",

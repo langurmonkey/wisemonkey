@@ -237,7 +237,7 @@ class Memory:
         self._chat_history.set_exchanges(content)
         self.save()
 
-    def get_chat_unformatted(self):
+    def get_chat_history_unformatted(self):
         return self._chat_history.get_unformatted()
 
     def get_chat_history_formatted(self,

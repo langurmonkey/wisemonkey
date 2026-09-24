@@ -779,7 +779,7 @@ class Core:
         # Check whether this user message has already been saved to chat history
         # (the user prompt is recorded at the start of every turn, so it will
         # normally already be present).
-        history = self.memory.get_chat_unformatted()
+        history = self.memory.get_chat_history_unformatted()
         last_user = next((e for e in reversed(history) if e.get("role") == "user"), None)
         if not last_user or last_user.get("content") != user_input:
             self.memory.add_chat_exchange(self, "user", user_input)

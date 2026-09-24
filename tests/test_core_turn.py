@@ -34,7 +34,7 @@ class _Memory:
     def save(self):
         self.saved += 1
 
-    def get_chat_unformatted(self):
+    def get_chat_history_unformatted(self):
         return list(self.exchanges)
 
     def get_chat_stats(self):
