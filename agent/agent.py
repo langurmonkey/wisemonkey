@@ -597,6 +597,7 @@ class Agent:
         # Background thread answering ServerRequest RPCs (confirmations,
         # questions, subprocess runs) relayed by the server.
         self._remote_stop = False
+        remote.on_disconnect = self._on_server_lost
         rpc_thread = threading.Thread(
             target=self._remote_serve_requests, name="wisemonkey-rpc", daemon=True
         )
@@ -722,6 +723,13 @@ class Agent:
         finally:
             self._remote_stop = True
             remote.close()
+
+    def _on_server_lost(self):
+        """Called on the reader thread when the daemon connection drops."""
+        self._remote_stop = True
+        self._cancel_all_spinners()
+        self.output.err("Connection to server lost (server exited or was killed).")
+        self._turn_in_progress = False
 
     def _remote_serve_requests(self):
         """Answer ServerRequest RPCs from the daemon until shutdown."""

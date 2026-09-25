@@ -56,6 +56,10 @@ class ServerConnection:
         self._on_event: Callable[[Message], None] | None = None
         self._req_handlers: dict[ServerRequest, Callable[[Any], Any]] = {}
         self._stop = False
+        # Called (on the reader thread) when the connection to the server is
+        # lost, so frontends can notify the user immediately instead of only
+        # failing on the next request.
+        self.on_disconnect: Callable[[], None] | None = None
         # Single reader thread: all messages from the server are received
         # here and dispatched (replies -> waiters, events -> callback,
         # server requests -> handlers). Concurrent recv from multiple
@@ -140,6 +144,11 @@ class ServerConnection:
         for q in self._pending.values():
             q.put(None)
         self._pending.clear()
+        if self.on_disconnect is not None:
+            try:
+                self.on_disconnect()
+            except Exception:
+                pass
 
     def _dispatch_server_request(self, message: Message) -> None:
         try:

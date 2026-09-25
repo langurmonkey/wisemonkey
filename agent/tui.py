@@ -355,6 +355,8 @@ class WisemonkeyTui(App):
                 f"(pid {handshake.server_pid}, model [accent]{handshake.model}[/accent])[/server]"
             )
             self.output.newline()
+        if self.remote is not None:
+            self.remote.on_disconnect = self._on_server_lost
         self._update_status()
 
         # Stream buffers: accumulate content until a newline is hit
@@ -866,6 +868,14 @@ class WisemonkeyTui(App):
         if captured_output:
             text += "\n" + captured_output
         self.output.print(text)
+
+    def _on_server_lost(self):
+        """Called on the reader thread when the daemon connection drops."""
+        self._remote_stop = True
+        self.call_from_thread(self._show_server_lost)
+
+    def _show_server_lost(self):
+        self.output.err("Connection to server lost (server exited or was killed).")
 
     def _finish_turn(
         self, response: str, tokens: int, ntools: int, gen_time: float,
