@@ -18,6 +18,7 @@ from agent.core import Core
 from agent.completion import SmartPathCompleter
 from agent.at_files import expand_at_references
 from agent.emitter import TurnEmitter
+from agent.mdstream import MarkdownStreamRenderer
 from agent.ipc import (
     ContentPayload,
     Event,
@@ -70,6 +71,7 @@ class Agent:
         self.output = RichOutputAdapter()
         set_output(self.output)
         self._turn_in_progress = False
+        self._md_stream = None
 
         # Client/server phase 3: if a daemon server is already running for
         # this session, attach to it and run as a thin remote client. If not,
@@ -233,7 +235,27 @@ class Agent:
 
     def content_callback(self, content:str=""):
         """Called when new chunks arrive in streaming mode."""
+        if self._md_stream is not None:
+            # Live streaming markdown rendering: complete lines are rendered
+            # incrementally with theme styles; the trailing partial line is
+            # held back until complete.
+            self._md_stream.feed(content)
+            return
         print(escape(content), end="")
+
+    def _md_stream_start(self) -> None:
+        """Start live markdown rendering if enabled by config."""
+        if self.core is None or not self.core.config.get("agent.markdown", False):
+            return
+        console = getattr(self.output, "_console", None)
+        if console is not None:
+            self._md_stream = MarkdownStreamRenderer(console)
+
+    def _md_stream_stop(self) -> None:
+        """Finish live markdown rendering."""
+        if self._md_stream is not None:
+            self._md_stream.flush()
+            self._md_stream = None
 
     def tool_callback(self, tool_name: str, tool_args):
         newline()
@@ -504,6 +526,7 @@ class Agent:
                 self.output.print("  [kbd]Ctrl[/kbd]+[kbd]C[/kbd]: Cancel turn\n")
                 try:
                     self._turn_in_progress = True
+                    self._md_stream_start()
                     # Expand @file references into attached context (model
                     # sees the content; the typed text stays as-is on screen).
                     max_at = self.core.config.get("agent.at_file_max_chars", 8000)
@@ -523,6 +546,9 @@ class Agent:
                     total_tokens = result.total_tokens
                     ntools = result.n_tools
                     total_gen_time = result.gen_time
+                    # Flush the streaming renderer before the statusline so
+                    # the trailing partial line doesn't land after it.
+                    self._md_stream_stop()
                     self.output.newline()
 
                     self.output.newline()
@@ -533,8 +559,9 @@ class Agent:
                     self.output.newline()
                     self.output.newline()
 
-                    if self.core.config.get("agent.markdown", False):
-                        # Print markdown
+                    if self.core.config.get("agent.markdown", False) and self._md_stream is None:
+                        # Print markdown (skipped when the streaming renderer
+                        # already rendered the response live).
                         md = self.core.memory.get_chat_history_unformatted()[-1]['content']
                         md = Panel(Markdown(md),
                                     border_style="output-frame",
@@ -551,6 +578,7 @@ class Agent:
                     # by core.run_turn(), so we just continue to the next prompt.
                     self.output.print("  [dim]Partial response was saved to chat history.[/dim]")
                 finally:
+                    self._md_stream_stop()
                     self._turn_in_progress = False
                     self._cancel_all_spinners()
 
@@ -688,8 +716,12 @@ class Agent:
                 )
                 self.output.print("  [kbd]Ctrl[/kbd]+[kbd]C[/kbd]: Cancel turn\n")
                 self._turn_in_progress = True
+                self._md_stream_start()
                 try:
                     end = remote.prompt(text=user_input, on_event=self._handle_event)
+                    # Flush the streaming renderer before the statusline so
+                    # the trailing partial line doesn't land after it.
+                    self._md_stream_stop()
                     self.output.newline()
                     if not end.cancelled:
                         self._statusline(
@@ -699,8 +731,9 @@ class Agent:
                         self.output.newline()
 
                         # Markdown summary (same as local mode), using the
-                        # response carried in the turn-end payload.
-                        if self.core.config.get("agent.markdown", False):
+                        # response carried in the turn-end payload. Skipped
+                        # when the streaming renderer already rendered it live.
+                        if self.core.config.get("agent.markdown", False) and self._md_stream is None:
                             md = Panel(
                                 Markdown(end.response),
                                 border_style="output-frame",
@@ -718,6 +751,7 @@ class Agent:
                     self._cancel_all_spinners()
                     self.output.err(f"Error sending prompt: {e}")
                 finally:
+                    self._md_stream_stop()
                     self._turn_in_progress = False
                     self._cancel_all_spinners()
         finally:
