@@ -72,6 +72,7 @@ class Agent:
         set_output(self.output)
         self._turn_in_progress = False
         self._md_stream = None
+        self._prompt_reported = False
 
         # Client/server phase 3: if a daemon server is already running for
         # this session, attach to it and run as a thin remote client. If not,
@@ -217,7 +218,11 @@ class Agent:
         if self.spinner_prompt:
             self.spinner_prompt.stop()
             self.spinner_prompt = None
-        ok("⏳ Prompt processed")
+        # The prompt stage fires once per LLM round (each tool round re-enters
+        # the LLM), so only report completion on the first round of a turn.
+        if not self._prompt_reported:
+            self._prompt_reported = True
+            ok("⏳ Prompt processed")
 
     def _reasoning_start(self, visible: bool) -> None:
         if visible:
@@ -245,6 +250,8 @@ class Agent:
 
     def _md_stream_start(self) -> None:
         """Start live markdown rendering if enabled by config."""
+        # New turn: reset per-turn UI state.
+        self._prompt_reported = False
         if self.core is None or not self.core.config.get("agent.markdown_stream", True):
             return
         console = getattr(self.output, "_console", None)
@@ -257,7 +264,18 @@ class Agent:
             self._md_stream.flush()
             self._md_stream = None
 
+    def _flush_md_stream(self) -> None:
+        """Emit any held-back partial line before non-content output.
+
+        Narration between tool calls usually has no trailing newline, so
+        the streaming renderer holds it back. Tool lines must not appear
+        above it — flush first so interleaving stays in order.
+        """
+        if self._md_stream is not None:
+            self._md_stream.flush()
+
     def tool_callback(self, tool_name: str, tool_args):
+        self._flush_md_stream()
         newline()
         args_str = format_tool_args(tool_args)
         if args_str:
