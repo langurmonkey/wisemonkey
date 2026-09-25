@@ -94,7 +94,9 @@ class Core:
 
             # Initialize memory
             max_chat_history = self.config.get("agent.max_chat_history", 150000)
-            self.memory = Memory(max_chat_history=max_chat_history, session=session)
+            window_turns = self.config.get("agent.memory_rolling_window_turns", 0)
+            self.memory = Memory(max_chat_history=max_chat_history,
+                                 window_turns=window_turns, session=session)
 
             # Initialize skills (can be disabled via config)
             skills_enabled = self.config.get("agent.skills", True)

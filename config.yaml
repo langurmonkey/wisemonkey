@@ -27,6 +27,11 @@ embedding:
 # Agent configuration
 agent:
   max_turns: 50
+  # Rolling chat memory window in turns (exchanges). If > 0, only the last
+  # n exchanges (user message + everything after it until the next user
+  # message) are kept; older ones are destructively removed. 0 = disabled
+  # (history is only bounded by max_chat_history tokens).
+  memory_rolling_window_turns: 10
   # Hard cap on tool executions per turn. 0 = unlimited.
   max_tool_calls: 0
   system_prompt: You are a helpful assistant, expert in many domains of science and engineering. Respond concisely and clearly. No fluff. Ask for clarification if needed. Do not invent. On first interaction, analyze the user's message for their name, role, interests, and preferences. Record them with `set_user_profile`.

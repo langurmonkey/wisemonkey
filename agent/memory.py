@@ -69,13 +69,15 @@ class Memory:
     _notes_path = Path()
     _notes = []
 
-    def __new__(cls, max_chat_history=80000, session_dir=None, session='default'):
+    def __new__(cls, max_chat_history=80000, session_dir=None, session='default',
+                window_turns=0):
         global _instance
         if _instance is None:
             _instance = super().__new__(cls)
         return _instance
 
-    def __init__(self, max_chat_history=80000, session_dir=None, session='default'):
+    def __init__(self, max_chat_history=80000, session_dir=None, session='default',
+                 window_turns=0):
         # Only initialize on first creation
         if hasattr(self, "_initialized"):
             return
@@ -131,7 +133,8 @@ class Memory:
         # Persistent notes
         self._notes_path = self.session_dir / "notes.json"
         # Chat history
-        self._chat_history = ChatMemory(self.session_dir, max_tokens=max_chat_history)
+        self._chat_history = ChatMemory(self.session_dir, max_tokens=max_chat_history,
+                                        window_turns=window_turns)
         # Document vector store (lazy, optional)
         self.vectorstore = None
 
@@ -298,25 +301,34 @@ class ChatMemory:
     """Rolling chat memory that stores recent exchanges.
     
     Maintains a rolling window of recent user input/assistant output pairs,
-    limited by token count from configuration. Automatically trimmed
-    when the window is exceeded. Persisted to disk.
+    limited by token count from configuration and (optionally) by a
+    turn-based rolling window (`window_turns`: keep only the last n
+    exchanges, where an exchange starts at a user message). Automatically
+    trimmed when a limit is exceeded. Persisted to disk.
     """
-    
-    def __init__(self, session_dir, max_tokens=80000):
+
+    def __init__(self, session_dir, max_tokens=80000, window_turns=0):
         """Initialize chat memory.
 
         Args:
             max_tokens: Maximum total tokens to keep in memory (default: 80000)
+            window_turns: If > 0, keep only the last n exchanges
+                (an exchange = user message and everything after it until
+                the next user message). 0 disables the turn window.
         """
         self._exchanges = []  # list of {"role": "user"|"assistant"|"summary", "content": str}
         self.total_tokens = 0
         self.max_tokens = max_tokens
-        
+        self.window_turns = window_turns
+
         # Set up persistence
         self._chat_path = Path(session_dir) / "chat_history.json"
-        
+
         # Load from disk
         self._load()
+        # Reconcile with the turn window in case the setting changed
+        # since the last session (destructive trim).
+        self._trim_to_window()
 
     def set_exchanges(self, content):
         self._exchanges = content
@@ -390,7 +402,10 @@ class ChatMemory:
         # The formatter can compact adjacent tool call/result pairs, so count
         # the complete rendered history rather than summing entry estimates.
         self._recount_tokens()
-        
+
+        # Turn-based rolling window (destructive trim of old exchanges).
+        self._trim_to_window()
+
         # Compact if exceeded
         if self.total_tokens > self.max_tokens:
             from agent.commands import registry
@@ -409,6 +424,40 @@ class ChatMemory:
         
         # Save after trimming
         self.save()
+
+    def _exchange_starts(self) -> list[int]:
+        """Return the indices of entries that start a new exchange.
+
+        An exchange starts at each user entry and includes every entry
+        after it until the next user entry (assistant responses, tool
+        calls and results).
+        """
+        starts = [i for i, e in enumerate(self._exchanges)
+                  if e.get("role") == "user"]
+        return starts
+
+    def _trim_to_window(self) -> int:
+        """Destructively trim to the last `window_turns` exchanges.
+
+        A no-op when `window_turns` is 0 (disabled). Returns the number of
+        exchanges removed.
+        """
+        if self.window_turns <= 0 or not self._exchanges:
+            return 0
+
+        starts = self._exchange_starts()
+        if len(starts) <= self.window_turns:
+            return 0
+
+        # Keep everything from the start of the (window_turns)-th from last
+        # exchange onwards; also drop any leading non-user entries (e.g.
+        # stray tool results) before that point.
+        cutoff = starts[-self.window_turns]
+        removed = cutoff
+        self._exchanges = self._exchanges[cutoff:]
+        self._recount_tokens()
+        self.save()
+        return removed
 
     def _clear(self, n=5):
         """

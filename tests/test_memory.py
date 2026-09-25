@@ -297,3 +297,50 @@ class TestChatMemory(BaseTest):
         raw = self.cm.get_unformatted()
         assert isinstance(raw, list)
         assert raw[0]["content"] == "raw"
+
+
+class TestChatMemoryWindow(BaseTest):
+    """Test the turn-based rolling window (window_turns)."""
+
+    def setUp(self):
+        super().setUp()
+        self.session_dir = self._tmpdir / "sessions" / "window"
+
+    def _fill(self, cm, n):
+        for i in range(n):
+            cm.add_exchange(None, "user", f"msg {i}")
+            cm.add_exchange(None, "assistant", f"reply {i}")
+
+    def test_window_zero_keeps_all(self):
+        cm = ChatMemory(self.session_dir, max_tokens=10**9, window_turns=0)
+        self._fill(cm, 4)
+        assert len(cm._exchanges) == 8
+
+    def test_window_keeps_last_n_exchanges(self):
+        cm = ChatMemory(self.session_dir, max_tokens=10**9, window_turns=2)
+        self._fill(cm, 4)
+        # 2 exchanges x 2 entries each.
+        assert len(cm._exchanges) == 4
+        assert cm._exchanges[0]["content"] == "msg 2"
+        assert cm._exchanges[-1]["content"] == "reply 3"
+
+    def test_window_includes_tool_entries(self):
+        cm = ChatMemory(self.session_dir, max_tokens=10**9, window_turns=1)
+        cm.add_exchange(None, "user", "msg 0")
+        cm.add_exchange(None, "assistant", "reply 0")
+        cm.add_exchange(None, "tool_call", "call", name="t", arguments="{}")
+        cm.add_exchange(None, "tool_result", "res", name="t")
+        cm.add_exchange(None, "user", "msg 1")
+        cm.add_exchange(None, "assistant", "reply 1")
+        # Only the last exchange (msg 1 + reply 1) survives.
+        assert len(cm._exchanges) == 2
+        assert cm._exchanges[0]["content"] == "msg 1"
+
+    def test_load_trims_oversized_history(self):
+        cm = ChatMemory(self.session_dir, max_tokens=10**9, window_turns=0)
+        self._fill(cm, 4)
+        cm.save()
+        # Reopen with a smaller window: startup reconciliation trims.
+        cm2 = ChatMemory(self.session_dir, max_tokens=10**9, window_turns=2)
+        assert len(cm2._exchanges) == 4
+        assert cm2._exchanges[0]["content"] == "msg 2"
