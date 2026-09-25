@@ -33,6 +33,7 @@ from agent.ipc import (
     TransportClosed,
 )
 from agent.commands import registry
+from agent.footer import _ACCENT, _DIM, _LABEL, _RESET
 from agent.utils import add_command, collapse_none_dicts, format_tool_args
 from agent.output import RichOutputAdapter, set_output
 from agent.console import print, err, ok, info, newline
@@ -297,6 +298,22 @@ class Agent:
             length, max, rate = self.core.memory.get_chat_stats()
         title = f"  {total_gen_time:.1f}s   |   {total_tokens} tokens   |   {ntools} tools   |   Mem: {length}/{max} tks ({rate:.2f}%)  "
         self.output.rule(title=title, style="status")
+        # Refresh the sticky footer with the final memory stats.
+        self.output.footer_update(self._footer_status())
+
+    def _footer_status(self) -> str:
+        """Build the sticky footer status line (model, session, memory)."""
+        model = self.core.config.get("model.name")
+        session = self.core.memory.session
+        if self.remote is not None:
+            length, max, rate = self.remote.memory_stats()
+        else:
+            length, max, rate = self.core.memory.get_chat_stats()
+        return (
+            f" {_ACCENT}⇒{_RESET} {_LABEL}{model}{_RESET}  {_DIM}|{_RESET}  "
+            f"{_LABEL}session:{_RESET} {_ACCENT}{session}{_RESET}  {_DIM}|{_RESET}  "
+            f"{_LABEL}Mem:{_RESET} {length}/{max} tks ({rate:.1f}%)"
+        )
 
     def _cancel_all_spinners(self):
         if self.spinner_prompt:
@@ -548,6 +565,9 @@ class Agent:
                     # not poison this one (poll() must start out False).
                     self.emitter.reset()
                     self._md_stream_start()
+                    # Arm the sticky footer for the duration of the turn.
+                    self.output.footer_start()
+                    self.output.footer_update(self._footer_status())
                     # Expand @file references into attached context (model
                     # sees the content; the typed text stays as-is on screen).
                     max_at = self.core.config.get("agent.at_file_max_chars", 8000)
@@ -602,6 +622,8 @@ class Agent:
                     self._md_stream_stop()
                     self._turn_in_progress = False
                     self._cancel_all_spinners()
+                    # Disarm the sticky footer before the prompt returns.
+                    self.output.footer_stop()
 
         # Persist memory, stop the event pump, and shut down core on exit
         if self.core:
@@ -738,6 +760,9 @@ class Agent:
                 self.output.print("  [kbd]Ctrl[/kbd]+[kbd]C[/kbd]: Cancel turn\n")
                 self._turn_in_progress = True
                 self._md_stream_start()
+                # Arm the sticky footer for the duration of the turn.
+                self.output.footer_start()
+                self.output.footer_update(self._footer_status())
                 try:
                     end = remote.prompt(text=user_input, on_event=self._handle_event)
                     # Flush the streaming renderer before the statusline so
@@ -775,6 +800,8 @@ class Agent:
                     self._md_stream_stop()
                     self._turn_in_progress = False
                     self._cancel_all_spinners()
+                    # Disarm the sticky footer before the prompt returns.
+                    self.output.footer_stop()
         finally:
             self._remote_stop = True
             remote.close()

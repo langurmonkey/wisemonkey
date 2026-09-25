@@ -17,6 +17,7 @@ from prompt_toolkit.formatted_text import HTML
 from textual.widgets import RichLog
 
 from agent.console import console, theme_dict
+from agent.footer import Footer
 from agent.utils import term_width
 
 # OutputAdapter abstraction layer
@@ -112,7 +113,22 @@ class RichOutputAdapter(OutputAdapter):
 
     def __init__(self) -> None:
         from agent.console import monkee_theme
+        self._footer = Footer()
         self._console = Console(theme=monkee_theme, color_system="truecolor")
+
+    # ── sticky footer (active only during an assistant turn) ────────────
+
+    def footer_start(self) -> None:
+        """Reserve the bottom terminal rows for the sticky status line."""
+        self._footer.start()
+
+    def footer_stop(self) -> None:
+        """Release the reserved rows and restore the normal scroll region."""
+        self._footer.stop()
+
+    def footer_update(self, status_line: str) -> None:
+        """Update the sticky status line (no-op when the footer is off)."""
+        self._footer.update_status(status_line)
 
     def print(self, text: str, end='\n', indent: int = 0) -> None:
         self._console.print(f"{' ' * indent}{text}", end=end)
