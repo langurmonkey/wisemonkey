@@ -352,7 +352,7 @@ def _cmd_session_chat(core, params, output: OutputAdapter | None = None) -> tupl
         except ValueError:
             return False, f"Parameter must be integer: {params[0]}", None, None
 
-    mem = core.memory.get_chat_history_formatted(num_exchanges=n, timestamps=True)
+    mem = core.memory.get_chat_history_formatted(num_exchanges=n, timestamps=True, collapse_tools=True)
     tokens, max, rate = core.memory.get_chat_stats()
     stats = f"Memory status: {tokens}/{max} tokens ({rate:.2f}%)"
     # Format in Markdown

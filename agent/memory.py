@@ -243,16 +243,18 @@ class Memory:
     def get_chat_history_formatted(self,
                            num_exchanges: int = 0,
                            timestamps: bool = False,
+                           collapse_tools: bool = False,
                            width: int = 0):
         """
         Returns the chat history as a formatted string.
 
         Parameters:
-        - num_exchanges: int  - The number of most recent exchanges to add (0 for all)
-        - timestamps: bool    - Add timestamps to the output
-        - width: int          - Maximum width of each entry's content (0 to not truncate)
+        - num_exchanges: int    - The number of most recent exchanges to add (0 for all)
+        - timestamps: bool      - Add timestamps to the output
+        - collapse_tools: bool  - Collapse tool calls
+        - width: int            - Maximum width of each entry's content (0 to not truncate)
         """
-        return self._chat_history.get_formatted(num_exchanges, timestamps, width)
+        return self._chat_history.get_formatted(num_exchanges, timestamps, collapse_tools, width)
 
     def add_chat_exchange(self, core, role, content, **extra):
         self._chat_history.add_exchange(core, role, content, **extra)
@@ -322,7 +324,7 @@ class ChatMemory:
 
     def _recount_tokens(self) -> None:
         """Count exactly the rendered history text injected into the prompt."""
-        formatted = self.get_formatted(0, timestamps=False, width=0)
+        formatted = self.get_formatted(0, timestamps=False, collapse_tools=False, width=0)
         self.total_tokens = count_tokens(formatted or "")
 
     @staticmethod
@@ -436,7 +438,11 @@ class ChatMemory:
         return self._exchanges
     
     
-    def get_formatted(self, num_exchanges: int, timestamps: bool, width: int):
+    def get_formatted(self,
+                      num_exchanges: int,
+                      timestamps: bool = False,
+                      collapse_tools: bool = False,
+                      width: int = 0):
         """Return chat history formatted for the system prompt.
 
         Handles all exchange roles: user, assistant, summary, tool_call,
@@ -454,11 +460,24 @@ class ChatMemory:
         lines = []
         # Show most recent exchanges (num_exchanges == 0 -> all)
         history = self._exchanges[-num_exchanges:] if num_exchanges > 0 else self._exchanges
+
+        def is_tool(turn) -> bool:
+            return turn.get("role") in ("tool_call", "tool_result")
+
         i = 0
         while i < len(history):
             turn = history[i]
             role = turn.get("role", "")
             t = f"`({turn['utc']})`" if timestamps and "utc" in turn else ""
+
+            # Collapse runs of consecutive tool exchanges into one line.
+            if collapse_tools and is_tool(turn):
+                start = i
+                while i < len(history) and is_tool(history[i]):
+                    i += 1
+                count = i - start
+                lines.append(f"## Tool calls: #{count}\n{t}\n\n")
+                continue
 
             # Render adjacent matching tool call/result entries together.
             if (i + 1 < len(history)
