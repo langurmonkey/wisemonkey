@@ -92,7 +92,12 @@ def startup_info(core, output: OutputAdapter):
     new_session = core.memory.session_is_new
     d_created = pretty_timedelta(now - created) if created else "?"
     d_accessed = pretty_timedelta(now - accessed) if accessed else "?"
-    length, max, rate = core.memory.get_chat_stats()
+    # Context usage: total tokens of the full prompt (same as /context)
+    # as a percentage of the configured budget.
+    sections = core.get_context_breakdown()
+    ctx_total = sum(tokens for _, tokens in sections)
+    ctx_max = core.config.get("agent.max_chat_history", 80000)
+    ctx_rate = (ctx_total / ctx_max * 100) if ctx_max else 0.0
     if new_session:
         output.info(f"Session created: [accent-bold]'{core.memory.session}'[/accent-bold]")
     else:
@@ -102,7 +107,7 @@ def startup_info(core, output: OutputAdapter):
     output.print(f"[dim]   created:[/dim]        [time]{d_created}[/time]")
     if not new_session:
         output.print(f"[dim]   last accessed:[/dim]  [time]{d_accessed}[/time]")
-    output.print(f"[dim]   memory status:  {length}/{max} ({rate:.2f}%)[/dim]")
+    output.print(f"[dim]   context:        {ctx_total} tokens ({ctx_rate:.2f}% of {ctx_max} budget)[/dim]")
     output.rule()
 
     # Chat history
@@ -110,11 +115,10 @@ def startup_info(core, output: OutputAdapter):
                                                   timestamps=False,
                                                   width=250)
     if chat_history:
-        curr, max_sz, rate = core.memory.get_chat_stats()
         output.print_rich(Panel(Markdown(chat_history),
                                 border_style="output-frame",
                                 title="Previous conversation (last 3 exchanges, truncated)",
-                                subtitle=f"Previous conversation stats: {curr}/{max_sz} tks - {rate:.2f}%"))
+                                subtitle=f"Previous conversation stats: {ctx_total} tks - {ctx_rate:.2f}% of {ctx_max} budget"))
 
     output.newline()
     output.rule()

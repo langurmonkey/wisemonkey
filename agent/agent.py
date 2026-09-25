@@ -245,7 +245,7 @@ class Agent:
 
     def _md_stream_start(self) -> None:
         """Start live markdown rendering if enabled by config."""
-        if self.core is None or not self.core.config.get("agent.markdown", False):
+        if self.core is None or not self.core.config.get("agent.markdown_stream", True):
             return
         console = getattr(self.output, "_console", None)
         if console is not None:

@@ -37,6 +37,9 @@ agent:
       - Use `save_note` to store important new information the user wants you to remember long-term.
   # Display formatted output at the end of generation
   markdown: false
+  # Render streamed output as markdown in real time (overrides the
+  # end-of-turn markdown panel when active)
+  markdown_stream: true
   # Length of chat history kept for context, in tokens
   max_chat_history: 80000
   # Include full tool call/result content in the chat history injected into

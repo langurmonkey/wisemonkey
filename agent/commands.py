@@ -309,14 +309,19 @@ def _cmd_session(core, params, output: OutputAdapter | None = None) -> tuple[boo
     working_dir = contractuser(Path(os.getcwd()))
     created = mem.session_created
     accessed = mem.session_accessed
-    length, max, rate = mem.get_chat_stats()
+    # Context usage: total tokens of the full prompt (same as /context)
+    # as a percentage of the configured budget.
+    sections = core.get_context_breakdown()
+    total = sum(tokens for _, tokens in sections)
+    max_tokens = core.config.get("agent.max_chat_history", 80000)
+    rate = (total / max_tokens * 100) if max_tokens else 0.0
     result = ""
     result += f"Name:           [accent-bold]{name}[/accent-bold]\n"
     result += f"Location:       {contractuser(session_dir)}\n"
     result += f"Working dir:    {working_dir}\n"
     result += f"Created:        {created}\n"
     result += f"Last accessed:  {accessed}\n"
-    result += f"Memory status:  {length}/{max} tokens ({rate:.2f}%)"
+    result += f"Context:        [accent-bold]{total}[/accent-bold] tokens ({rate:.2f}% of {max_tokens} budget)"
     return True, None, result, None
 
 
