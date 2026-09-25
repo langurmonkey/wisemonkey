@@ -202,10 +202,21 @@ class WisemonkeyServer:
             core = cast(Core, self.core)
             core.memory.add_chat_exchange(core, payload.role, payload.content)
             self._send(Message.response(message.id, ReplyPayload(ok=True)))
-        elif name == ClientRequest.PROMPT:
-            self._handle_prompt(message)
+        if name == ClientRequest.PROMPT:
+            # PROMPT and COMMAND can block on client RPCs (ask_* prompts,
+            # subprocess runs). Handle them in worker threads so the reader
+            # loop below stays free to dispatch the client's replies —
+            # handling them inline would deadlock (ask_client waits for a
+            # reply that only this loop could read).
+            threading.Thread(
+                target=self._handle_prompt, args=(message,),
+                name="wisemonkey-turn", daemon=True,
+            ).start()
         elif name == ClientRequest.COMMAND:
-            self._handle_command(message)
+            threading.Thread(
+                target=self._handle_command, args=(message,),
+                name="wisemonkey-command", daemon=True,
+            ).start()
         elif name == ClientRequest.CANCEL:
             payload = payload_as(CancelPayload, message)
             emitter = self._current_emitter
@@ -334,15 +345,17 @@ class WisemonkeyServer:
 
     # ── ServerRequest RPC relay ─────────────────────────────────────────────
 
-    def ask_client(self, name: ServerRequest, payload) -> ReplyPayload:
+    def ask_client(self, name: ServerRequest, payload):
         """Send a ServerRequest to the client and wait for its reply.
 
         Used by the output adapter to route interactive prompts
         (confirmations, string/float/choice questions) to the attached UI.
+        Returns the unwrapped reply value (e.g. bool/str/float), or None if
+        the request failed or was denied.
         """
         transport = self._client
         if transport is None:
-            return ReplyPayload(ok=False, value=None)
+            return None
 
         request = Message.request(name, payload)
         event = threading.Event()
@@ -353,17 +366,17 @@ class WisemonkeyServer:
         except TransportClosed:
             with self._rpc_lock:
                 self._pending_rpc.pop(request.id, None)
-            return ReplyPayload(ok=False, value=None)
+            return None
 
         if not event.wait(timeout=600):
             with self._rpc_lock:
                 self._pending_rpc.pop(request.id, None)
-            return ReplyPayload(ok=False, value=None)
+            return None
         with self._rpc_lock:
             reply = self._rpc_replies.pop(request.id, None)
         if reply is None or reply.kind == "error":
-            return ReplyPayload(ok=False, value=None)
-        return payload_as(ReplyPayload, reply)
+            return None
+        return payload_as(ReplyPayload, reply).value
 
 
 def _server_version() -> str:
