@@ -799,6 +799,9 @@ class WisemonkeyTui(App):
 
         # Reset before each turn
         self._cancel_event.clear()
+        if self.emitter is not None:
+            # Reset so a previously cancelled turn does not poison this one.
+            self.emitter.reset()
         self._turn_active = True
 
         def poll():

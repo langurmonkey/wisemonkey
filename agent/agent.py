@@ -526,6 +526,9 @@ class Agent:
                 self.output.print("  [kbd]Ctrl[/kbd]+[kbd]C[/kbd]: Cancel turn\n")
                 try:
                     self._turn_in_progress = True
+                    # Reset the emitter so a previously cancelled turn does
+                    # not poison this one (poll() must start out False).
+                    self.emitter.reset()
                     self._md_stream_start()
                     # Expand @file references into attached context (model
                     # sees the content; the typed text stays as-is on screen).
