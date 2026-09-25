@@ -213,6 +213,14 @@ class _PromptInput(TextArea):
         line = self.document.get_line(row)
         current = line[:col]  # text on this line up to the cursor
 
+        # Only offer inline suggestions when the cursor sits at the end of
+        # the line. Mid-line navigation (arrows, home, etc.) must never
+        # trigger or accept a completion — otherwise the ghost text gets
+        # inserted into the buffer while the user is simply moving around.
+        if col != len(line):
+            self.suggestion = ""
+            return
+
         if self.SPECIAL:
             # Use special list
             candidates = [
@@ -814,6 +822,7 @@ class WisemonkeyTui(App):
             else:
                 result = self.core.run_turn(
                     prompt,
+                    self.emitter.prompt,
                     self.emitter.reasoning,
                     self.emitter.content,
                     self.emitter.tool_call,
