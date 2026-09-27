@@ -4,53 +4,54 @@ The agent orchestrates the 'user-assistant' turns and delegates the actual turn
 handling to the core.
 """
 
-import time
 import threading
-from typing import Any, Callable, cast
+import time
+from collections.abc import Callable
+from typing import Any, cast
 
-from rich.prompt import Prompt
+from pubsub import pub
 from rich.markdown import Markdown
 from rich.markup import escape
 from rich.panel import Panel
-from pubsub import pub
+from rich.prompt import Prompt
 
-from agent.core import Core
-from agent.completion import SmartPathCompleter
 from agent.at_files import expand_at_references
+from agent.commands import registry
+from agent.completion import SmartPathCompleter
+from agent.console import err, info, newline, ok, print
+from agent.core import Core
 from agent.emitter import TurnEmitter
-from agent.mdstream import MarkdownStreamRenderer
+from agent.footer import _ACCENT, _DIM, _LABEL, _RESET
 from agent.ipc import (
     ContentPayload,
     Event,
+    LoopbackTransport,
     ReasoningPayload,
     StageKind,
     StagePayload,
     ToolCallPayload,
     ToolResultPayload,
+    TransportClosed,
     loopback_pair,
     payload_as,
-    LoopbackTransport,
-    TransportClosed,
 )
-from agent.commands import registry
-from agent.footer import _ACCENT, _DIM, _LABEL, _RESET
-from agent.utils import add_command, collapse_none_dicts, format_tool_args
+from agent.mdstream import MarkdownStreamRenderer
 from agent.output import RichOutputAdapter, set_output
-from agent.console import print, err, ok, info, newline
 from agent.startup import startup_info
+from agent.utils import add_command, collapse_none_dicts, format_tool_args
 
 # Try to import prompt_toolkit for rich input; fall back to plain input.
 try:
     from prompt_toolkit import PromptSession
-    from prompt_toolkit.key_binding import KeyBindings
-    from prompt_toolkit.history import FileHistory
     from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-    from prompt_toolkit.styles import Style
-    from prompt_toolkit.completion import NestedCompleter
     from prompt_toolkit.clipboard import InMemoryClipboard
+    from prompt_toolkit.completion import NestedCompleter
     from prompt_toolkit.formatted_text import HTML
+    from prompt_toolkit.history import FileHistory
+    from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.keys import Keys
     from prompt_toolkit.lexers import PygmentsLexer
+    from prompt_toolkit.styles import Style
     from pygments.lexers.markup import MarkdownLexer
     _HAS_PROMPT_TOOLKIT = True
 
@@ -94,6 +95,7 @@ class Agent:
             # needs a config and a session-scoped Memory for purely local UI
             # concerns (prompt session, completions, paste files, history).
             from types import SimpleNamespace
+
             from agent.config import Config as _Config
             from agent.memory import Memory as _Memory
             cfg = _Config()
@@ -145,9 +147,7 @@ class Agent:
         """Drain events from the loopback peer until stopped.
 
         This runs on a dedicated thread; every UI mutation is funnelled back
-        onto the main thread via ``call_soon_threadsafe``-style helpers (here:
-        direct calls, since Rich's live display is thread-tolerant and the
-        heavy lifting happens on the turn thread as before).
+        onto the main thread via ``call_soon_threadsafe``-style helpers.
         """
         peer = self._event_peer
         while self._events_running:
@@ -606,8 +606,8 @@ class Agent:
                         md = self.core.memory.get_chat_history_unformatted()[-1]['content']
                         md = Panel(Markdown(md),
                                     border_style="output-frame",
-                                    title=f"Markdown",
-                                    subtitle=f"Markdown",
+                                    title="Markdown",
+                                    subtitle="Markdown",
                                     highlight=True)
                         self.output.print_rich(md)
                         self._statusline(total_tokens, ntools, total_gen_time)
@@ -815,8 +815,8 @@ class Agent:
 
     def _remote_serve_requests(self):
         """Answer ServerRequest RPCs from the daemon until shutdown."""
-        from agent.client import _PAYLOAD_TYPES, ServerConnection
-        from agent.ipc import ServerRequest, ReplyPayload, payload_as
+        from agent.client import ServerConnection
+        from agent.ipc import ServerRequest
 
         def handle_confirm(payload):
             return self.output.ask_confirm(payload.message, payload.default)

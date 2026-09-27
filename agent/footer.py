@@ -49,7 +49,7 @@ class Footer:
         self._term_width = 80
         self._status_text = ""
 
-    # ── terminal helpers ────────────────────────────────────────────────
+    # Terminal helpers
 
     @staticmethod
     def _is_tty() -> bool:
@@ -117,7 +117,7 @@ class Footer:
     def active(self) -> bool:
         return self._active
 
-    # ── footer rendering ────────────────────────────────────────────────
+    # Footer rendering
 
     def update_status(self, status_line: str) -> None:
         """Render *status_line* in the reserved rows.

@@ -15,6 +15,7 @@ wisemonkey/
 │   ├── server.py           # Daemon server (UDS) owning the session Core.
 │   ├── ipc.py              # Client/server protocol: messages, payloads, transports.
 │   ├── emitter.py          # Turn event emitter: core callbacks -> IPC events.
+│   ├── footer.py           # Sticky REPL footer via ANSI scroll regions (DECSTBM).
 │   ├── commands.py         # Slash commands (e.g. /embed, /quit).
 │   ├── completion.py       # Smart path completion for the prompt.
 │   ├── at_files.py         # @file/@dir reference expansion.
@@ -27,6 +28,7 @@ wisemonkey/
 │   ├── output.py           # Output adapter protocol (REPL, TUI, IPC).
 │   ├── core.py             # Core agent functions, like API connection and tool calls.
 │   ├── mcp.py              # MCP server support.
+│   ├── mdstream.py         # Streaming markdown renderer for the REPL.
 │   ├── memory.py           # Session memory, paste file creation.
 │   ├── router.py           # API router implementation for OpenAI, Ollama, and Anthropic.
 │   ├── skills.py           # Skill loading and management.
@@ -39,6 +41,7 @@ wisemonkey/
 │   ├── files.py            # File read/write tools.
 │   ├── memory.py            # search_knowledge tool.
 │   ├── network.py          # URL fetching.
+│   ├── screenshot.py       # Screen capture tool (base64 JPEG, user-confirmed).
 │   ├── terminal.py         # Shell command execution.
 │   └── vectorstore.py      # Vector store tool handler.
 ├── skills/                 # Skill definitions. Add new skills here.
@@ -97,6 +100,14 @@ Phase 2/3 of the client/server split. The **server owns the session authoritativ
 Cancellation is **observable state, not an exception**: `_stream_handler()` sets `self._turn_cancelled` and stops the stream when `poll()` returns True, and `run_turn()` returns `TurnResult(cancelled=True)` without persisting a partial answer. `cancel_callback` remains supported (legacy `raise_on_cancel` emitters still raise `TurnCancelled`, which `run_turn()` converts into a cancelled result).
 
 `run_turn()` accepts an optional `tool_result_callback` invoked as `(tool_id, tool_name, content, is_error, duration[, image_base64, mime_type])` after each tool finishes, so tool results can be streamed as events.
+
+### Sticky footer (`agent/footer.py`)
+
+During an assistant turn the REPL pins a status line (model, session, memory usage) to the bottom of the terminal using the ANSI scroll region (`DECSTBM`, `\x1b[1;<H-2>r`): the bottom rows are excluded from scrolling, so they stay put while output streams. No cursor-position queries, no Rich file swapping — output code is untouched. Both modules degrade to no-ops when stdout is not a TTY or the terminal is too small.
+
+### Chat memory rolling window (`agent/memory.py`)
+
+`ChatMemory` supports a turn-based rolling window via `agent.memory_rolling_window_turns` (default `0` = disabled). When > 0, only the last n exchanges (a user message plus everything after it until the next user message) are kept; older exchanges are destructively removed. Trimming happens after each `add_exchange()` and at load time (reconciling a lowered setting), before the token-cap compaction, which remains as a backstop.
 
 ### Tool System (`agent/tools.py` + `tools/`)
 
