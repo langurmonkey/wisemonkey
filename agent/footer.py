@@ -30,14 +30,17 @@ import os
 import shutil
 import sys
 
-# Number of lines reserved for the footer (separator + status line).
-FOOTER_LINES = 2
+# Number of lines reserved for the footer (separator + status + hint line).
+FOOTER_LINES = 3
 
 # ANSI SGR sequences for the footer styling.
 _DIM = "\x1b[2m"
 _RESET = "\x1b[0m"
 _ACCENT = "\x1b[36m"  # cyan
 _LABEL = "\x1b[90m"  # bright black (gray)
+_WHITE = "\x1b[37m"
+_KEY = "\x1b[38;5;228m"  # light yellow (key caps)
+_BAR_BG = "\x1b[48;5;236m"  # dark gray background (hint bar)
 
 
 class Footer:
@@ -63,7 +66,7 @@ class Footer:
             size = shutil.get_terminal_size((80, 24))
             return size.columns, size.lines
 
-    # ── lifecycle ───────────────────────────────────────────────────────
+    # Lifecycle
 
     def start(self) -> None:
         """Arm the footer: set the scroll region and reserve the bottom rows.
@@ -141,6 +144,14 @@ class Footer:
             sys.stdout.write(f"\x1b[2K{sep}")
             sys.stdout.write(f"\x1b[{footer_top + 1};1H")
             sys.stdout.write(f"\x1b[2K{status_line}")
+            # Hint line: advertised key bindings for the current state.
+            # The dark gray bar extends the full terminal width: draw the
+            # hint, then pad with background-colored spaces.
+            hint = f"  {_KEY}Ctrl{_RESET}{_BAR_BG}+{_KEY}C{_RESET}{_BAR_BG}:{_RESET}{_BAR_BG} cancel turn {_RESET}"
+            hint_len = len(" Ctrl+C: cancel turn ")
+            pad = " " * max(0, self._term_width - hint_len)
+            sys.stdout.write(f"\x1b[{footer_top + 2};1H")
+            sys.stdout.write(f"\x1b[2K{_BAR_BG}{hint}{_BAR_BG}{pad}{_RESET}")
             # Move the cursor back to the bottom of the scroll region.
             sys.stdout.write(f"\x1b[{footer_top - 1};1H")
             sys.stdout.flush()
