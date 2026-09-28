@@ -7,13 +7,14 @@ from rich.align import Align
 from rich.markdown import Markdown
 from rich.panel import Panel
 
-from agent.utils import contractuser, pretty_timedelta
 from agent.output import OutputAdapter
+from agent.utils import contractuser, pretty_timedelta
 
 
 def check_updates(repo_dir):
     """Check for updates"""
     from agent.update import UpdatesManager
+
     um = UpdatesManager()
     return um.check_updates(repo_dir)
 
@@ -26,7 +27,8 @@ def startup_info(core, output: OutputAdapter):
     """
 
     import shutil
-    from importlib.metadata import version as _ver, PackageNotFoundError
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as _ver
 
     term_size = shutil.get_terminal_size((80, 20))
     # ASCII monkey: Modified from "Monkey Typing" by Joan G. Stark (Spunk)
@@ -44,18 +46,23 @@ def startup_info(core, output: OutputAdapter):
         wisemonkey = "WISEMONKEY"
     else:
         # ASCII title generated with https://patorjk.com/software/taag/
-        wisemonkey = '''
+        wisemonkey = """
                                                                     
 ██     ██ ██ ▄█████ ██████ ██▄  ▄██ ▄████▄ ███  ██ ██ ▄█▀ ██████ ██  ██ 
 ██ ▄█▄ ██ ██ ▀▀▀▄▄▄ ██▄▄   ██ ▀▀ ██ ██  ██ ██ ▀▄██ ████   ██▄▄    ▀██▀  
  ▀██▀██▀  ██ █████▀ ██▄▄▄▄ ██    ██ ▀████▀ ██   ██ ██ ▀█▄ ██▄▄▄▄   ██   
-        '''
-    title = Align.center(f"[title]{monkee}{wisemonkey}[/title]", vertical='middle')
-    output.print_rich(Panel(title,
-                            box=box.HEAVY,
-                            border_style="title",
-                            subtitle="Monkee at your service!"))
-    output.newline()
+        """
+    if core.config.get("agent.banner", False):
+        title = Align.center(f"[title]{monkee}{wisemonkey}[/title]", vertical="middle")
+        output.print_rich(
+            Panel(
+                title,
+                box=box.HEAVY,
+                border_style="title",
+                subtitle="Monkee at your service!",
+            )
+        )
+        output.newline()
 
     session_dir = core.memory.session_dir
     working_dir = contractuser(Path(os.getcwd()))
@@ -69,7 +76,7 @@ def startup_info(core, output: OutputAdapter):
     except PackageNotFoundError:
         pkg_version = "0.0.0-dev"
 
-    now = datetime.now()
+    now = datetime.now().astimezone()
     agent_dir = Path(__file__).resolve().parent
     repo_dir = agent_dir.parent
 
@@ -81,7 +88,9 @@ def startup_info(core, output: OutputAdapter):
         version_str += f"  [dim]commit: {commit_hash}[/dim]"
     output.print(version_str)
     if updates_available:
-        output.print(f"   [warn]↳ Updates available![/warn] [time](last check: {d_check})[/time]")
+        output.print(
+            f"   [warn]↳ Updates available![/warn] [time](last check: {d_check})[/time]"
+        )
         output.print("     [weak]run [accent]wmk -u[/accent] to update[/weak]")
     elif commit_hash:
         output.print(f"   [dim]✓ Up to date[/dim] [time](last check: {d_check})[/time]")
@@ -99,32 +108,48 @@ def startup_info(core, output: OutputAdapter):
     ctx_max = core.config.get("agent.max_chat_history", 80000)
     ctx_rate = (ctx_total / ctx_max * 100) if ctx_max else 0.0
     if new_session:
-        output.info(f"Session created: [accent-bold]'{core.memory.session}'[/accent-bold]")
+        output.info(
+            f"Session created: [accent-bold]'{core.memory.session}'[/accent-bold]"
+        )
     else:
-        output.info(f"Session restored: [accent-bold]'{core.memory.session}'[/accent-bold]")
+        output.info(
+            f"Session restored: [accent-bold]'{core.memory.session}'[/accent-bold]"
+        )
     output.print(f"[dim]   location:       {contractuser(session_dir)}[/dim]")
     output.print(f"[dim]   working dir:    {working_dir}[/dim]")
     output.print(f"[dim]   created:[/dim]        [time]{d_created}[/time]")
     if not new_session:
         output.print(f"[dim]   last accessed:[/dim]  [time]{d_accessed}[/time]")
-    output.print(f"[dim]   context:        {ctx_total} tokens ({ctx_rate:.2f}% of {ctx_max} budget)[/dim]")
+    output.print(
+        f"[dim]   context:        {ctx_total} tokens ({ctx_rate:.2f}% of {ctx_max} budget)[/dim]"
+    )
     output.rule()
 
     # Chat history
-    chat_history = core.memory.get_chat_history_formatted(num_exchanges=2,
-                                                  timestamps=False,
-                                                  width=250)
+    chat_history = core.memory.get_chat_history_formatted(
+        num_exchanges=2, timestamps=False, width=250
+    )
     if chat_history:
-        output.print_rich(Panel(Markdown(chat_history),
-                                border_style="output-frame",
-                                title="Previous conversation (last 3 exchanges, truncated)",
-                                subtitle=f"Previous conversation stats: {ctx_total} tks - {ctx_rate:.2f}% of {ctx_max} budget"))
+        output.print_rich(
+            Panel(
+                Markdown(chat_history),
+                border_style="output-frame",
+                title="Previous conversation (last 3 exchanges, truncated)",
+                subtitle=f"Previous conversation stats: {ctx_total} tks - {ctx_rate:.2f}% of {ctx_max} budget",
+            )
+        )
 
     output.newline()
     output.rule()
     output.info(" [accent]/[/accent] [weak]slash commands[/weak]")
-    output.info(" [accent]![/accent] [weak]shell command, attach output to context[/weak]")
-    output.info(" [accent]@[/accent] [weak]reference file/directory, attach to context[/weak]")
+    output.info(
+        " [accent]![/accent] [weak]shell command, attach output to context[/weak]"
+    )
+    output.info(
+        " [accent]@[/accent] [weak]reference file/directory, attach to context[/weak]"
+    )
     output.info(" [accent]?[/accent] [weak]show help[/weak]")
-    output.info(" [accent]/configure[/accent]  [weak]configure the agent interactively[/weak]")
+    output.info(
+        " [accent]/configure[/accent]  [weak]configure the agent interactively[/weak]"
+    )
     output.rule()

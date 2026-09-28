@@ -53,6 +53,7 @@ try:
     from prompt_toolkit.lexers import PygmentsLexer
     from prompt_toolkit.styles import Style
     from pygments.lexers.markup import MarkdownLexer
+
     _HAS_PROMPT_TOOLKIT = True
 
 except ImportError:
@@ -64,12 +65,15 @@ except ImportError:
 txt_goodbye = "\n[accent-bold]Goodbye![/accent-bold]"
 PASTE_THRESHOLD = 1500
 
+
 class Agent:
-    def __init__(self, config_path=None, session='default'):
+    def __init__(self, config_path=None, session="default"):
         self.session = session
         self.spinner_prompt = None
         self.spinner_thinking = None
-        self._last_ctrl_c_time = 0  # Timestamp of last Control+C for double-tap detection
+        self._last_ctrl_c_time = (
+            0  # Timestamp of last Control+C for double-tap detection
+        )
         self.output = RichOutputAdapter()
         set_output(self.output)
         self._turn_in_progress = False
@@ -82,6 +86,7 @@ class Agent:
         self.remote = None
         try:
             from agent.client import ServerConnection
+
             conn = ServerConnection.connect(
                 session, spawn=False, config_path=config_path
             )
@@ -98,9 +103,12 @@ class Agent:
 
             from agent.config import Config as _Config
             from agent.memory import Memory as _Memory
+
             cfg = _Config()
             cfg.load(config_path)
-            self.core = cast(Core, SimpleNamespace(config=cfg, memory=_Memory(session=session)))
+            self.core = cast(
+                Core, SimpleNamespace(config=cfg, memory=_Memory(session=session))
+            )
             self.emitter = cast(TurnEmitter, None)
             self._event_peer = cast(LoopbackTransport, None)
             self._event_thread = None
@@ -193,8 +201,11 @@ class Agent:
         elif message.name == Event.TOOL_RESULT:
             payload = payload_as(ToolResultPayload, message)
             self.tool_result_callback(
-                payload.id, payload.name, payload.content,
-                payload.is_error, payload.duration,
+                payload.id,
+                payload.name,
+                payload.content,
+                payload.is_error,
+                payload.duration,
             )
 
         elif message.name == Event.CANCELLED:
@@ -239,7 +250,7 @@ class Agent:
             self.spinner_thinking = None
         ok("💡 Done thinking\n")
 
-    def content_callback(self, content:str=""):
+    def content_callback(self, content: str = ""):
         """Called when new chunks arrive in streaming mode."""
         if self._md_stream is not None:
             # Live streaming markdown rendering: complete lines are rendered
@@ -280,7 +291,9 @@ class Agent:
         newline()
         args_str = format_tool_args(tool_args)
         if args_str:
-            info(f"🛠️ [weak]Activating tool:[/weak]  [tool]{tool_name}[/tool]  [weak]({escape(args_str)})[/weak]")
+            info(
+                f"🛠️ [weak]Activating tool:[/weak]  [tool]{tool_name}[/tool]  [weak]({escape(args_str)})[/weak]"
+            )
         else:
             info(f"🛠️ [weak]Activating tool:[/weak]  [tool]{tool_name}[/tool]")
 
@@ -322,19 +335,22 @@ class Agent:
         if self.spinner_thinking:
             self.spinner_thinking.stop()
             self.spinner_thinking = None
-        
+
     def _create_prompt_session(self):
         # Key bindings:
         kb = KeyBindings()
-        @kb.add('enter')
+
+        @kb.add("enter")
         def _(event):
             """Enter submits the input."""
             event.current_buffer.validate_and_handle()
-        @kb.add('escape', 'enter')
+
+        @kb.add("escape", "enter")
         def _(event):
             """Alt+Enter inserts a newline."""
-            event.current_buffer.insert_text('\n')
-        @kb.add('c-c')
+            event.current_buffer.insert_text("\n")
+
+        @kb.add("c-c")
         def _(event):
             """Control+C: first press clears input, second press (within 1s) quits."""
             buffer = event.current_buffer
@@ -353,12 +369,14 @@ class Agent:
                     # Single press on empty: just reset and record time
                     buffer.reset()
                     self._last_ctrl_c_time = int(now)
+
         def _handle_paste(text):
             """Intercept large pastes and save them to a file."""
             if len(text) > PASTE_THRESHOLD:
                 file_path = self.core.memory.create_pasted_file(text)
                 return f"*Pasted file: {file_path}*\n"
             return text
+
         # Bracketed paste: catches middle-click, Shift+Insert, and
         # Control+Shift+V
         @kb.add(Keys.BracketedPaste)
@@ -368,15 +386,17 @@ class Agent:
             event.current_buffer.insert_text(_handle_paste(text))
 
         # Create prompt session now
-        style = Style.from_dict({
-            "prompt": "#0087d7",
-            "frame.border": "#0087d7",
-            "bottom-toolbar": "#ffffff bg:#262626 noreverse",
-            "kbd": "#ffd787 bold",
-            "model": "#005faf",
-            "weak": "#393939",
-            "unsafe-warn": "bold bg:#8b0000 #ffffff"
-        })
+        style = Style.from_dict(
+            {
+                "prompt": "#0087d7",
+                "frame.border": "#0087d7",
+                "bottom-toolbar": "#ffffff bg:#262626 noreverse",
+                "kbd": "#ffd787 bold",
+                "model": "#005faf",
+                "weak": "#393939",
+                "unsafe-warn": "bold bg:#8b0000 #ffffff",
+            }
+        )
 
         # Vi mode
         vi_mode = self.core.config.get("agent.vi_mode", False)
@@ -406,8 +426,10 @@ class Agent:
                 text = document.text_before_cursor
 
                 # Slash commands: always check first when line starts with '/'
-                if text.startswith('/'):
-                    cmds = list(self.slash_completer.get_completions(document, complete_event))
+                if text.startswith("/"):
+                    cmds = list(
+                        self.slash_completer.get_completions(document, complete_event)
+                    )
                     if cmds:
                         return cmds
                     # If no slash completions match, fall through to path check
@@ -422,33 +444,33 @@ class Agent:
 
         # Toolbar
         def prompt_toolbar():
-            return HTML("  <kbd>Alt</kbd>+<kbd>↵</kbd>: new line | <kbd>↵</kbd>: submit | <kbd>!</kbd>: shell command | <kbd>Ctrl</kbd>+<kbd>C</kbd>: clear / double-tap to quit")
+            return HTML(
+                "  <kbd>Alt</kbd>+<kbd>↵</kbd>: new line | <kbd>↵</kbd>: submit | <kbd>!</kbd>: shell command | <kbd>Ctrl</kbd>+<kbd>C</kbd>: clear / double-tap to quit"
+            )
 
         model = self.core.config.get("model.name")
         unsafe = self.core.config.get("agent.unsafe", False)
-        unsafe_warn = (
-            "  <unsafe-warn> ⚠ UNSAFE </unsafe-warn>"
-            if unsafe else ""
-        )
+        unsafe_warn = "  <unsafe-warn> ⚠ UNSAFE </unsafe-warn>" if unsafe else ""
         self._session = PromptSession(
-                    style=style,
-                    message=HTML(f"⩥ You ⩤   <weak>model:</weak> <model>{model}</model>  <weak>session:</weak> <model>{self.core.memory.session}</model>{unsafe_warn}\n❯ "),
-                    history=FileHistory(str(history_path)),
-                    show_frame=True,
-                    multiline=True,
-                    key_bindings=kb,
-                    vi_mode=vi_mode,
-                    clipboard=InMemoryClipboard(),
-                    enable_open_in_editor=vi_mode,
-                    complete_while_typing=True,        
-                    complete_in_thread=True,
-                    completer=completer,
-                    auto_suggest=AutoSuggestFromHistory(),
-                    lexer=PygmentsLexer(MarkdownLexer),
-                    bottom_toolbar=prompt_toolbar,
+            style=style,
+            message=HTML(
+                f"⩥ You ⩤   <weak>model:</weak> <model>{model}</model>  <weak>session:</weak> <model>{self.core.memory.session}</model>{unsafe_warn}\n❯ "
+            ),
+            history=FileHistory(str(history_path)),
+            show_frame=True,
+            multiline=True,
+            key_bindings=kb,
+            vi_mode=vi_mode,
+            clipboard=InMemoryClipboard(),
+            enable_open_in_editor=vi_mode,
+            complete_while_typing=True,
+            complete_in_thread=True,
+            completer=completer,
+            auto_suggest=AutoSuggestFromHistory(),
+            lexer=PygmentsLexer(MarkdownLexer),
+            bottom_toolbar=prompt_toolbar,
         )
 
-        
     def run_interactive(self):
         """Run the agent in interactive mode."""
 
@@ -460,10 +482,16 @@ class Agent:
 
         if _HAS_PROMPT_TOOLKIT:
             self._create_prompt_session()
-            def get_input(): return str(self._session.prompt()).strip()
+
+            def get_input():
+                return str(self._session.prompt()).strip()
         else:
             # Rich
-            def get_input(): return Prompt.ask(prompt="[user]⩥ [bold]You[/bold] ⩤[/user]\n❯", console=self.output._console)
+            def get_input():
+                return Prompt.ask(
+                    prompt="[user]⩥ [bold]You[/bold] ⩤[/user]\n❯",
+                    console=self.output._console,
+                )
 
         # Phase 1 (client/server): the turn is driven through the event
         # emitter. The core's callbacks are wired to the emitter, whose events
@@ -515,7 +543,9 @@ class Agent:
                 command, params = registry.lookup(tokens)
 
                 if command:
-                    no_errors, msg, content, md, should_exit = registry.execute(self.core, command, params, self.output)
+                    no_errors, msg, content, md, should_exit = registry.execute(
+                        self.core, command, params, self.output
+                    )
 
                     if should_exit:
                         self.output.print(txt_goodbye)
@@ -525,19 +555,23 @@ class Agent:
                         # Content in rich or Markdown format
                         if content or md:
                             if params:
-                                param_list = ' '.join(params)
+                                param_list = " ".join(params)
                             else:
-                                param_list = ''
+                                param_list = ""
 
                             if content:
                                 cont = content
                             elif md:
                                 cont = Markdown(md)
-                            self.output.print_rich(Panel(cont,
-                                                        border_style="output-frame",
-                                                        title=f"{command.name} {param_list}",
-                                                        subtitle=f"{command.name} {param_list}",
-                                                        highlight=True))
+                            self.output.print_rich(
+                                Panel(
+                                    cont,
+                                    border_style="output-frame",
+                                    title=f"{command.name} {param_list}",
+                                    subtitle=f"{command.name} {param_list}",
+                                    highlight=True,
+                                )
+                            )
 
                         # Short status message
                         if msg:
@@ -551,13 +585,15 @@ class Agent:
 
                 else:
                     self.output.err(f"Command not found: {user_input}")
-                    
+
                 continue
 
             else:
                 self.output.newline()
                 self.output.rule(style="agent")
-                self.output.print(f"[agent]⩥ [bold]Wisemonkey[/bold] ⩤ [/agent]  [accent]⇒ {self.core.config.get('model.name')}[/accent]")
+                self.output.print(
+                    f"[agent]⩥ [bold]Wisemonkey[/bold] ⩤ [/agent]  [accent]⇒ {self.core.config.get('model.name')}[/accent]"
+                )
                 self.output.print("  [kbd]Ctrl[/kbd]+[kbd]C[/kbd]: Cancel turn\n")
                 try:
                     self._turn_in_progress = True
@@ -571,7 +607,11 @@ class Agent:
                     # Expand @file references into attached context (model
                     # sees the content; the typed text stays as-is on screen).
                     max_at = self.core.config.get("agent.at_file_max_chars", 8000)
-                    prompt = expand_at_references(user_input, max_at) if max_at > 0 else user_input
+                    prompt = (
+                        expand_at_references(user_input, max_at)
+                        if max_at > 0
+                        else user_input
+                    )
                     result = self.core.run_turn(
                         prompt,
                         self.emitter.prompt,
@@ -600,15 +640,22 @@ class Agent:
                     self.output.newline()
                     self.output.newline()
 
-                    if self.core.config.get("agent.markdown", False) and self._md_stream is None:
+                    if (
+                        self.core.config.get("agent.markdown", False)
+                        and self._md_stream is None
+                    ):
                         # Print markdown (skipped when the streaming renderer
                         # already rendered the response live).
-                        md = self.core.memory.get_chat_history_unformatted()[-1]['content']
-                        md = Panel(Markdown(md),
-                                    border_style="output-frame",
-                                    title="Markdown",
-                                    subtitle="Markdown",
-                                    highlight=True)
+                        md = self.core.memory.get_chat_history_unformatted()[-1][
+                            "content"
+                        ]
+                        md = Panel(
+                            Markdown(md),
+                            border_style="output-frame",
+                            title="Markdown",
+                            subtitle="Markdown",
+                            highlight=True,
+                        )
                         self.output.print_rich(md)
                         self._statusline(total_tokens, ntools, total_gen_time)
                 except Exception as e:
@@ -617,7 +664,9 @@ class Agent:
                     self.output.err(f"Error sending prompt: {e}")
                     # The turn's partial conversation has already been persisted
                     # by core.run_turn(), so we just continue to the next prompt.
-                    self.output.print("  [dim]Partial response was saved to chat history.[/dim]")
+                    self.output.print(
+                        "  [dim]Partial response was saved to chat history.[/dim]"
+                    )
                 finally:
                     self._md_stream_stop()
                     self._turn_in_progress = False
@@ -659,6 +708,7 @@ class Agent:
             def get_input():
                 return str(self._session.prompt()).strip()
         else:
+
             def get_input():
                 return Prompt.ask(
                     prompt="[user]⨯ [bold]You[/bold] ⨯[/user]\n❯",
@@ -770,16 +820,17 @@ class Agent:
                     self._md_stream_stop()
                     self.output.newline()
                     if not end.cancelled:
-                        self._statusline(
-                            end.total_tokens, end.n_tools, end.gen_time
-                        )
+                        self._statusline(end.total_tokens, end.n_tools, end.gen_time)
                         self.output.newline()
                         self.output.newline()
 
                         # Markdown summary (same as local mode), using the
                         # response carried in the turn-end payload. Skipped
                         # when the streaming renderer already rendered it live.
-                        if self.core.config.get("agent.markdown", False) and self._md_stream is None:
+                        if (
+                            self.core.config.get("agent.markdown", False)
+                            and self._md_stream is None
+                        ):
                             md = Panel(
                                 Markdown(end.response),
                                 border_style="output-frame",
@@ -838,7 +889,7 @@ class Agent:
             # Client-local: run with full terminal control here.
             import subprocess
 
-            return subprocess.run(payload.cmd)
+            return subprocess.run(payload.cmd, check=False)
 
         handlers: dict[ServerRequest, Callable[[Any], Any]] = {
             ServerRequest.CONFIRM: handle_confirm,

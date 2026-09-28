@@ -42,6 +42,9 @@ agent:
       - Use `save_note` to store important new information the user wants you to remember long-term.
   # Display formatted output at the end of generation
   markdown: false
+  # Show the big ASCII monkey banner at startup (default: off, a compact
+  # one-line header is shown instead)
+  banner: false
   # Render streamed output as markdown in real time (overrides the
   # end-of-turn markdown panel when active)
   markdown_stream: true

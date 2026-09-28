@@ -11,35 +11,33 @@ Coexists with the terminal-based agent (agent/agent.py).
 Launch with: wmk --tui <session>
 """
 
-
 from __future__ import annotations
 
 import os
-import re
 import threading
 from typing import cast
 
 from rich.markdown import Markdown
 from rich.panel import Panel
-
-from textual import events
+from textual import events, work
 from textual.app import App, ComposeResult
-from textual.containers import Container
-from textual.widgets import TextArea, Header, RichLog, Static, Footer
-from textual import work
 from textual.binding import Binding
-from textual.timer import Timer
+from textual.containers import Container
 from textual.events import Paste as PasteEvent
+from textual.timer import Timer
+from textual.widgets import Footer, Header, RichLog, Static, TextArea
 
-from agent.core import Core, Stage
-from agent.client import ServerConnection
-from agent.completion import complete_path, _last_token
 from agent.at_files import expand_at_references
+from agent.client import ServerConnection
+from agent.commands import Command, registry
+from agent.completion import _last_token, complete_path
+from agent.core import Core, Stage
 from agent.emitter import TurnEmitter
+from agent.history import History
 from agent.ipc import (
     ContentPayload,
-    HandshakePayload,
     Event,
+    HandshakePayload,
     ReasoningPayload,
     StageKind,
     StagePayload,
@@ -48,8 +46,6 @@ from agent.ipc import (
     loopback_pair,
     payload_as,
 )
-from agent.commands import registry, Command
-from agent.history import History
 from agent.output import TuiOutputAdapter, set_output
 from agent.startup import startup_info
 from agent.utils import format_tool_args
@@ -60,12 +56,14 @@ PASTE_THRESHOLD = 1000
 # Matches an optional ~ or leading / followed by any non-whitespace chars
 # that look like path components.
 # Spinner characters
-SPINNER_CHARS ="⣾⣽⣻⢿⡿⣟⣯⣷"
+SPINNER_CHARS = "⣾⣽⣻⢿⡿⣟⣯⣷"
+
 
 class _PromptInput(TextArea):
     """TextArea that handles history on up/down, Ctrl+C to clear, and paste threshold."""
 
-    BINDINGS = [
+    # Key bindings
+    BINDINGS = [  # noqa: RUF012
         Binding("enter", "submit", "Submit", priority=True),
         Binding("shift+enter", "newline", "New line"),
         Binding("ctrl+c", "clear", "Clear"),
@@ -84,8 +82,8 @@ class _PromptInput(TextArea):
         self.COMMANDS = []
         for cmd in registry.list_commands():
             self.COMMANDS.append(cmd.name)
-            if '-' in cmd.name:
-                self.COMMANDS.append(cmd.name.replace('-', ' '))
+            if "-" in cmd.name:
+                self.COMMANDS.append(cmd.name.replace("-", " "))
 
         # Special autocomplete list
         # When this is set, COMMANDS is ignored
@@ -101,6 +99,7 @@ class _PromptInput(TextArea):
     def _wm_app(self) -> WisemonkeyTui:
         """Narrow ``self.app`` to ``WisemonkeyTui`` for type-checking."""
         from typing import cast as _cast
+
         return _cast(WisemonkeyTui, self.app)
 
     def action_submit(self) -> None:
@@ -149,7 +148,9 @@ class _PromptInput(TextArea):
             if isinstance(content, list):
                 # tool-use turns have content as a list of blocks
                 content = "\n".join(
-                    block.get("text", "") for block in content if block.get("type") == "text"
+                    block.get("text", "")
+                    for block in content
+                    if block.get("type") == "text"
                 )
             if role == "user":
                 label = "You"
@@ -224,26 +225,24 @@ class _PromptInput(TextArea):
         if self.SPECIAL:
             # Use special list
             candidates = [
-                c for c in self.SPECIAL
-                if c.startswith(current) and c != current
+                c for c in self.SPECIAL if c.startswith(current) and c != current
             ]
             if candidates:
                 best = min(candidates, key=len)
-                self.suggestion = best[len(current):]
+                self.suggestion = best[len(current) :]
                 return
             self.suggestion = ""
             return
-            
+
         else:
             # Slash commands
             if line.startswith("/") and col == len(line):
                 candidates = [
-                    c for c in self.COMMANDS
-                    if c.startswith(current) and c != current
+                    c for c in self.COMMANDS if c.startswith(current) and c != current
                 ]
                 if candidates:
                     best = min(candidates, key=len)
-                    self.suggestion = best[len(current):]
+                    self.suggestion = best[len(current) :]
                     return
                 self.suggestion = ""
                 return
@@ -254,7 +253,7 @@ class _PromptInput(TextArea):
             if token:
                 _completions, common = complete_path(current)
                 if common and common != token:
-                    self.suggestion = common[len(token):]
+                    self.suggestion = common[len(token) :]
                     return
             self.suggestion = ""
 
@@ -273,7 +272,6 @@ class _PromptInput(TextArea):
             self.suggestion = ""
             event.prevent_default()
             event.stop()
-
 
 
 class WisemonkeyTui(App):
@@ -308,10 +306,12 @@ class WisemonkeyTui(App):
         with Container(id="bottom-area"):
             yield Static(id="status-bar")
             with Container(id="input-widget"):
-                prompt = _PromptInput.code_editor(id="input",
-                                                  placeholder="Type a message...",
-                                                  soft_wrap=True,
-                                                  language="markdown")
+                prompt = _PromptInput.code_editor(
+                    id="input",
+                    placeholder="Type a message...",
+                    soft_wrap=True,
+                    language="markdown",
+                )
                 yield prompt
             yield Footer(id="bottom-bar")
 
@@ -326,15 +326,15 @@ class WisemonkeyTui(App):
                 # purely local UI concerns (status bar, completions,
                 # history, paste files).
                 from types import SimpleNamespace
+
                 from agent.config import Config as _Config
                 from agent.memory import Memory as _Memory
+
                 cfg = _Config()
                 cfg.load(self.config_path)
                 self.core = cast(
                     Core,
-                    SimpleNamespace(
-                        config=cfg, memory=_Memory(session=self.session)
-                    ),
+                    SimpleNamespace(config=cfg, memory=_Memory(session=self.session)),
                 )
             else:
                 self.core = Core(self.config_path, self.session)
@@ -454,8 +454,9 @@ class WisemonkeyTui(App):
             )
 
         elif message.name == Event.CONTENT:
-            self.call_from_thread(self._append_content,
-                                  payload_as(ContentPayload, message).text)
+            self.call_from_thread(
+                self._append_content, payload_as(ContentPayload, message).text
+            )
 
         elif message.name == Event.TOOL_CALL:
             payload = payload_as(ToolCallPayload, message)
@@ -463,8 +464,13 @@ class WisemonkeyTui(App):
 
         elif message.name == Event.TOOL_RESULT:
             payload = payload_as(ToolResultPayload, message)
-            self.call_from_thread(self._append_tool_result, payload.name,
-                                  payload.content, payload.is_error, payload.duration)
+            self.call_from_thread(
+                self._append_tool_result,
+                payload.name,
+                payload.content,
+                payload.is_error,
+                payload.duration,
+            )
 
         elif message.name == Event.CANCELLED:
             self.output.err("Turn cancelled")
@@ -472,19 +478,27 @@ class WisemonkeyTui(App):
         # TURN_START / TURN_END / STATUS are consumed by the turn runner
         # (_run_turn), which reads the TurnResult directly in phase 1.
 
-    def _append_tool_result(self, tool_name: str, content: str,
-                            is_error: bool, duration: float) -> None:
+    def _append_tool_result(
+        self, tool_name: str, content: str, is_error: bool, duration: float
+    ) -> None:
         """Render a finished tool execution (event: TOOL_RESULT)."""
         from rich.markup import escape
+
         summary = escape(content if len(content) <= 120 else content[:117] + "…")
         if is_error:
-            self.output.print(f"[red]✗ Tool {tool_name} failed ({duration:.1f}s): {summary}[/red]")
+            self.output.print(
+                f"[red]✗ Tool {tool_name} failed ({duration:.1f}s): {summary}[/red]"
+            )
         else:
-            self.output.print(f"[dim]✓ Tool {tool_name} finished ({duration:.1f}s)[/dim]")
+            self.output.print(
+                f"[dim]✓ Tool {tool_name} finished ({duration:.1f}s)[/dim]"
+            )
 
     # Reasoning callback
 
-    def _reasoning_callback(self, stage: Stage, content: str = "", reasoning_visible: bool = True) -> None:
+    def _reasoning_callback(
+        self, stage: Stage, content: str = "", reasoning_visible: bool = True
+    ) -> None:
         """Called from worker thread on START / PROCESS / STOP of reasoning.
 
         START: show "Thinking..." in the status bar with a spinner.
@@ -495,7 +509,9 @@ class WisemonkeyTui(App):
         ``_append_content``.
         """
         if stage == Stage.START:
-            self.call_from_thread(self.query_one("#status-bar", Static).update, "💡 Thinking...")
+            self.call_from_thread(
+                self.query_one("#status-bar", Static).update, "💡 Thinking..."
+            )
             self._thinking_spinner_chars = SPINNER_CHARS
             self._thinking_spinner_idx = 0
 
@@ -565,7 +581,6 @@ class WisemonkeyTui(App):
                 self._prompt_spinner_interval = None
             self._update_status()
 
-
     def _update_status(self) -> None:
         """Refresh the status and bottom bars text."""
         if not self.core:
@@ -576,7 +591,8 @@ class WisemonkeyTui(App):
         unsafe = self.core.config.get("agent.unsafe", False)
         unsafe_warn = (
             "  |  [bold #ffffff on #8b0000] ⚠ UNSAFE [/bold #ffffff on #8b0000]"
-            if unsafe else ""
+            if unsafe
+            else ""
         )
         self.query_one("#status-bar", Static).update(
             f" Model: [bold]{model}[/bold]  |  Session: [bold]{sess}[/bold]"
@@ -623,12 +639,16 @@ class WisemonkeyTui(App):
                     core = cast(Core, self.core)
                     core.config.reload()
                 if result.content or result.markdown:
-                    cont = result.content if result.content else Markdown(result.markdown)
-                    panel = Panel(cont,
-                                border_style="output-frame",
-                                title=f"{result.command}",
-                                subtitle=f"{result.command}",
-                                highlight=True)
+                    cont = (
+                        result.content if result.content else Markdown(result.markdown)
+                    )
+                    panel = Panel(
+                        cont,
+                        border_style="output-frame",
+                        title=f"{result.command}",
+                        subtitle=f"{result.command}",
+                        highlight=True,
+                    )
                     self.output.print_rich(panel)
                 if result.msg:
                     self.output.ok(result.msg)
@@ -649,22 +669,26 @@ class WisemonkeyTui(App):
 
         if ok_flag:
             if params:
-                param_list = ' '.join(params)
+                param_list = " ".join(params)
             else:
-                param_list = ''
+                param_list = ""
             if content:
-                panel = Panel(content,
-                            border_style="output-frame",
-                            title=f"{command.name} {param_list}",
-                            subtitle=f"{command.name} {param_list}",
-                            highlight=True)
+                panel = Panel(
+                    content,
+                    border_style="output-frame",
+                    title=f"{command.name} {param_list}",
+                    subtitle=f"{command.name} {param_list}",
+                    highlight=True,
+                )
                 self.output.print_rich(panel)
             elif md:
-                panel = Panel(Markdown(md),
-                            border_style="output-frame",
-                            title=f"{command.name} {param_list}",
-                            subtitle=f"{command.name} {param_list}",
-                            highlight=True)
+                panel = Panel(
+                    Markdown(md),
+                    border_style="output-frame",
+                    title=f"{command.name} {param_list}",
+                    subtitle=f"{command.name} {param_list}",
+                    highlight=True,
+                )
                 self.output.print_rich(panel)
 
             if msg:
@@ -678,7 +702,9 @@ class WisemonkeyTui(App):
     def _handle_prompt(self, user_input: str) -> None:
         """Send the user message to the LLM in a background thread."""
         self.output.rule(style="user")
-        self.output.rule(style="agent", title="[agent]▶▶▶ Wisemonkey[/agent]", align="left")
+        self.output.rule(
+            style="agent", title="[agent]▶▶▶ Wisemonkey[/agent]", align="left"
+        )
         self._stream_buffer = ""
         self._run_turn(user_input)
 
@@ -695,7 +721,6 @@ class WisemonkeyTui(App):
             return
         if self._cancel_event:
             self._cancel_event.set()
-
 
     def action_newline(self) -> None:
         """Insert a newline in the text area."""
@@ -742,7 +767,6 @@ class WisemonkeyTui(App):
             inp.text = entry
             lines = entry.split("\n")
             inp.cursor_location = (len(lines) - 1, len(lines[-1]))
-
 
     def _handle_user_input(self, user_input: str) -> None:
         """Process a user message or slash command."""
@@ -809,7 +833,9 @@ class WisemonkeyTui(App):
 
         try:
             max_at = self.core.config.get("agent.at_file_max_chars", 8000)
-            prompt = expand_at_references(user_input, max_at) if max_at > 0 else user_input
+            prompt = (
+                expand_at_references(user_input, max_at) if max_at > 0 else user_input
+            )
             if self.remote is not None:
                 # Remote mode: run the turn on the daemon server, streaming
                 # events through the same UI handlers via call_from_thread.
@@ -819,8 +845,12 @@ class WisemonkeyTui(App):
                 end = self.remote.prompt(text=prompt, on_event=on_event)
                 self._last_response = end.response
                 self.call_from_thread(
-                    self._finish_turn, end.response, end.total_tokens,
-                    end.n_tools, end.gen_time, end.cancelled
+                    self._finish_turn,
+                    end.response,
+                    end.total_tokens,
+                    end.n_tools,
+                    end.gen_time,
+                    end.cancelled,
                 )
             else:
                 result = self.core.run_turn(
@@ -835,8 +865,12 @@ class WisemonkeyTui(App):
                     poll=poll,
                 )
                 self.call_from_thread(
-                    self._finish_turn, result.response, result.total_tokens,
-                    result.n_tools, result.gen_time, result.cancelled
+                    self._finish_turn,
+                    result.response,
+                    result.total_tokens,
+                    result.n_tools,
+                    result.gen_time,
+                    result.cancelled,
                 )
         except Exception as e:
             self.output.err(f"Error: {e}")
@@ -869,14 +903,19 @@ class WisemonkeyTui(App):
             # Last part starts a new buffer (still accumulating).
             self._stream_buffer = parts[-1]
 
-    def _append_tool(self, tool_name: str, tool_args, captured_output: str = "") -> None:
+    def _append_tool(
+        self, tool_name: str, tool_args, captured_output: str = ""
+    ) -> None:
         """Tool activation callback – called from worker thread."""
         from rich.markup import escape
+
         args_str = format_tool_args(tool_args)
         if args_str:
             text = f"[dim]🛠️ Activating tool: [steel_blue3]{tool_name}[/steel_blue3] [grey39]({escape(args_str)})[/grey39][/dim]"
         else:
-            text = f"[dim]🛠️ Activating tool: [steel_blue3]{tool_name}[/steel_blue3][/dim]"
+            text = (
+                f"[dim]🛠️ Activating tool: [steel_blue3]{tool_name}[/steel_blue3][/dim]"
+            )
         if captured_output:
             text += "\n" + captured_output
         self.output.print(text)
@@ -890,7 +929,11 @@ class WisemonkeyTui(App):
         self.output.err("Connection to server lost (server exited or was killed).")
 
     def _finish_turn(
-        self, response: str, tokens: int, ntools: int, gen_time: float,
+        self,
+        response: str,
+        tokens: int,
+        ntools: int,
+        gen_time: float,
         result_cancelled: bool = False,
     ) -> None:
         """Called on the main thread after a turn completes."""
@@ -923,12 +966,14 @@ class WisemonkeyTui(App):
             if self.remote is not None and not result_cancelled:
                 md_text = self._last_response
             else:
-                md_text = self.core.memory.get_chat_history_unformatted()[-1]['content']
-            md = Panel(Markdown(md_text),
-                        border_style="output-frame",
-                        title=f"Markdown",
-                        subtitle=f"Markdown",
-                        highlight=True)
+                md_text = self.core.memory.get_chat_history_unformatted()[-1]["content"]
+            md = Panel(
+                Markdown(md_text),
+                border_style="output-frame",
+                title=f"Markdown",
+                subtitle=f"Markdown",
+                highlight=True,
+            )
             self.output.print_rich(md)
 
     # Lifecycle

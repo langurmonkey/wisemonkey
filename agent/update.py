@@ -50,7 +50,7 @@ class UpdatesManager:
         last_str = self._data.get("last_update_check")
         if last_str:
             try:
-                return datetime.fromisoformat(last_str)
+                return datetime.fromisoformat(last_str).astimezone()
             except (ValueError, TypeError):
                 return None
         return None
@@ -72,7 +72,7 @@ class UpdatesManager:
         Returns:
             (updates_available: bool, commit_hash: str | None)
         """
-        now = datetime.now()
+        now = datetime.now().astimezone()
 
         # Skip the fetch check if we've checked within the last $UPDATE_CHECK_INTERVAL days
         last_check = self.get_last_check()

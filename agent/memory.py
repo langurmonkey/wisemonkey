@@ -111,11 +111,11 @@ class Memory:
             # Read 'created' and 'accessed'
             md = self._read_metadata()
             if md and 'created' in md:
-                self.session_created = datetime.datetime.fromisoformat(md['created'])
+                self.session_created = datetime.datetime.fromisoformat(md['created']).astimezone()
             else:
                 self.session_created = None
             if md and 'accessed' in md:
-                self.session_accessed = datetime.datetime.fromisoformat(md['accessed'])
+                self.session_accessed = datetime.datetime.fromisoformat(md['accessed']).astimezone()
             else:
                 self.session_accessed = None
 
