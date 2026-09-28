@@ -39,7 +39,7 @@ _RESET = "\x1b[0m"
 _ACCENT = "\x1b[36m"  # cyan
 _LABEL = "\x1b[90m"  # bright black (gray)
 _WHITE = "\x1b[37m"
-_KEY = "\x1b[38;5;228m"  # light yellow (key caps)
+_KEY = "\x1b[1;38;5;228m"  # bold, light yellow (key caps)
 _BAR_BG = "\x1b[48;5;236m"  # dark gray background (hint bar)
 
 
