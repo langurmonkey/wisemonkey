@@ -9,17 +9,15 @@ from __future__ import annotations
 
 import ast
 import os
-
-from pathlib import Path
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
+from pathlib import Path
 
 from pubsub import pub
 
-from agent.output import get_output_or_ipc
-from agent.utils import resize_image
-from agent.output import OutputAdapter
+from agent.output import OutputAdapter, get_output_or_ipc
 from agent.tokens import count_tokens
+from agent.utils import resize_image
 
 # Global error messages for commands
 no_params_error = "This command does not take any parameters"
@@ -476,8 +474,8 @@ def _cmd_session_plan_list(core, params, output: OutputAdapter | None = None) ->
     "/session-plan-read",
     "Read a saved session plan by name",
     examples=[
-        "/session-plan-read REFACTOR_20260626_120000   # Read a specific plan",
-        "/session-plan-read REFACTOR                    # Read the most recent matching plan",
+        "/session plan read REFACTOR_20260626_120000   # Read a specific plan",
+        "/session-plan read REFACTOR                    # Read the most recent matching plan",
     ]
 )
 def _cmd_session_plan_read(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
@@ -512,8 +510,8 @@ def _cmd_session_plan_read(core, params, output: OutputAdapter | None = None) ->
     "/session-plan-edit",
     "Edit a saved session plan with $EDITOR or $VISUAL",
     examples=[
-        "/session-plan-edit REFACTOR_20260626_120000   # Edit a specific plan",
-        "/session-plan-edit REFACTOR                    # Edit the most recent matching plan",
+        "/session plan edit REFACTOR_20260626_120000   # Edit a specific plan",
+        "/session plan edit REFACTOR                    # Edit the most recent matching plan",
     ]
 )
 def _cmd_session_plan_edit(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:

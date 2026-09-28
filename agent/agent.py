@@ -445,7 +445,7 @@ class Agent:
         # Toolbar
         def prompt_toolbar():
             return HTML(
-                "  <kbd>Alt</kbd>+<kbd>↵</kbd>: new line | <kbd>↵</kbd>: submit | <kbd>!</kbd>: shell command | <kbd>Ctrl</kbd>+<kbd>C</kbd>: clear / double-tap to quit"
+                "  <kbd>Alt</kbd>+<kbd>↵</kbd>: new line | <kbd>Ctrl</kbd>+<kbd>C</kbd>: clear / double-tap to quit"
             )
 
         model = self.core.config.get("model.name")
