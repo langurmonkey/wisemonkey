@@ -60,6 +60,9 @@ class TurnResult:
     gen_time: float = 0.0
     cancelled: bool = False
     error: str = ""
+    # Set when the turn ended because agent.max_turns was exhausted, so the
+    # UI can tell the user why the response stopped (like max_tool_calls).
+    max_turns_reached: bool = False
 
     def __iter__(self) -> Iterator[Any]:
         return iter((self.response, self.total_tokens, self.n_tools, self.gen_time))
@@ -786,6 +789,7 @@ class Core:
                 total_tokens=total_tokens,
                 n_tools=n_tools,
                 gen_time=total_gen_time,
+                max_turns_reached=True,
             )
 
         except Exception as e:

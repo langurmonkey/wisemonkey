@@ -636,6 +636,14 @@ class Agent:
                     if result.cancelled:
                         continue  # skip status line, go straight back to prompt
 
+                    if result.max_turns_reached:
+                        self.output.err(
+                            f"Turn stopped: maximum number of turns reached "
+                            f"(agent.max_turns = "
+                            f"{self.core.config.get('agent.max_turns', 50)}). "
+                            "The model kept requesting tools without a final answer."
+                        )
+
                     self._statusline(total_tokens, ntools, total_gen_time)
                     self.output.newline()
                     self.output.newline()
@@ -820,6 +828,13 @@ class Agent:
                     self._md_stream_stop()
                     self.output.newline()
                     if not end.cancelled:
+                        if end.max_turns_reached:
+                            self.output.err(
+                                f"Turn stopped: maximum number of turns reached "
+                                f"(agent.max_turns = "
+                                f"{self.core.config.get('agent.max_turns', 50)}). "
+                                "The model kept requesting tools without a final answer."
+                            )
                         self._statusline(end.total_tokens, end.n_tools, end.gen_time)
                         self.output.newline()
                         self.output.newline()

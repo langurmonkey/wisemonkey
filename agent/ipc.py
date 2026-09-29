@@ -322,6 +322,8 @@ class TurnEndPayload:
     gen_time: float = 0.0
     cancelled: bool = False
     error: str = ""
+    # True when the turn ended because agent.max_turns was exhausted.
+    max_turns_reached: bool = False
 
 
 @dataclass

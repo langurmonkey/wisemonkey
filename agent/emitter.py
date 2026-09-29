@@ -112,6 +112,7 @@ class TurnEmitter:
         *,
         cancelled: bool = False,
         error: str = "",
+        max_turns_reached: bool = False,
     ) -> None:
         """Announce that a turn has finished, whatever the outcome."""
         self.emit(
@@ -124,6 +125,7 @@ class TurnEmitter:
                 gen_time=gen_time,
                 cancelled=cancelled,
                 error=error,
+                max_turns_reached=max_turns_reached,
             ),
         )
 

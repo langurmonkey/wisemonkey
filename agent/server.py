@@ -290,6 +290,7 @@ class WisemonkeyServer:
                 gen_time=result.gen_time,
                 cancelled=result.cancelled,
                 error=result.error,
+                max_turns_reached=result.max_turns_reached,
             )
             self._send(
                 Message.response(
@@ -302,6 +303,7 @@ class WisemonkeyServer:
                         gen_time=result.gen_time,
                         cancelled=result.cancelled,
                         error=result.error,
+                        max_turns_reached=result.max_turns_reached,
                     ),
                 )
             )
