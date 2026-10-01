@@ -370,3 +370,145 @@ class TestStageEnumUnchanged(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSteerInjection(unittest.TestCase):
+    """Lines submitted mid-turn reach the model at the next tool seam.
+
+    ``run_turn`` loops back to the LLM once per tool batch; the injection
+    callback is polled right there, so a line the user typed while a tool was
+    running is appended to ``self.messages`` before the next request instead
+    of waiting for the whole turn to end.
+    """
+
+    def _tool_call(self, name="t"):
+        return {"id": "1", "type": "function",
+                "function": {"name": name, "arguments": "{}"}}
+
+    def _replies(self, n_tools=2, final="done"):
+        """n_tools tool rounds, then a final answer with no tool calls."""
+        out = [{"text": f"narration {i}",
+                "tool_calls": [self._tool_call()]} for i in range(n_tools)]
+        out.append({"text": final})
+        return out
+
+    def test_no_injection_leaves_messages_untouched(self):
+        core = make_core(self._replies())
+        with patch("agent.core.execute_tool", return_value="ok"):
+            core.run_turn("go")
+        assert [m for m in core.messages if m["role"] == "user"] == [
+            {"role": "user", "content": "go"}
+        ]
+
+    def test_line_is_injected_before_the_next_request(self):
+        core = make_core(self._replies())
+        pending = [["actually, use python"]]
+        with patch("agent.core.execute_tool", return_value="ok"):
+            core.run_turn("go",
+                          inject_callback=lambda: pending.pop(0))
+        users = [m for m in core.messages if m["role"] == "user"]
+        assert [m["content"] for m in users] == [
+            "go", "actually, use python",
+        ]
+
+    def test_every_queued_line_is_drained_in_one_seam(self):
+        """Two lines submitted between the same two tool calls arrive together."""
+        core = make_core(self._replies())
+        pending = [["first", "second"]]
+
+        def inject():
+            return pending.pop(0) if pending else []
+
+        with patch("agent.core.execute_tool", return_value="ok"):
+            core.run_turn("go", inject_callback=inject)
+        users = [m for m in core.messages if m["role"] == "user"]
+        assert [m["content"] for m in users] == ["go", "first", "second"]
+
+    def test_lines_submitted_at_different_seams_both_arrive(self):
+        core = make_core(self._replies())
+        pending = [["early"], ["late"]]
+
+        def inject():
+            return pending.pop(0) if pending else []
+
+        with patch("agent.core.execute_tool", return_value="ok"):
+            core.run_turn("go", inject_callback=inject)
+        users = [m for m in core.messages if m["role"] == "user"]
+        assert [m["content"] for m in users] == ["go", "early", "late"]
+
+    def test_injection_is_recorded_in_chat_history(self):
+        core = make_core(self._replies())
+        pending = [["steer"]]
+        with patch("agent.core.execute_tool", return_value="ok"):
+            core.run_turn("go", inject_callback=lambda: pending.pop(0))
+        injected = [e for e in core.memory.exchanges
+                    if e["role"] == "user" and e["content"] == "steer"]
+        assert len(injected) == 1
+
+    def test_callback_is_polled_once_per_tool_round(self):
+        core = make_core(self._replies(n_tools=3))
+        calls = []
+
+        def inject():
+            calls.append(1)
+            return []
+
+        with patch("agent.core.execute_tool", return_value="ok"):
+            core.run_turn("go", inject_callback=inject)
+        assert len(calls) == 3
+
+    def test_not_polled_when_the_turn_has_no_tool_calls(self):
+        """A single-round turn has no seam, so nothing is asked for."""
+        core = make_core([{"text": "answer"}])
+        calls = []
+        with patch("agent.core.execute_tool", return_value="ok"):
+            core.run_turn("go", inject_callback=lambda: calls.append(1))
+        assert calls == []
+
+    def test_final_answer_round_does_not_inject(self):
+        """The seam is before the *next* request, so the last round is skipped."""
+        core = make_core(self._replies(n_tools=1))
+        calls = []
+        with patch("agent.core.execute_tool", return_value="ok"):
+            core.run_turn("go", inject_callback=lambda: calls.append(1))
+        assert len(calls) == 1
+
+    def test_blank_and_non_string_lines_are_dropped(self):
+        core = make_core(self._replies())
+        pending = [["", "   ", None, 42, "keep"]]
+
+        def inject():
+            return pending.pop(0)
+
+        with patch("agent.core.execute_tool", return_value="ok"):
+            core.run_turn("go", inject_callback=inject)
+        users = [m for m in core.messages if m["role"] == "user"]
+        assert [m["content"] for m in users] == ["go", "keep"]
+
+    def test_callback_exception_does_not_abort_the_turn(self):
+        """A UI-level failure to collect typed text must not kill the turn."""
+        core = make_core(self._replies())
+
+        def inject():
+            raise RuntimeError("footer exploded")
+
+        with patch("agent.core.execute_tool", return_value="ok"):
+            result = core.run_turn("go", inject_callback=inject)
+        assert result.response == "done"
+
+    def test_single_string_is_accepted(self):
+        core = make_core(self._replies())
+        pending = ["just a line"]
+        with patch("agent.core.execute_tool", return_value="ok"):
+            core.run_turn("go",
+                          inject_callback=lambda: pending.pop(0))
+        users = [m for m in core.messages if m["role"] == "user"]
+        assert [m["content"] for m in users] == ["go", "just a line"]
+
+    def test_none_and_empty_are_no_ops(self):
+        for value in (None, [], ()):
+            core = make_core(self._replies())
+            with patch("agent.core.execute_tool", return_value="ok"):
+                core.run_turn("go", inject_callback=lambda: value)
+            users = [m for m in core.messages if m["role"] == "user"]
+            assert [m["content"] for m in users] == ["go"]

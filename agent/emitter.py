@@ -32,6 +32,8 @@ from agent.ipc import (
     ContentPayload,
     ErrorPayload,
     Event,
+    InjectedPayload,
+    InjectWhen,
     Message,
     ReasoningPayload,
     StageKind,
@@ -200,6 +202,21 @@ class TurnEmitter:
                 image_base64=image_base64,
                 mime_type=mime_type,
             ),
+        )
+
+    def injected(self, text: str, when: str = InjectWhen.BETWEEN_TURNS,
+                 role: str = "user") -> None:
+        """Announce that a submitted line was delivered to the model.
+
+        Emitted at the point of delivery (mid-turn, at a tool seam, or between
+        turns) rather than when the main loop drains it, so the client can pop
+        the line from its own queue exactly when the server confirms it. A
+        client that never sees this event still holds the line, and runs it as
+        an ordinary next prompt -- that is the safety net.
+        """
+        self.emit(
+            Event.INJECTED,
+            InjectedPayload(text=text, when=when, role=role, turn_id=self.turn_id),
         )
 
     def cancelled(self, exc: BaseException | None = None) -> None:

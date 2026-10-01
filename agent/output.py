@@ -145,6 +145,14 @@ class OutputAdapter(Protocol):
         """Pop the oldest queued steering line, if any."""
         return None
 
+    def steer_ack(self, text: str) -> bool:
+        """Drop the queued line *text* once the server confirms delivery."""
+        return False
+
+    def steer_take_all(self) -> "list[str]":
+        """Pop and return every queued steering line, oldest first."""
+        return []
+
     def steer_line(self) -> str:
         """Return the steering line currently being typed."""
         return ""
@@ -233,6 +241,17 @@ class RichOutputAdapter(OutputAdapter):
     def steer_take(self) -> "str | None":
         """Pop the oldest queued steering line, if any."""
         return self._steer.take() if self._steer else None
+
+    def steer_ack(self, text: str) -> bool:
+        """Drop the queued line *text* once the server confirms delivery.
+
+        Returns True if the line was still queued (the normal case).
+        """
+        return self._steer.ack(text) if self._steer else False
+
+    def steer_take_all(self) -> "list[str]":
+        """Pop and return every queued steering line, oldest first."""
+        return self._steer.take_all() if self._steer else []
 
     def steer_line(self) -> str:
         """Return the steering line currently being typed."""

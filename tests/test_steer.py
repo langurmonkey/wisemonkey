@@ -252,3 +252,68 @@ class TestSteerInputNoTty(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSteerQueue(unittest.TestCase):
+    """The FIFO backing mid-turn injection.
+
+    Two consumers care about it: the injection seam, which drains *all*
+    pending lines at a tool boundary, and the remote path, which drops its own
+    copy of a line only once the server confirms delivery. So ``ack`` must
+    remove the first equal line, not merely the oldest.
+    """
+
+    def setUp(self) -> None:
+        self.steer = SteerInput(on_submit=lambda _t: None)
+
+    def _queue(self, *lines: str) -> None:
+        for line in lines:
+            self.steer._queue.append(line)
+
+    def test_take_is_fifo(self):
+        self._queue("first", "second")
+        self.assertEqual(self.steer.take(), "first")
+        self.assertEqual(self.steer.take(), "second")
+        self.assertIsNone(self.steer.take())
+
+    def test_take_on_empty_queue(self):
+        self.assertIsNone(self.steer.take())
+
+    def test_pending_does_not_consume(self):
+        self._queue("first")
+        self.assertEqual(self.steer.pending(), "first")
+        self.assertEqual(self.steer.pending(), "first")
+        self.assertEqual(self.steer.take(), "first")
+
+    def test_take_all_drains_everything(self):
+        self._queue("a", "b", "c")
+        self.assertEqual(self.steer.take_all(), ["a", "b", "c"])
+        self.assertEqual(self.steer.take_all(), [])
+        self.assertIsNone(self.steer.pending())
+
+    def test_take_all_on_empty_queue(self):
+        self.assertEqual(self.steer.take_all(), [])
+
+    def test_take_all_preserves_order(self):
+        self._queue("z", "y", "x")
+        self.assertEqual(self.steer.take_all(), ["z", "y", "x"])
+
+    def test_ack_removes_the_named_line(self):
+        """Delivery is confirmed out of order relative to typing order."""
+        self._queue("first", "second")
+        self.assertTrue(self.steer.ack("second"))
+        self.assertEqual(self.steer.take_all(), ["first"])
+
+    def test_ack_reports_miss(self):
+        self._queue("first")
+        self.assertFalse(self.steer.ack("never sent"))
+        self.assertEqual(self.steer.pending(), "first")
+
+    def test_ack_of_blank_queue(self):
+        self.assertFalse(self.steer.ack("anything"))
+
+    def test_ack_only_removes_one_occurrence(self):
+        """The same text typed twice is two separate submissions."""
+        self._queue("go on", "go on")
+        self.assertTrue(self.steer.ack("go on"))
+        self.assertEqual(self.steer.take_all(), ["go on"])

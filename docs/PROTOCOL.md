@@ -71,17 +71,29 @@ or an `error`.
 | `ping`         | `PingPayload` (`nonce`) | `PongPayload` (`nonce`) | Liveness probe. |
 | `memory_stats` | —                 | `MemoryStatsPayload` (`used`, `max_tokens`, `fill_rate`) | Chat-memory usage in tokens. |
 | `record`       | `RecordPayload` (`role`, `content`) | ack | Record a client-side exchange (e.g. a locally executed `!` shell command) into the server's chat history without running a turn. |
-| `inject`       | `InjectPayload` (`text`, `when`, `role`) | `InjectedPayload` | Queue a message for delivery into the running or next turn. `when` is an `InjectWhen` value (see below). |
+| `inject`       | `InjectPayload` (`text`, `when`, `role`) | ack, then an `injected` **event** at delivery | Queue a message for delivery into the running or next turn. `when` is an `InjectWhen` value (see below). Only `after_tool` is queued server-side; other timings are rejected with an error (the client handles `between_turns` itself). |
 | `shutdown`     | —                 | `ShutdownPayload`   | Ask the server to stop. |
 
 ### Injection timing (`InjectWhen`)
 
-- `between_turns` — queued until the current turn ends; delivered before the
-  next prompt.
-- `after_tool` — delivered at the next tool-loop seam (after the current tool
-  batch, before the model's next reasoning step).
+- `between_turns` — needs no server-side queue: the client keeps the line and
+  runs it itself once the turn returns. A server that receives one rejects it.
+- `after_tool` — queued server-side and delivered at the next tool-loop seam
+  (after the current tool batch, before the model's next request). Delivered
+  lines are persisted to the server's chat history like any other user
+  message, and each one is confirmed with an `injected` event.
 - `interrupt` — cancels the running stream, then delivers the message at the
-  next seam.
+  next seam. **Not implemented**; rejected with an error.
+
+**The client keeps its own copy until delivery is confirmed.** A client that
+submits an `after_tool` line must not drop it from its local queue until the
+matching `injected` event arrives. If the turn ends before another tool call,
+the confirmation never comes, the client still holds the line, and its main
+loop runs it as an ordinary next prompt. That is the fallback, not an edge
+case.
+
+A new turn never inherits injections aimed at the previous one: the server
+clears its queue when a `prompt` request starts a turn.
 
 ## Server → client requests (RPCs)
 
@@ -118,7 +130,7 @@ Unsolicited `event` frames, mostly tied to the running turn via `turn_id`:
 | `output`        | `OutputPayload` (`format`, `text`, `end`, `indent`, `level`, `title`, `subtitle`, `border_style`, `style`, `align`) | Pre-rendered UI output so the server needs no Rich console. `format` is an `OutputFormat` (`text`, `markup`, `ansi`, `markdown`, `panel`, `rule`); `level` is an `OutputLevel` (`normal`, `info`, `ok`, `err`, `warn`). |
 | `command_result`| `CommandResultPayload` | Result of a slash command (also sent as an event for broadcast scenarios). |
 | `status`        | `StatusPayload` (`busy`, `turn_id`, `queue_depth`, `model`, `session`, memory fields, `uptime`) | Server status snapshot. |
-| `injected`      | `InjectedPayload` (`text`, `when`, `role`, `turn_id`) | Confirmation an injected message was delivered. |
+| `injected`      | `InjectedPayload` (`text`, `when`, `role`, `turn_id`) | An injected message was delivered *to the model*. This is the delivery confirmation, not the reply to `inject`: the client drops its local copy of the line here, so the line is echoed on screen exactly once, when the model actually receives it. |
 | `cancelled`     | `CancelledPayload` (`turn_id`, `reason`) | A turn was cancelled. |
 | `error`         | `ErrorPayload` (`message`, `kind`, `recoverable`, `turn_id`) | Unsolicited error. |
 | `pong`          | `PongPayload`        | Reply to `ping` (also sent as an event). |

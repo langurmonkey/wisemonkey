@@ -30,9 +30,12 @@ from agent.ipc import (
     ConfirmPayload,
     Event,
     HandshakePayload,
+    InjectPayload,
+    InjectWhen,
     Message,
     MemoryStatsPayload,
     PingPayload,
+    ProtocolError,
     RecordPayload,
     PromptPayload,
     ReplyPayload,
@@ -233,6 +236,21 @@ class ServerConnection:
         self.transport.send(
             Message.request(ClientRequest.CANCEL, CancelPayload(reason=reason))
         )
+
+    def inject(self, text: str, when: str = InjectWhen.AFTER_TOOL,
+               role: str = "user") -> None:
+        """Ask the running turn to deliver *text* mid-turn.
+
+        This only enqueues server-side. The line is confirmed with an
+        ``injected`` event when the turn actually delivers it, and until then
+        the caller must keep its own copy.
+        """
+        reply = self._request(
+            ClientRequest.INJECT,
+            InjectPayload(text=text, when=when, role=role),
+        )
+        if reply.kind == "error":
+            raise ProtocolError(reply.payload.get("message", "inject failed"))
 
     def record(self, role: str, content: str) -> None:
         """Record a client-side exchange into the server's chat history."""

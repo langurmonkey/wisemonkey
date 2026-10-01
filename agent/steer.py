@@ -95,6 +95,33 @@ class SteerInput:
                 return None
             return self._queue.pop(0)
 
+    def ack(self, text: str) -> bool:
+        """Remove the first queued line equal to *text*; report whether found.
+
+        Used by the remote path: the client submits a line and sends it to the
+        daemon, but keeps its own copy until the daemon confirms delivery with
+        an ``injected`` event. Only then is the local copy dropped. If the turn
+        ends first and the confirmation never arrives, the line is still in the
+        queue and the main loop runs it as an ordinary next prompt.
+        """
+        with self._lock:
+            try:
+                self._queue.remove(text)
+                return True
+            except ValueError:
+                return False
+
+    def take_all(self) -> list[str]:
+        """Pop and return every queued line, oldest first.
+
+        Used by the turn's injection seam, which wants to hand all pending
+        steering text to the model in one go rather than one line per
+        tool-loop round.
+        """
+        with self._lock:
+            lines, self._queue = self._queue, []
+        return lines
+
     def pending(self) -> str | None:
         """Return the oldest queued line without consuming it (for display)."""
         with self._lock:

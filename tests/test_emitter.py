@@ -7,6 +7,8 @@ from agent.ipc import (
     ContentPayload,
     ErrorPayload,
     Event,
+    InjectedPayload,
+    InjectWhen,
     ReasoningPayload,
     StageKind,
     StagePayload,
@@ -322,3 +324,34 @@ class TestTurnScoping(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestInjected(unittest.TestCase):
+    """``injected`` confirms delivery, so the client can drop its own copy."""
+
+    def test_payload_carries_text_and_timing(self):
+        emitter, peer = _connected_emitter()
+        emitter.injected("use pandas", when=InjectWhen.AFTER_TOOL)
+        payload = payload_as(InjectedPayload, peer.recv(timeout=1.0))
+        self.assertEqual(payload.text, "use pandas")
+        self.assertEqual(payload.when, InjectWhen.AFTER_TOOL)
+        self.assertEqual(payload.role, "user")
+        self.assertEqual(payload.turn_id, emitter.turn_id)
+
+    def test_default_timing_is_between_turns(self):
+        emitter, peer = _connected_emitter()
+        emitter.injected("later")
+        payload = payload_as(InjectedPayload, peer.recv(timeout=1.0))
+        self.assertEqual(payload.when, InjectWhen.BETWEEN_TURNS)
+
+    def test_emitted_over_the_transport(self):
+        emitter, peer = _connected_emitter()
+        emitter.injected("hello")
+        message = peer.recv(timeout=1.0)
+        self.assertIsNotNone(message)
+        self.assertEqual(message.name, Event.INJECTED)
+        self.assertEqual(payload_as(InjectedPayload, message).text, "hello")
+
+    def test_silent_without_a_transport(self):
+        # A null emitter (local mode, no IPC) must not explode.
+        TurnEmitter().injected("nobody is listening")

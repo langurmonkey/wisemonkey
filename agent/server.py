@@ -36,6 +36,8 @@ from agent.ipc import (
     ConfirmPayload,
     Event,
     HandshakePayload,
+    InjectPayload,
+    InjectWhen,
     Message,
     MemoryStatsPayload,
     PingPayload,
@@ -66,6 +68,12 @@ class WisemonkeyServer:
         self._shutdown = threading.Event()
         self._turn_lock = threading.Lock()
         self._current_emitter: TurnEmitter | None = None
+        # Lines the client submitted for mid-turn delivery, oldest first.
+        # Popped by the running turn's injection seam; whatever is left when
+        # the turn ends is discarded -- the client still holds those lines and
+        # runs them as ordinary next prompts.
+        self._injections: list[str] = []
+        self._injection_lock = threading.Lock()
         self._client: UnixTransport | None = None
         self._client_lock = threading.Lock()
         self._pending_rpc: dict[str, threading.Event] = {}
@@ -223,6 +231,8 @@ class WisemonkeyServer:
             if emitter is not None:
                 emitter.cancel(payload.reason or "user")
             self._send(Message.response(message.id, ReplyPayload(ok=True)))
+        elif name == ClientRequest.INJECT:
+            self._handle_inject(message)
         elif name == ClientRequest.DETACH:
             self._send(Message.response(message.id, ReplyPayload(ok=True)))
             return False
@@ -258,6 +268,39 @@ class WisemonkeyServer:
         )
         self._send(Message.response(message.id, handshake))
 
+    def _handle_inject(self, message) -> None:
+        """Queue a line the client submitted mid-turn.
+
+        The line is *not* confirmed here: the reply only says it was accepted.
+        Delivery happens at the running turn's injection seam, which emits
+        ``Event.INJECTED``; the client drops its local copy of the line on
+        that event. If the turn ends before any further tool call, the line is
+        never delivered, the client keeps it, and its main loop runs it as an
+        ordinary next prompt.
+        """
+        payload = payload_as(InjectPayload, message)
+        text = (payload.text or "").strip()
+        if not text:
+            self._send(Message.error(message.id, "Nothing to inject"))
+            return
+        if payload.when != InjectWhen.AFTER_TOOL:
+            # BETWEEN_TURNS needs no server-side queue: the client runs such a
+            # line itself once the turn returns. INTERRUPT is not implemented.
+            self._send(Message.error(
+                message.id,
+                f"Unsupported injection timing: {payload.when}",
+            ))
+            return
+        with self._injection_lock:
+            self._injections.append(text)
+        self._send(Message.response(message.id, ReplyPayload(ok=True)))
+
+    def _take_injections(self) -> list[str]:
+        """Pop every queued injection; called from the turn thread."""
+        with self._injection_lock:
+            lines, self._injections = self._injections, []
+        return lines
+
     def _handle_prompt(self, message) -> None:
         """Run a full turn, streaming events to the client."""
         assert self.core is not None
@@ -268,8 +311,19 @@ class WisemonkeyServer:
             )
             return
 
+        # A turn must never inherit injections aimed at the previous one.
+        with self._injection_lock:
+            self._injections = []
+
         emitter = TurnEmitter(transport=self._client)
         self._current_emitter = emitter
+
+        def inject() -> list[str]:
+            lines = self._take_injections()
+            for line in lines:
+                emitter.injected(line, when=InjectWhen.AFTER_TOOL)
+            return lines
+
         try:
             emitter.turn_start(payload.text)
             result = self.core.run_turn(
@@ -281,6 +335,7 @@ class WisemonkeyServer:
                 emitter.cancelled,
                 emitter.error,
                 tool_result_callback=emitter.tool_result,
+                inject_callback=inject,
                 poll=emitter.poll,
             )
             emitter.turn_end(

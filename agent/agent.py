@@ -25,7 +25,10 @@ from agent.footer import _ACCENT, _DIM, _LABEL, _RESET
 from agent.ipc import (
     ContentPayload,
     Event,
+    InjectedPayload,
+    InjectWhen,
     LoopbackTransport,
+    ProtocolError,
     ReasoningPayload,
     StageKind,
     StagePayload,
@@ -221,6 +224,9 @@ class Agent:
                 payload.duration,
             )
 
+        elif message.name == Event.INJECTED:
+            payload = payload_as(InjectedPayload, message)
+            self._handle_injected(payload.text, payload.when)
         elif message.name == Event.CANCELLED:
             print("[warn]⏹  Turn cancelled by user  ⏹[/warn]")
 
@@ -408,11 +414,12 @@ class Agent:
                 line = "…" + line[-(room - 1):]
             return f" {_ACCENT}⤷{_RESET} {_LABEL}{line}{_RESET}"
         if queued:
-            # A submitted line waits for the turn to end; the loop then runs
-            # it before the prompt is shown again.
+            # A submitted line is handed to the running turn at its next tool
+            # seam; if the turn ends before another tool call, the main loop
+            # runs it as an ordinary next prompt.
             return (
                 f" {_ACCENT}↳{_RESET} {_LABEL}queued: {queued}{_RESET}"
-                f"  {_DIM}(runs when this turn ends){_RESET}"
+                f"  {_DIM}(next tool result){_RESET}"
             )
         # No typed text and nothing queued: leave the row for the footer,
         # which draws the spinner frame there if a stage is active.
@@ -423,9 +430,21 @@ class Agent:
     def _steer_submit(self, line: str) -> None:
         """A line was submitted into the footer (reader thread).
 
-        The line itself already sits in the adapter's FIFO; just refresh the
-        footer so the queued count shows up immediately.
+        The line itself already sits in the adapter's FIFO. In remote mode the
+        running turn lives in the daemon, so the line is forwarded to it here
+        and the local copy is kept until the server confirms delivery with an
+        ``injected`` event (see :meth:`_handle_injected`). In local mode the
+        turn's injection seam drains the FIFO directly, so there is nothing to
+        do but redraw the footer.
         """
+        if self.remote is not None and self._turn_in_progress:
+            try:
+                self.remote.inject(line, when=InjectWhen.AFTER_TOOL)
+            except (TransportClosed, ProtocolError) as e:
+                # The daemon is gone or refused the line; it stays queued
+                # locally and runs as an ordinary next prompt.
+                self.output.steer_ack(line)
+                self.output.err(f"Could not steer this turn: {e}")
         self._footer_refresh()
 
     def _steer_refresh(self) -> None:
@@ -438,6 +457,32 @@ class Agent:
         if not self.core.config.get("agent.steer_midturn", True):
             return
         self.output.steer_start(self._steer_submit, self._steer_refresh)
+
+    def _handle_injected(self, text: str, when: str = "") -> None:
+        """The server delivered a submitted line mid-turn: confirm it.
+
+        The local copy is dropped here and nowhere else, so a line is echoed
+        on stdout exactly once, at the moment the model actually receives it.
+        """
+        self.output.steer_ack(text)
+        self._announce_steered(text, when=when or "mid-turn")
+        self._footer_refresh()
+
+    def _steer_inject(self) -> list[str]:
+        """Injection seam for a local turn: hand queued lines to the model.
+
+        Called by ``Core.run_turn`` at every tool-loop seam, so a line
+        submitted while a tool is running reaches the model on the *next*
+        request instead of waiting for the whole turn to end.
+
+        The lines are announced as they leave the queue, so the
+        `↳ queued: <text>` row in the footer has its visible counterpart at
+        the moment of delivery rather than minutes later.
+        """
+        lines = self.output.steer_take_all()
+        for line in lines:
+            self._announce_steered(line, when="mid-turn")
+        return lines
 
     def _steer_drain(self) -> str | None:
         """Pop the next queued steering line, if the user sent one.
@@ -452,8 +497,8 @@ class Agent:
             return None
         return line
 
-    def _announce_steered(self, line: str) -> None:
-        """Echo a drained steering line as it enters the turn path.
+    def _announce_steered(self, line: str, when: str = "mid-turn") -> None:
+        """Echo a steering line as it enters the turn path.
 
         Called the moment the line leaves the queue, so the `↳ queued:
         <text>` row in the footer always has a visible counterpart on
@@ -778,6 +823,7 @@ class Agent:
                         self.emitter.cancelled,
                         self.emitter.error,
                         tool_result_callback=self.emitter.tool_result,
+                        inject_callback=self._steer_inject,
                         poll=self.emitter.poll,
                     )
                     response = result.response

@@ -118,18 +118,29 @@ Set `agent.footer_debug_bytes: true` to append every byte written to the footer 
 
 While a turn is running, `agent/steer.py` puts the tty in **cbreak** mode and reads keystrokes on a daemon thread. Enter queues the line; the REPL main loop drains the queue *before* showing the prompt again (`Agent._steer_drain`), so a queued line goes through the exact same `@`-expansion, command dispatch and turn path as a typed prompt.
 
-It clears `ICANON` and `ECHO` but deliberately **keeps `ISIG`**. With `ISIG` off the kernel never turns Ctrl+C into SIGINT: the reader thread would just see a literal `0x03` byte and set a flag, which the turn does not check while it is blocked in `router.chat()` or inside a tool — so Ctrl+C would silently do nothing during exactly the phases it is most needed. Keeping `ISIG` on means Ctrl+C raises `KeyboardInterrupt` in the main thread, which `core.py` already unwinds (`TurnResult(cancelled=True)`). `0x03` is dropped in `_handle_byte` as a belt-and-braces measure.
-
 This is deliberately **not** a line editor: nothing is echoed to the terminal, the partial line is only surfaced on the footer's dedicated input row (`⤷ <text>` while typing, `↳ queued: <text>` once submitted; the footer draws its spinner animation on that same row when the row is otherwise free), and there is no history or completion. Keeping it out of stdout means no second writer on the cursor and no risk of corrupting the stream.
+
+It clears `ICANON` and `ECHO` but deliberately **keeps `ISIG`**. With `ISIG` off the kernel never turns Ctrl+C into SIGINT: the reader thread would just see a literal `0x03` byte and set a flag, which the turn does not check while it is blocked in `router.chat()` or inside a tool — so Ctrl+C would silently do nothing during exactly the phases it is most needed. Keeping `ISIG` on means Ctrl+C raises `KeyboardInterrupt` in the main thread, which `core.py` already unwinds (`TurnResult(cancelled=True)`). `0x03` is dropped in `_handle_byte` as a belt-and-braces measure.
 
 Lifecycle hooks in `agent/output.py`:
 
-- `RichOutputAdapter.steer_start/stop/take/line/pending` — the real implementation; the protocol, `TuiOutputAdapter` and `IpcOutputAdapter` get no-op defaults.
+- `RichOutputAdapter.steer_start/stop/take/take_all/ack/line/pending` — the real implementation; the protocol, `TuiOutputAdapter` and `IpcOutputAdapter` get no-op defaults. `take_all` drains everything at once (injection seam); `ack(text)` removes one line by value, which is how the remote path confirms delivery.
 - `footer_update(status_line, input_line)` takes the status line and the steering input as two separate arguments; they are drawn on two separate rows by `agent/footer.py`.
 - `footer_spinner(text)` starts/stops the footer's own animation for a stage label. `_spinner()` returns `None` while the footer is armed, so `spinner_prompt`/`spinner_thinking` stay `None` in that case — ownership of the footer row is tracked by `_footer_spinner_mine` instead, so only the stage that started a spinner clears it.
 - `steer_paused()` — a context manager that stops the reader while the agent asks the user something (`ask_*`) or hands the terminal to a subprocess (`run_subprocess`, which additionally tears down and restores the scroll region). Queued lines survive a pause.
 - `Footer` writes are serialized with a `threading.Lock`, since status updates now come from the main thread and the steer reader.
 - Disabled with `agent.steer_midturn: false` in `config.yaml`; a silent no-op when stdin is not a tty.
+
+### Injection at the tool seam
+
+A submitted line normally reaches the model at the *next tool-loop seam*, not at the end of the turn. The seam is the single point in `Core.run_turn` where the loop is about to call the LLM again after a tool batch; `inject_callback` is polled there, and every pending line is drained at once and appended as a `user` message plus a `memory.add_chat_exchange`, so it persists and counts tokens like any other user message.
+
+Ownership differs by mode, because the queue lives in the client but the turn lives wherever it was started:
+
+- **local** — `Agent._steer_inject` pops the client's FIFO (`SteerInput.take_all`) and announces each line as it leaves.
+- **remote** — the client sends `INJECT(after_tool)`; the server queues it (`WisemonkeyServer._injections`) and its injection seam emits `Event.INJECTED`; the client pops its own copy on that event (`Agent._handle_injected`). `BETWEEN_TURNS` and `INTERRUPT` are rejected server-side — the first needs no queue, the second is unimplemented.
+
+In both modes the line stays in the client FIFO until delivery is confirmed, so a turn that ends before another tool call loses nothing: the main loop's `_steer_drain` runs the line as an ordinary next prompt. A new turn also clears the server queue, so injections never leak across turns. A callback that raises is swallowed by `Core._drain_injections` — a UI failure to collect typed text must not abort a working turn.
 
 ### Chat memory rolling window (`agent/memory.py`)
 

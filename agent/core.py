@@ -586,6 +586,7 @@ class Core:
             cancel_callback=None,
             error_callback=None,
             tool_result_callback=None,
+            inject_callback=None,
             poll=None) -> TurnResult:
         """
         Run a turn interaction with a user message. All callbacks are Agent methods, so
@@ -601,6 +602,12 @@ class Core:
             error_callback: Callback on error.
             tool_result_callback: Callback after each tool finishes. Gets
                 ``(tool_id, tool_name, content, is_error, duration)``.
+            inject_callback: Callable polled at every tool-loop seam (after
+                the tool results have been recorded, just before the model is
+                called again). It returns a list of lines the user submitted
+                mid-turn ("steering"); each becomes a ``user`` message ahead
+                of the next request. Returning ``None`` or an empty list
+                means nothing is pending.
             poll: Callable returning True to request cancellation of the turn.
 
         Returns:
@@ -727,6 +734,17 @@ class Core:
                         continue
 
                     n_tools += self._tool_calls(tool_calls, tool_callback, tool_result_callback)
+
+                    # Steering seam: the user can submit lines while a turn is
+                    # running (agent/steer.py). Anything submitted so far is
+                    # handed to the model with this next request rather than
+                    # waiting for the whole turn to end. All pending lines are
+                    # drained at once, in submission order.
+                    if inject_callback is not None:
+                        for line in self._drain_injections(inject_callback):
+                            self.messages.append({"role": "user", "content": line})
+                            self.memory.add_chat_exchange(self, "user", line)
+
                     continue  # Loop back to LLM with tool results
 
                 # No tool calls - this is the final response
@@ -845,6 +863,31 @@ class Core:
                 self.memory.add_chat_exchange(self, "assistant", self.response_buffer)
 
         self.memory.save()
+
+    @staticmethod
+    def _drain_injections(inject_callback) -> list[str]:
+        """Collect every pending steering line from *inject_callback*.
+
+        The callback normally returns a list, but a plain string is accepted
+        too (handy for callers and tests with a single line). Anything the
+        callback raises is swallowed: a UI-level failure to collect typed text
+        must not abort a turn that is otherwise fine. A raise after a partial
+        drain keeps whatever was already returned — losing those lines would
+        mean silently dropping something the user typed.
+        """
+        try:
+            pending = inject_callback()
+        except Exception:
+            return []
+        if not pending:
+            return []
+        if isinstance(pending, str):
+            pending = [pending]
+        lines = []
+        for line in pending:
+            if isinstance(line, str) and line.strip():
+                lines.append(line)
+        return lines
 
     def _tool_calls(self, tool_calls, tool_callback=None, tool_result_callback=None):
         """Handle tool calls"""
