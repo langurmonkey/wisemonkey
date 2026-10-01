@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
+from contextlib import contextmanager
 from typing import Protocol
 
 from rich.console import Console
@@ -18,6 +20,7 @@ from textual.widgets import RichLog
 
 from agent.console import console, theme_dict
 from agent.footer import Footer
+from agent.steer import SteerInput
 from agent.utils import term_width
 
 # OutputAdapter abstraction layer
@@ -102,6 +105,60 @@ class OutputAdapter(Protocol):
         import subprocess
         return subprocess.run(cmd)
 
+    # ── sticky footer + mid-turn steering ─────────────────────────────────────
+    # Frontends that own a plain terminal (the classic REPL) implement these;
+    # full-screen frontends inherit these no-ops.
+
+    def footer_start(self) -> None:
+        """Reserve the bottom terminal rows for a sticky status line."""
+
+    def footer_stop(self) -> None:
+        """Release the reserved rows."""
+
+    def footer_update(self, status_line: str, input_line: str = "") -> None:
+        """Update the sticky status line and the input line above the hints."""
+
+    def footer_active(self) -> bool:
+        """Whether a sticky footer is currently reserving terminal rows."""
+        return False
+
+    def footer_spinner(self, text: str) -> None:
+        """Show an animated spinner with label *text* on the footer.
+
+        The footer animates it itself (see :meth:`agent.footer.Footer.set_spinner`);
+        a no-op where there is no sticky footer.
+        """
+        return
+
+    def steer_start(
+        self,
+        on_submit: Callable[[str], None],
+        on_change: Callable[[], None] | None = None,
+    ) -> bool:
+        """Capture mid-turn keystrokes. Returns True when steering works."""
+        return False
+
+    def steer_stop(self) -> None:
+        """Stop capturing mid-turn keystrokes."""
+
+    def steer_take(self) -> "str | None":
+        """Pop the oldest queued steering line, if any."""
+        return None
+
+    def steer_line(self) -> str:
+        """Return the steering line currently being typed."""
+        return ""
+
+    def steer_pending(self) -> "str | None":
+        """Return the oldest queued steering line without consuming it."""
+        return None
+
+    @contextmanager
+    def steer_paused(self):
+        """Temporarily hand the tty back to the rest of the REPL."""
+        yield
+
+
 class RichOutputAdapter(OutputAdapter):
     """OutputAdapter backed by rich.prompt (for classic REPL mode).
 
@@ -113,8 +170,16 @@ class RichOutputAdapter(OutputAdapter):
 
     def __init__(self) -> None:
         from agent.console import monkee_theme
-        self._footer = Footer()
+        # `agent.footer_debug_bytes`: append every byte written to the
+        # footer to $XDG_STATE_HOME/wisemonkey/footer.log, for diagnosing
+        # terminal rendering problems.
+        from agent.config import Config
+
+        debug = bool(Config().get("agent.footer_debug_bytes", False))
+        self._footer = Footer(debug_bytes=debug)
         self._console = Console(theme=monkee_theme, color_system="truecolor")
+        self._steer: SteerInput | None = None
+        self._footer_status_cache: tuple[str, str] = ("", "")
 
     # ── sticky footer (active only during an assistant turn) ────────────
 
@@ -126,9 +191,74 @@ class RichOutputAdapter(OutputAdapter):
         """Release the reserved rows and restore the normal scroll region."""
         self._footer.stop()
 
-    def footer_update(self, status_line: str) -> None:
+    def footer_update(self, status_line: str, input_line: str = "") -> None:
         """Update the sticky status line (no-op when the footer is off)."""
-        self._footer.update_status(status_line)
+        self._footer_status_cache = (status_line, input_line)
+        self._footer.update_status(status_line, input_line)
+
+    def footer_active(self) -> bool:
+        """Whether the sticky footer is currently armed."""
+        return self._footer.active
+
+    def footer_spinner(self, text: str) -> None:
+        """Start/stop the footer's own spinner animation."""
+        self._footer.set_spinner(text)
+
+    # ── mid-turn steering (classic REPL only) ─────────────────────────────────
+
+    def steer_start(
+        self,
+        on_submit: "Callable[[str], None]",
+        on_change: "Callable[[], None] | None" = None,
+    ) -> bool:
+        """Capture mid-turn keystrokes so the user can steer a running turn.
+
+        The tty is switched to cbreak mode; submitted lines are handed to
+        *on_submit* from a reader thread. Returns False when there is no
+        interactive terminal, in which case steering is simply unavailable.
+        """
+        self.steer_stop()
+        self._steer = SteerInput(on_submit, on_change)
+        return self._steer.start()
+
+    def steer_stop(self) -> None:
+        """Stop capturing keystrokes and restore the tty.
+
+        Queued lines are kept so the caller can drain them once the turn is
+        over; :meth:`steer_start` is what discards them.
+        """
+        if self._steer is not None:
+            self._steer.stop()
+
+    def steer_take(self) -> "str | None":
+        """Pop the oldest queued steering line, if any."""
+        return self._steer.take() if self._steer else None
+
+    def steer_line(self) -> str:
+        """Return the steering line currently being typed."""
+        return self._steer.line() if self._steer else ""
+
+    def steer_pending(self) -> "str | None":
+        """Return the oldest queued steering line without consuming it."""
+        return self._steer.pending() if self._steer else None
+
+    @contextmanager
+    def steer_paused(self):
+        """Temporarily hand the tty back (agent questions, subprocesses).
+
+        The reader thread is stopped so the cooked tty the ask_*/run_subprocess
+        helpers expect works, and re-armed on exit. Queued steering lines are
+        kept.
+        """
+        steer = self._steer
+        if steer is None:
+            yield
+            return
+        steer.stop()
+        try:
+            yield
+        finally:
+            steer.start()
 
     def print(self, text: str, end='\n', indent: int = 0) -> None:
         self._console.print(f"{' ' * indent}{text}", end=end)
@@ -151,11 +281,16 @@ class RichOutputAdapter(OutputAdapter):
     def rule(self, style: str = "dim", title: str = "") -> None:
         self._console.rule(title=title, style=style)
 
+    # A turn may ask the user something (confirmation, a question) or hand the
+    # terminal to a subprocess. Both need a normal tty, so mid-turn steering
+    # is suspended for the duration.
     def ask_string(self, message: str, default: str = "") -> str:
-        return RichPrompt.ask(message, default=default, console=console)
+        with self.steer_paused():
+            return RichPrompt.ask(message, default=default, console=console)
 
     def ask_float(self, message: str, default: float = 0.0) -> float:
-        return FloatPrompt.ask(message, default=default, console=console)
+        with self.steer_paused():
+            return FloatPrompt.ask(message, default=default, console=console)
 
     def ask_choice(
         self,
@@ -163,17 +298,38 @@ class RichOutputAdapter(OutputAdapter):
         options: list[tuple[str, str]],
         default: str | None = None,
     ) -> str:
-        return choice(
-            message=message,
-            options=options,
-            default=default,
-            bottom_toolbar=HTML(
-                " <b>↑</b>/<b>↓</b>: select | <b>Enter</b>: accept"
-            ),
-        )
+        with self.steer_paused():
+            return choice(
+                message=message,
+                options=options,
+                default=default,
+                bottom_toolbar=HTML(
+                    " <b>↑</b>/<b>↓</b>: select | <b>Enter</b>: accept"
+                ),
+            )
 
     def ask_confirm(self, message: str, default: bool = False) -> bool:
-        return Confirm.ask(message, default=default, console=console)
+        with self.steer_paused():
+            return Confirm.ask(message, default=default, console=console)
+
+    def run_subprocess(self, cmd: list[str]):
+        """Run a program with full terminal control.
+
+        Steering and the scroll region both interfere with a child process,
+        so they are torn down around the run and restored afterwards.
+        """
+        import subprocess
+
+        with self.steer_paused():
+            active = self._footer.active
+            if active:
+                self._footer.stop()
+            try:
+                return subprocess.run(cmd)
+            finally:
+                if active:
+                    self._footer.start()
+                    self._footer.update_status(*self._footer_status_cache)
 
 
 class TuiOutputAdapter(OutputAdapter):
@@ -416,6 +572,30 @@ class TuiOutputAdapter(OutputAdapter):
             return default
         return raw.lower() in ("y", "yes", "true", "1")
 
+    # ── sticky footer + mid-turn steering ─────────────────────────────────────
+    # The full-screen TUI owns the terminal, so it draws its own status bar
+    # and keeps the prompt live during a turn. These are no-ops here.
+
+    def footer_start(self) -> None:
+        """No-op: the TUI status bar is always visible."""
+
+    def footer_stop(self) -> None:
+        """No-op: nothing to release."""
+
+    def footer_update(self, status_line: str, input_line: str = "") -> None:
+        """No-op: the TUI status bar is updated elsewhere."""
+
+    def steer_start(
+        self,
+        on_submit: Callable[[str], None],
+        on_change: Callable[[], None] | None = None,
+    ) -> bool:
+        """No-op: the TUI prompt stays live during a turn."""
+        return False
+
+    def steer_stop(self) -> None:
+        """No-op: nothing was captured."""
+
     def run_subprocess(self, cmd: list[str]):
         import subprocess
 
@@ -550,6 +730,26 @@ class IpcOutputAdapter(OutputAdapter):
             return bool(value)
         self._output("text", f"[ask] {message}", level="warn")
         return default
+
+    def footer_start(self) -> None:
+        """No-op: no terminal is owned in an IPC context."""
+
+    def footer_stop(self) -> None:
+        """No-op: nothing was reserved."""
+
+    def footer_update(self, status_line: str, input_line: str = "") -> None:
+        """No-op: there is no footer to update."""
+
+    def steer_start(
+        self,
+        on_submit: Callable[[str], None],
+        on_change: Callable[[], None] | None = None,
+    ) -> bool:
+        """Mid-turn steering needs a terminal; unavailable over IPC."""
+        return False
+
+    def steer_stop(self) -> None:
+        """No-op: nothing was captured."""
 
     def run_subprocess(self, cmd: list[str]):
         from agent.ipc import RunSubprocessPayload, ServerRequest

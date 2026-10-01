@@ -3,7 +3,8 @@
 During an assistant turn the prompt_toolkit prompt is off-screen and the
 response is streamed to stdout. This module reserves the bottom
 ``FOOTER_LINES`` rows of the terminal for a persistent status line (model,
-session, memory usage, ...) so it stays visible while the response scrolls.
+session, memory usage, ...), an optional steering input line, and a key-hint
+bar, so they stay visible while the response scrolls.
 
 The mechanism is the terminal's native **scroll region** (``DECSTBM``,
 ``\\x1b[<top>;<bottom>r``), the same one vim/less use:
@@ -11,13 +12,32 @@ The mechanism is the terminal's native **scroll region** (``DECSTBM``,
 1. ``start()`` sets the scroll region to the top ``H - FOOTER_LINES`` rows.
    The bottom ``FOOTER_LINES`` rows are then physically excluded from
    scrolling: no matter how much output is printed, they stay put.
-2. The status line is drawn into the reserved rows with
-   :meth:`Footer.update_status`, which briefly moves the cursor there and
-   back. No cursor tracking, no guarded writes, no output interception —
-   all existing output code works unchanged.
+2. The rows are drawn with :meth:`Footer.update_status`, which briefly moves
+   the cursor there and back. No cursor tracking, no guarded writes, no
+   output interception — all existing output code works unchanged.
 3. ``stop()`` resets the scroll region (``\\x1b[r``), blanks the reserved
    rows, and leaves the cursor at the bottom of the screen so the
    prompt_toolkit prompt renders normally.
+
+Concurrency
+-----------
+Once the footer is armed, fd 1 has **two** independent writers: the footer
+itself and whatever is streaming the response (``mdstream``/Rich, and any
+tool output). Without serialization a status redraw can be split by a
+streamed chunk, leaving the footer garbled. ``start()`` therefore installs a
+locking proxy over ``sys.stdout`` for the duration of the turn, so *every*
+write to fd 1 is atomic with respect to the others. ``stop()`` restores the
+original object. Rich resolves ``sys.stdout`` lazily (``Console.file`` is a
+property), so the proxy is picked up without recreating the console.
+
+The footer also runs its own spinner animation thread while a stage is
+active (see :meth:`Footer.set_spinner`). That is a *third* writer, so its
+redraws go through the same lock, and it draws only within the reserved
+rows — it never touches the scroll region.
+
+Optionally, with ``agent.footer_debug_bytes: true``, every byte the footer
+writes is also appended (repr'd) to ``$XDG_STATE_HOME/wisemonkey/footer.log``
+so terminal rendering problems can be diagnosed after the fact.
 
 The footer is only armed during a turn. It degrades to a no-op when stdout
 is not a TTY (e.g. output is redirected), so piped/redirected sessions are
@@ -27,11 +47,28 @@ unaffected.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
+import threading
+import time
 
-# Number of lines reserved for the footer (separator + status + hint line).
-FOOTER_LINES = 3
+# Number of lines reserved for the footer:
+# separator + status + steering input + key hints.
+FOOTER_LINES = 4
+
+# Braille frames and tick interval for the footer's own spinner. This is the
+# same glyph sequence Rich uses for its "dots" spinner; the footer animates
+# it itself because starting a Rich `Live` display would wrap sys.stdout in a
+# FileProxy, which turns the footer's cursor addressing into literal text
+# (see :func:`real_stream`).
+SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+SPINNER_INTERVAL = 0.08
+
+# Sentinel for "the transient row has not been drawn yet". Distinct from "",
+# which means "drawn, and empty": the spinner thread relies on that
+# difference to decide whether a tick actually changes anything.
+_UNSET = "\x00unset\x00"
 
 # ANSI SGR sequences for the footer styling.
 _DIM = "\x1b[2m"
@@ -42,15 +79,162 @@ _WHITE = "\x1b[37m"
 _KEY = "\x1b[1;38;5;228m"  # bold, light yellow (key caps)
 _BAR_BG = "\x1b[48;5;236m"  # dark gray background (hint bar)
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+# Serializes every write to stdout while the footer is armed. Module level so
+# that anything else needing to coordinate (tests, diagnostics) can share it.
+WRITE_LOCK = threading.RLock()
+
+
+def visible_len(text: str) -> int:
+    """Length of *text* ignoring ANSI escape sequences."""
+    return len(_ANSI_RE.sub("", text))
+
+
+def clip_ansi(text: str, width: int, ellipsis: str = "…") -> str:
+    """Clip *text* (which may contain SGR codes) to *width* visible columns.
+
+    The styling is preserved up to the cut point and a final reset is
+    appended so no colour bleeds into the rest of the line.
+    """
+    if width <= 0:
+        return ""
+    if visible_len(text) <= width:
+        return text
+    if width <= len(ellipsis):
+        return _ANSI_RE.sub("", text)[:width]
+
+    out: list[str] = []
+    shown = 0
+    pos = 0
+    styled = False
+    while pos < len(text) and shown < width - len(ellipsis):
+        match = _ANSI_RE.match(text, pos)
+        if match:
+            out.append(match.group())
+            styled = True
+            pos = match.end()
+            continue
+        out.append(text[pos])
+        pos += 1
+        shown += 1
+    out.append(ellipsis)
+    out.append(_RESET if styled else "")
+    return "".join(out)
+
+
+class _LockedWriter:
+    """A stdout proxy that serializes writes and can log raw bytes.
+
+    Proxies the handful of stream attributes anything may touch (``fileno``,
+    ``isatty``, ``encoding``, ``buffer``, ...). Every ``write`` is performed
+    under :data:`WRITE_LOCK`, so footer redraws and streamed chunks never
+    interleave mid-escape-sequence.
+    """
+
+    def __init__(self, stream, log_path: str | None = None) -> None:
+        self._stream = stream
+        self._log_path = log_path
+
+    @property
+    def rich_proxied_file(self):
+        """The object we wrap.
+
+        Rich's ``FileProxy``/``Console.file`` unwrap this attribute to recover
+        the *real* stream, so a ``FileProxy`` installed on top of this proxy
+        (by a ``console.status()`` spinner) still writes straight to the
+        terminal, under our lock.
+        """
+        return self._stream
+
+    # Proxying
+
+    def __getattr__(self, name: str):
+        return getattr(self._stream, name)
+
+    def write(self, text: str):
+        with WRITE_LOCK:
+            if self._log_path is not None:
+                try:
+                    with open(self._log_path, "a", encoding="utf-8") as log:
+                        log.write(repr(text) + "\n")
+                except OSError:
+                    pass
+            return self._stream.write(text)
+
+    def writelines(self, lines) -> None:
+        with WRITE_LOCK:
+            for line in lines:
+                self._stream.write(line)
+
+    def flush(self) -> None:
+        with WRITE_LOCK:
+            self._stream.flush()
+
+    def isatty(self) -> bool:
+        return self._stream.isatty()
+
+
+def real_stream(stream=None):
+    """Unwrap *stream* down to the stream that actually reaches the terminal.
+
+    Rich's ``console.status()`` spinner wraps ``sys.stdout`` in a
+    ``FileProxy``, which *interprets* ANSI escapes: text written to it is
+    decoded, markup-parsed and re-rendered. The footer's cursor-addressing
+    sequences must never go through that path — they would be decoded and
+    printed as literal ``[24;1H``-style text. ``FileProxy`` exposes the
+    stream it wraps as ``rich_proxied_file``, so skip over it.
+
+    Our own :class:`_LockedWriter` is deliberately *not* unwrapped: the
+    footer writes through it so that the shared :data:`WRITE_LOCK` still
+    serializes footer redraws against streamed output.
+    """
+    stream = sys.stdout if stream is None else stream
+    seen = 0
+    while seen < 10 and not isinstance(stream, _LockedWriter):
+        nxt = getattr(stream, "rich_proxied_file", None)
+        if nxt is None or nxt is stream:
+            break
+        stream = nxt
+        seen += 1
+    return stream
+
+
+def _debug_log_path() -> str:
+    """Return the path of the footer byte log."""
+    state = os.environ.get("XDG_STATE_HOME") or os.path.expanduser(
+        "~/.local/state"
+    )
+    return os.path.join(state, "wisemonkey", "footer.log")
+
 
 class Footer:
     """Reserve the bottom rows of the terminal for a sticky status line."""
 
-    def __init__(self) -> None:
+    def __init__(self, debug_bytes: bool = False) -> None:
         self._active = False
         self._term_height = 24
         self._term_width = 80
         self._status_text = ""
+        # `_UNSET` marks "the transient row has not been drawn yet", which is
+        # distinct from "" ("drawn, and empty"). `_input_is_spinner` records
+        # whether the row currently holds one of our own animation frames, so
+        # the spinner thread knows whether it may advance it.
+        self._input_text: str = _UNSET
+        self._input_is_spinner = False
+        self._debug_bytes = debug_bytes
+        self._saved_stdout = None
+        # Spinner state. `_spinner_text` is the stage label ("" = idle);
+        # `_frame` is the current braille glyph index.
+        self._spinner_text = ""
+        self._frame = 0
+        self._spinner_stop: threading.Event | None = None
+        self._spinner_thread: threading.Thread | None = None
+        # The status line and the steering input line are redrawn from the
+        # main thread, from the steer reader thread, and from the spinner
+        # thread, so they must be serialized on top of the global stdout
+        # lock.
+        self._lock = threading.RLock()
 
     # Terminal helpers
 
@@ -71,7 +255,7 @@ class Footer:
     def start(self) -> None:
         """Arm the footer: set the scroll region and reserve the bottom rows.
 
-        No-op if stdout is not a TTY.
+        No-op if stdout is not a TTY or the terminal is too small.
         """
         if self._active or not self._is_tty():
             return
@@ -79,16 +263,32 @@ class Footer:
         if self._term_height <= FOOTER_LINES + 1:
             # Terminal too small to reserve rows; disable the footer.
             return
+
+        # Serialize all writes to fd 1 for the duration of the turn, and
+        # optionally log them.
+        self._saved_stdout = sys.stdout
+        if self._debug_bytes:
+            path = _debug_log_path()
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+            except OSError:
+                path = None
+        else:
+            path = None
+        sys.stdout = _LockedWriter(self._saved_stdout, path)
+
         footer_top = self._term_height - FOOTER_LINES + 1
+        out = real_stream()
         try:
             # Set the scroll region to the rows above the footer zone.
-            sys.stdout.write(f"\x1b[1;{footer_top - 1}r")
+            out.write(f"\x1b[1;{footer_top - 1}r")
             # Move into the footer zone and blank it.
-            sys.stdout.write(f"\x1b[{footer_top};1H")
+            out.write(f"\x1b[{footer_top};1H")
             for _ in range(FOOTER_LINES):
-                sys.stdout.write("\x1b[2K\r\n")
-            sys.stdout.flush()
+                out.write("\x1b[2K\r\n")
+            out.flush()
         except Exception:
+            self._restore_stdout()
             return
         self._active = True
 
@@ -98,67 +298,234 @@ class Footer:
         The reserved rows are blanked and the cursor is left at the bottom
         of the screen, so the prompt_toolkit prompt renders normally.
         """
+        # Stop any animation *before* blanking the rows, so the spinner
+        # thread cannot redraw into a torn-down footer.
+        self.set_spinner("")
         if not self._active:
             return
         self._active = False
+        out = real_stream()
         try:
             # Reset the scroll region to the full screen.
-            sys.stdout.write("\x1b[r")
+            out.write("\x1b[r")
             # Move to the footer zone and blank it.
             footer_top = self._term_height - FOOTER_LINES + 1
-            sys.stdout.write(f"\x1b[{footer_top};1H")
+            out.write(f"\x1b[{footer_top};1H")
             for _ in range(FOOTER_LINES):
-                sys.stdout.write("\x1b[2K\r\n")
+                out.write("\x1b[2K\r\n")
             # Leave the cursor at the bottom of the screen.
-            sys.stdout.write(f"\x1b[{self._term_height};1H")
-            sys.stdout.flush()
+            out.write(f"\x1b[{self._term_height};1H")
+            out.flush()
         except Exception:
             pass
+        finally:
+            self._restore_stdout()
         self._status_text = ""
+        self._input_text = _UNSET
+
+    def _restore_stdout(self) -> None:
+        """Put the original stdout back in place."""
+        if self._saved_stdout is not None:
+            try:
+                sys.stdout.flush()
+            except Exception:
+                pass
+            sys.stdout = self._saved_stdout
+            self._saved_stdout = None
 
     @property
     def active(self) -> bool:
         return self._active
 
+    # Spinner
+
+    def set_spinner(self, text: str) -> None:
+        """Show an animated spinner with label *text*; "" clears it.
+
+        The footer animates this itself rather than handing the job to a
+        Rich ``Live`` display: ``Live`` replaces ``sys.stdout`` with a
+        ``FileProxy``, which decodes ANSI escapes and would turn the
+        footer's cursor addressing into literal text on screen (see
+        :func:`real_stream`).
+
+        The animation is a daemon thread that ticks a braille frame and
+        redraws. It shares the footer's lock and the global
+        :data:`WRITE_LOCK`, and it writes only inside the reserved rows, so
+        it cannot disturb the streaming response.
+
+        The spinner is drawn on the *transient* row (the one that otherwise
+        shows steering input). Whatever the caller last passed to
+        :meth:`update_status` takes priority, so a partially typed line is
+        never overwritten by an animation frame.
+        """
+        text = text or ""
+        with self._lock:
+            if text == self._spinner_text:
+                return
+            self._spinner_text = text
+            if not text:
+                self._stop_spinner_thread()
+                self._frame = 0
+                # Force a redraw: the row may currently hold a spinner frame
+                # that has just gone away. `_redraw` no-ops with no spinner,
+                # so the clearing redraw is issued explicitly.
+                self._input_text = _UNSET
+                self._input_is_spinner = False
+                self.update_status(self._status_text, "", force=True)
+                return
+            if self._active and self._spinner_thread is None:
+                self._start_spinner_thread()
+
+        # Redraw immediately so the label appears without waiting a tick.
+        self._redraw()
+
+    def _start_spinner_thread(self) -> None:
+        stop = threading.Event()
+        thread = threading.Thread(
+            target=self._spin_loop, args=(stop,), daemon=True,
+            name="footer-spinner",
+        )
+        self._spinner_stop = stop
+        self._spinner_thread = thread
+        thread.start()
+
+    def _stop_spinner_thread(self) -> None:
+        thread = self._spinner_thread
+        stop = self._spinner_stop
+        self._spinner_thread = None
+        self._spinner_stop = None
+        if stop is not None:
+            stop.set()
+        if thread is not None and thread is not threading.current_thread():
+            # Bounded join: the loop wakes at least every SPINNER_INTERVAL.
+            thread.join(timeout=SPINNER_INTERVAL * 10)
+
+    def _spin_loop(self, stop: threading.Event) -> None:
+        while not stop.wait(SPINNER_INTERVAL):
+            with self._lock:
+                if not self._active or not self._spinner_text:
+                    return
+                self._frame = (self._frame + 1) % len(SPINNER_FRAMES)
+            self._redraw()
+
+    def _spinner_line(self) -> str:
+        """The transient row content for the current frame, or ""."""
+        if not self._spinner_text:
+            return ""
+        frame = SPINNER_FRAMES[self._frame % len(SPINNER_FRAMES)]
+        return f" {_ACCENT}{frame}{_RESET} {_LABEL}{self._spinner_text}{_RESET}"
+
     # Footer rendering
 
-    def update_status(self, status_line: str) -> None:
-        """Render *status_line* in the reserved rows.
+    def _redraw(self) -> None:
+        """Advance one animation frame, if the transient row is free.
 
-        The cursor is briefly moved into the footer zone, the line is
-        written, and the cursor is moved back to the content area (bottom
-        of the scroll region). No-op when the footer is not armed.
+        Does nothing when no spinner is active, or when the caller has put
+        something of its own on the transient row (a partially typed
+        steering line, a queued follow-up): that text must never be
+        overwritten by an animation frame.
+        """
+        with self._lock:
+            if not self._spinner_text:
+                return
+            # Another writer owns the row (a partially typed steering line, a
+            # queued follow-up): leave it alone until they hand it back.
+            if not self._input_is_spinner and self._input_text not in ("", _UNSET):
+                return
+            # Drop the cached transient row so this frame is drawn even if it
+            # happens to repeat the previous one.
+            self._input_text = _UNSET
+        self.update_status(self._status_text, "", force=True)
+
+    def update_status(
+        self,
+        status_line: str,
+        input_line: str = "",
+        force: bool = False,
+    ) -> None:
+        """Render *status_line* and *input_line* in the reserved rows.
+
+        Layout (top to bottom)::
+
+            ──────────────────────────────  separator
+             ⇒ model | session:x | Mem…    status
+             ⤷ what you are typing          steering input / spinner / blank
+             Ctrl+C: cancel turn | …       key hints
+
+        The third row is the transient one: it shows *input_line* when the
+        caller supplied one (a partially typed steering line, or a queued
+        follow-up), and otherwise the spinner animation, and is blank when
+        there is neither. A spinner frame therefore never overwrites what
+        the user is typing.
+
+        The terminal size is re-read on every redraw so a resize mid-turn
+        cannot leave stale geometry behind. The cursor is moved back to the
+        bottom of the scroll region afterwards. No-op when the footer is not
+        armed, or when neither line changed (pass *force* to bypass that,
+        which the spinner does on every tick).
         """
         if not self._active:
             return
-        if status_line == self._status_text:
-            return
-        self._status_text = status_line
-        try:
-            footer_top = self._term_height - FOOTER_LINES + 1
-            # Save nothing: the content cursor is always at the bottom of
-            # the scroll region after normal output, so we simply move back
-            # there after drawing.
-            sep = _DIM + "─" * self._term_width + _RESET
-            sys.stdout.write(f"\x1b[{footer_top};1H")
-            sys.stdout.write(f"\x1b[2K{sep}")
-            sys.stdout.write(f"\x1b[{footer_top + 1};1H")
-            sys.stdout.write(f"\x1b[2K{status_line}")
-            # Hint line: advertised key bindings for the current state.
-            # The dark gray bar extends the full terminal width: draw the
-            # hint, then pad with background-colored spaces.
-            hint = f"  {_KEY}Ctrl{_RESET}{_BAR_BG}+{_KEY}C{_RESET}{_BAR_BG}:{_RESET}{_BAR_BG} cancel turn {_RESET}"
-            hint_len = len(" Ctrl+C: cancel turn ")
-            pad = " " * max(0, self._term_width - hint_len)
-            sys.stdout.write(f"\x1b[{footer_top + 2};1H")
-            sys.stdout.write(f"\x1b[2K{_BAR_BG}{hint}{_BAR_BG}{pad}{_RESET}")
-            # Move the cursor back to the bottom of the scroll region.
-            sys.stdout.write(f"\x1b[{footer_top - 1};1H")
-            sys.stdout.flush()
-        except Exception:
-            pass
+        with self._lock:
+            spinner = self._spinner_line()
+            transient = input_line if input_line else spinner
+            if not force and (
+                status_line == self._status_text
+                and transient == self._input_text
+            ):
+                return
+            self._status_text = status_line
+            self._input_text = transient
+            self._input_is_spinner = bool(spinner) and not input_line
+            try:
+                # Re-read the size: the window may have been resized mid-turn.
+                self._term_width, self._term_height = self._read_terminal_size()
+                if self._term_height <= FOOTER_LINES + 1:
+                    return
+                footer_top = self._term_height - FOOTER_LINES + 1
+                width = self._term_width
+
+                # The content cursor is always at the bottom of the scroll
+                # region after normal output, so we simply move back there
+                # after drawing; no save/restore is needed.
+                sep = _DIM + "─" * width + _RESET
+
+                # Hint line: advertised key bindings for the current state.
+                # The dark gray bar extends the full terminal width: draw the
+                # hint, then pad with background-colored spaces.
+                hint_plain = " Ctrl+C: cancel turn   |   type + ↵ to steer "
+                hint = (
+                    f" {_KEY}Ctrl{_RESET}{_BAR_BG}+{_KEY}C{_RESET}{_BAR_BG}:{_RESET}"
+                    f"{_BAR_BG} cancel turn   {_DIM}|{_RESET}{_BAR_BG}   type + "
+                    f"{_KEY}↵{_RESET}{_BAR_BG} to steer {_RESET}"
+                )
+                pad = " " * max(0, width - len(hint_plain))
+
+                # Never let a line wrap into the row below it.
+                status_line = clip_ansi(status_line, width)
+                transient = clip_ansi(transient, width)
+
+                # A Rich spinner may have wrapped sys.stdout in a
+                # FileProxy, which would decode and print these sequences as
+                # literal text. Write to the real stream instead.
+                out = real_stream()
+                with WRITE_LOCK:
+                    out.write(f"\x1b[{footer_top};1H")
+                    out.write(f"\x1b[2K{sep}")
+                    out.write(f"\x1b[{footer_top + 1};1H")
+                    out.write(f"\x1b[2K{status_line}")
+                    out.write(f"\x1b[{footer_top + 2};1H")
+                    out.write(f"\x1b[2K{transient}")
+                    out.write(f"\x1b[{footer_top + 3};1H")
+                    out.write(f"\x1b[2K{_BAR_BG}{hint}{_BAR_BG}{pad}{_RESET}")
+                    # Move the cursor back to the bottom of the scroll region.
+                    out.write(f"\x1b[{footer_top - 1};1H")
+                    out.flush()
+            except Exception:
+                pass
 
     # Rich's Console may call these if the footer is ever set as its file.
+
     def write(self, text: str) -> None:
         sys.stdout.write(text)
 

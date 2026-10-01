@@ -12,7 +12,7 @@ from PIL import Image
 
 # Terminal helpers
 
-def term_width():
+def term_width() -> int:
     import os
     try:
         w = os.get_terminal_size().columns

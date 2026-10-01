@@ -1,0 +1,157 @@
+"""Tests for the per-turn UI stage state in agent/agent.py.
+
+Focus: the prompt stage fires once per LLM round (`Core.run_turn` loops back
+to the model after every tool batch), and the spinner + completion line must
+only appear for the *first* round of a turn.
+"""
+
+import unittest
+from typing import Any
+from unittest import mock
+
+from agent.agent import Agent
+
+
+class _FakeFooterOutput:
+    """Minimal OutputAdapter stand-in recording what the UI asked for."""
+
+    def __init__(self, footer_active: bool = True) -> None:
+        self._footer_active = footer_active
+        self.spinner_labels: list[str] = []
+        self.refreshes = 0
+
+    # `Agent._spinner` reaches for `_console` on the output adapter; the fake
+    # just needs the attribute to exist (and to be replaceable).
+    _console: Any = None
+
+    def footer_active(self) -> bool:
+        return self._footer_active
+
+    def footer_update(self, status_line: str, input_line: str = "") -> None:
+        self.refreshes += 1
+
+    def footer_spinner(self, text: str) -> None:
+        """Record the label the agent handed to the footer's own animation."""
+        self.spinner_labels.append(text)
+
+    def steer_line(self) -> str:
+        return ""
+
+    def steer_pending(self) -> str | None:
+        return None
+
+
+class _SpyAgent(Agent):
+    """An Agent with the network, config and console stubbed out."""
+
+    def __init__(self, footer_active: bool = True) -> None:  # noqa: D107
+        self.spinner_prompt = None
+        self.spinner_thinking = None
+        self._footer_spinner: str | None = None
+        self._footer_spinner_mine = False
+        self._prompt_reported = False
+        self._prompt_rounds = 0
+        self._turn_in_progress = True
+        self._fake_output = _FakeFooterOutput(footer_active)
+        self.output = self._fake_output
+
+    def _footer_refresh(self) -> None:
+        """The redraw needs the real footer plumbing; not under test here."""
+        self._fake_output.refreshes += 1
+
+    def _spinner_started(self) -> list[str]:
+        """Labels the agent asked the footer to animate ("" means stop)."""
+        return [t for t in self._fake_output.spinner_labels if t]
+
+    def _spinner_stops(self) -> int:
+        """How many times the agent told the footer to stop animating."""
+        return sum(1 for t in self._fake_output.spinner_labels if not t)
+
+
+class TestPromptStage(unittest.TestCase):
+    """`Processing prompt...` belongs to the user's prompt only."""
+
+    def _agent(self, footer_active: bool = True) -> _SpyAgent:
+        return _SpyAgent(footer_active)
+
+    def test_first_round_shows_the_spinner(self):
+        agent = self._agent()
+        agent._prompt_start()
+        self.assertEqual(agent._spinner_started(), ["⏳ Processing prompt..."])
+
+    def test_later_rounds_do_not_repeat_the_spinner(self):
+        """A tool round re-enters the LLM; no second "Processing prompt"."""
+        agent = self._agent()
+        agent._prompt_start()
+        with mock.patch("agent.agent.ok"):
+            agent._prompt_stop()
+        agent._prompt_start()  # round 2, after a tool batch
+        self.assertEqual(agent._spinner_started(), ["⏳ Processing prompt..."])
+        self.assertEqual(agent._prompt_rounds, 2)
+
+    def test_many_tool_rounds_still_show_one_spinner(self):
+        agent = self._agent()
+        for _ in range(5):
+            agent._prompt_start()
+            agent._prompt_stop()
+        self.assertEqual(agent._spinner_started(), ["⏳ Processing prompt..."])
+
+    def test_completion_line_printed_once(self):
+        agent = self._agent()
+        with mock.patch("agent.agent.ok") as printed:
+            for _ in range(3):
+                agent._prompt_start()
+                agent._prompt_stop()
+        self.assertEqual(printed.call_count, 1)
+
+    def test_spinner_cleared_on_stop(self):
+        agent = self._agent()
+        agent._prompt_start()
+        self.assertIsNotNone(agent._footer_spinner)
+        with mock.patch("agent.agent.ok"):
+            agent._prompt_stop()
+        self.assertIsNone(agent._footer_spinner)
+
+    def test_spinner_is_handed_to_the_footer_not_a_live_display(self):
+        """While the footer is armed, the label goes to `footer_spinner`.
+
+        A Rich `Live` display would wrap stdout in a FileProxy and turn the
+        footer's cursor addressing into literal text on screen.
+        """
+        agent = self._agent()
+        agent._prompt_start()
+        self.assertEqual(
+            agent._fake_output.spinner_labels, ["⏳ Processing prompt..."]
+        )
+        agent._prompt_stop()
+        self.assertEqual(agent._spinner_stops(), 1)
+
+    def test_no_footer_falls_back_to_a_rich_status(self):
+        """With no sticky footer there is no FileProxy hazard, so keep Rich."""
+        agent = self._agent(footer_active=False)
+
+        console = mock.MagicMock()
+        console.status.return_value = "handle"
+        agent.output._console = console
+        self.assertEqual(agent._spinner("⏳ Processing prompt..."), "handle")
+        console.status.assert_called_once_with("⏳ Processing prompt...")
+        self.assertEqual(agent._fake_output.spinner_labels, [])
+
+    def test_second_round_does_not_clear_a_foreign_spinner(self):
+        """Round 2 has no spinner of its own, so it must not stop one."""
+        agent = self._agent()
+        agent._prompt_start()
+        with mock.patch("agent.agent.ok"):
+            agent._prompt_stop()
+        # Something else (a tool) owns the footer spinner now.
+        agent._footer_spinner = "🔧 Tool running"
+        stops_before = agent._spinner_stops()
+        agent._prompt_start()
+        with mock.patch("agent.agent.ok"):
+            agent._prompt_stop()
+        self.assertEqual(agent._footer_spinner, "🔧 Tool running")
+        self.assertEqual(agent._spinner_stops(), stops_before)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -38,7 +38,7 @@ from agent.ipc import (
 from agent.mdstream import MarkdownStreamRenderer
 from agent.output import RichOutputAdapter, set_output
 from agent.startup import startup_info
-from agent.utils import add_command, collapse_none_dicts, format_tool_args
+from agent.utils import add_command, collapse_none_dicts, format_tool_args, term_width
 
 # Try to import prompt_toolkit for rich input; fall back to plain input.
 try:
@@ -71,6 +71,14 @@ class Agent:
         self.session = session
         self.spinner_prompt = None
         self.spinner_thinking = None
+        # While the sticky footer is armed, stage spinners are drawn in the
+        # footer input row rather than as a Rich `Live` display (see _spinner).
+        self._footer_spinner: str | None = None
+        # Whether the spinner currently on the footer row is one we started.
+        # `_spinner()` returns None while the footer owns the row, so
+        # `spinner_prompt`/`spinner_thinking` cannot be used to tell whether
+        # there is something to clear.
+        self._footer_spinner_mine = False
         self._last_ctrl_c_time = (
             0  # Timestamp of last Control+C for double-tap detection
         )
@@ -79,6 +87,11 @@ class Agent:
         self._turn_in_progress = False
         self._md_stream = None
         self._prompt_reported = False
+        # Number of LLM rounds already requested this turn. `Core.run_turn`
+        # loops back to the model once per tool batch, and each pass fires
+        # STAGE.START again, so this is what tells "processing the user's
+        # prompt" (round 1) apart from "waiting for the model after tools".
+        self._prompt_rounds = 0
 
         # Client/server phase 3: if a daemon server is already running for
         # this session, attach to it and run as a thin remote client. If not,
@@ -217,11 +230,50 @@ class Agent:
     # ── stage handlers (extracted from the old callbacks) ───────────────────
 
     def _spinner(self, text: str):
-        """Start a status spinner on the active output adapter, if supported."""
+        """Start a status spinner on the active output adapter, if supported.
+
+        A Rich ``Status`` is a ``Live`` display, and ``Live`` wraps
+        ``sys.stdout`` in a ``FileProxy`` for its whole lifetime. While the
+        footer is armed that proxy is in the way: the footer's
+        cursor-addressing escapes would be *decoded and printed as literal
+        text* by the proxy instead of being interpreted by the terminal.
+
+        So while the sticky footer owns the bottom rows, the label is handed
+        to :meth:`OutputAdapter.footer_spinner` instead, and the footer
+        animates it on its own transient row. No ``Live`` is started at all.
+        """
+        if self.output.footer_active():
+            self._footer_spinner = text
+            self._footer_spinner_mine = True
+            self.output.footer_spinner(text)
+            return None
         console = getattr(self.output, "_console", None)
         return console.status(text) if console else None
 
+    def _spinner_clear(self) -> None:
+        """Clear the footer-borne spinner, if we are the one showing it.
+
+        A real Rich spinner is left alone: those are stopped by their own
+        ``spinner_*`` handle, not here. Spinners belonging to a later stage
+        (a tool, say) are also left alone, since only their owner may clear
+        them.
+        """
+        if self._footer_spinner_mine:
+            self._footer_spinner = None
+            self._footer_spinner_mine = False
+            self.output.footer_spinner("")
+            self._footer_refresh()
+
     def _prompt_start(self) -> None:
+        # The prompt stage fires once per LLM round: once for the user's
+        # prompt, then again after every tool batch. Only the first is the
+        # user's prompt; the rest are the model working on tool results,
+        # which needs no spinner — and repeating "Processing prompt..."
+        # there was actively misleading.
+        first = self._prompt_rounds == 0
+        self._prompt_rounds += 1
+        if not first:
+            return
         self.spinner_prompt = self._spinner("⏳ Processing prompt...")
         if self.spinner_prompt:
             self.spinner_prompt.start()
@@ -230,8 +282,10 @@ class Agent:
         if self.spinner_prompt:
             self.spinner_prompt.stop()
             self.spinner_prompt = None
-        # The prompt stage fires once per LLM round (each tool round re-enters
-        # the LLM), so only report completion on the first round of a turn.
+        self._spinner_clear()
+        # The prompt stage fires once per LLM round (each tool round
+        # re-enters the LLM), so only report completion on the first
+        # round of a turn.
         if not self._prompt_reported:
             self._prompt_reported = True
             ok("⏳ Prompt processed")
@@ -248,6 +302,7 @@ class Agent:
         if self.spinner_thinking:
             self.spinner_thinking.stop()
             self.spinner_thinking = None
+        self._spinner_clear()
         ok("💡 Done thinking\n")
 
     def content_callback(self, content: str = ""):
@@ -264,6 +319,7 @@ class Agent:
         """Start live markdown rendering if enabled by config."""
         # New turn: reset per-turn UI state.
         self._prompt_reported = False
+        self._prompt_rounds = 0
         if self.core is None or not self.core.config.get("agent.markdown_stream", True):
             return
         console = getattr(self.output, "_console", None)
@@ -312,23 +368,115 @@ class Agent:
         title = f"  {total_gen_time:.1f}s   |   {total_tokens} tokens   |   {ntools} tools   |   Mem: {length}/{max} tks ({rate:.2f}%)  "
         self.output.rule(title=title, style="status")
         # Refresh the sticky footer with the final memory stats.
-        self.output.footer_update(self._footer_status())
+        self._footer_refresh()
 
     def _footer_status(self) -> str:
-        """Build the sticky footer status line (model, session, memory)."""
+        """Build the sticky footer status line (model, session, memory).
+
+        The line is always the same during a turn: the steering input has
+        its own row, below this one (see :meth:`_footer_input`).
+        """
         model = self.core.config.get("model.name")
         session = self.core.memory.session
         if self.remote is not None:
-            length, max, rate = self.remote.memory_stats()
+            used, limit, rate = self.remote.memory_stats()
         else:
-            length, max, rate = self.core.memory.get_chat_stats()
+            used, limit, rate = self.core.memory.get_chat_stats()
         return (
             f" {_ACCENT}⇒{_RESET} {_LABEL}{model}{_RESET}  {_DIM}|{_RESET}  "
             f"{_LABEL}session:{_RESET} {_ACCENT}{session}{_RESET}  {_DIM}|{_RESET}  "
-            f"{_LABEL}Mem:{_RESET} {length}/{max} tks ({rate:.1f}%)"
+            f"{_LABEL}Mem:{_RESET} {used}/{limit} tks ({rate:.1f}%)"
         )
 
+    def _footer_input(self) -> str:
+        """Build the steering input row shown under the status line.
+
+        Priority: what is being typed, then the oldest queued follow-up.
+        Empty when there is nothing to show, which is the common case -- the
+        footer then falls back to its own spinner animation on this same row
+        (see :meth:`Footer.set_spinner`), so a partially typed line is never
+        overwritten by an animation frame.
+        """
+        if not self._turn_in_progress:
+            return ""
+        line = self.output.steer_line()
+        queued = self.output.steer_pending()
+        if line:
+            # Show the tail of a long line, so the caret stays visible.
+            room = max(20, term_width() - 8)
+            if len(line) > room:
+                line = "…" + line[-(room - 1):]
+            return f" {_ACCENT}⤷{_RESET} {_LABEL}{line}{_RESET}"
+        if queued:
+            # A submitted line waits for the turn to end; the loop then runs
+            # it before the prompt is shown again.
+            return (
+                f" {_ACCENT}↳{_RESET} {_LABEL}queued: {queued}{_RESET}"
+                f"  {_DIM}(runs when this turn ends){_RESET}"
+            )
+        # No typed text and nothing queued: leave the row for the footer,
+        # which draws the spinner frame there if a stage is active.
+        return ""
+
+    # ── mid-turn steering ───────────────────────────────────────────────────
+
+    def _steer_submit(self, line: str) -> None:
+        """A line was submitted into the footer (reader thread).
+
+        The line itself already sits in the adapter's FIFO; just refresh the
+        footer so the queued count shows up immediately.
+        """
+        self._footer_refresh()
+
+    def _steer_refresh(self) -> None:
+        """Redraw the footer when the steering line changes (reader thread)."""
+        if self._turn_in_progress:
+            self._footer_refresh()
+
+    def _steer_start(self) -> None:
+        """Arm mid-turn steering for the duration of a turn."""
+        if not self.core.config.get("agent.steer_midturn", True):
+            return
+        self.output.steer_start(self._steer_submit, self._steer_refresh)
+
+    def _steer_drain(self) -> str | None:
+        """Pop the next queued steering line, if the user sent one.
+
+        The line is announced on stdout as it leaves the queue, so the
+        `↳ queued: <text>` row in the footer has a visible counterpart once
+        the line is actually fed to the turn below it. Any lines still queued
+        behind it are picked up by the next iteration of the main loop.
+        """
+        line = self.output.steer_take()
+        if line is None:
+            return None
+        return line
+
+    def _announce_steered(self, line: str) -> None:
+        """Echo a drained steering line as it enters the turn path.
+
+        Called the moment the line leaves the queue, so the `↳ queued:
+        <text>` row in the footer always has a visible counterpart on
+        stdout once the line is really fed to the turn.
+        """
+        remaining = self.output.steer_pending()
+        note = ", 1 more queued" if remaining else ""
+        self.output.newline()
+        self.output.print(
+            f"[user]⤷ {escape(line)}[/user]"
+            f"{'  ' + _DIM if note else ''}"
+            f"[steered mid-turn{': ' + note if note else ''}]"
+            f"{_RESET if note else ''}"
+        )
+
+    def _footer_refresh(self) -> None:
+        """Redraw the footer (status line + steering input row)."""
+        self.output.footer_update(self._footer_status(), self._footer_input())
+
+
     def _cancel_all_spinners(self):
+        self._footer_spinner = None
+        self._footer_spinner_mine = False
         if self.spinner_prompt:
             self.spinner_prompt.stop()
             self.spinner_prompt = None
@@ -503,16 +651,23 @@ class Agent:
 
         # Main loop
         while True:
-            try:
-                user_input = get_input()
-            except (EOFError, KeyboardInterrupt):
-                self.output.print(txt_goodbye)
-                break
+            # A line typed into the footer during the previous turn (mid-turn
+            # steering) is consumed before the prompt is shown again, so it
+            # goes through exactly the same code path as a typed prompt.
+            steered = self._steer_drain()
+            if steered:
+                self._announce_steered(steered)
+            else:
+                try:
+                    user_input = get_input()
+                except (EOFError, KeyboardInterrupt):
+                    self.output.print(txt_goodbye)
+                    break
 
-            if not user_input:
-                continue
+                if not user_input:
+                    continue
 
-            user_input = str(user_input)
+                user_input = str(user_input)
 
             # Ctrl+C while a turn is running: cancel the turn (state, not an
             # exception — the core observes it via poll() between chunks).
@@ -603,7 +758,9 @@ class Agent:
                     self._md_stream_start()
                     # Arm the sticky footer for the duration of the turn.
                     self.output.footer_start()
-                    self.output.footer_update(self._footer_status())
+                    self._footer_refresh()
+                    # Capture mid-turn keystrokes so the user can steer.
+                    self._steer_start()
                     # Expand @file references into attached context (model
                     # sees the content; the typed text stays as-is on screen).
                     max_at = self.core.config.get("agent.at_file_max_chars", 8000)
@@ -679,8 +836,13 @@ class Agent:
                     self._md_stream_stop()
                     self._turn_in_progress = False
                     self._cancel_all_spinners()
-                    # Disarm the sticky footer before the prompt returns.
+                    # Disarm mid-turn steering and the sticky footer before
+                    # the prompt returns (queued lines survive the restart).
+                    self.output.steer_stop()
+                    self.output.footer_spinner("")
                     self.output.footer_stop()
+                    self._footer_spinner = None
+                    self._footer_spinner_mine = False
 
         # Persist memory, stop the event pump, and shut down core on exit
         if self.core:
@@ -734,14 +896,19 @@ class Agent:
 
         try:
             while True:
-                try:
-                    user_input = get_input()
-                except (EOFError, KeyboardInterrupt):
-                    self.output.print(txt_goodbye)
-                    break
+                # Drain a mid-turn steering line before prompting again.
+                steered = self._steer_drain()
+                if steered:
+                    self._announce_steered(steered)
+                else:
+                    try:
+                        user_input = get_input()
+                    except (EOFError, KeyboardInterrupt):
+                        self.output.print(txt_goodbye)
+                        break
 
-                if not user_input:
-                    continue
+                    if not user_input:
+                        continue
 
                 if self._turn_in_progress:
                     remote.cancel("user")
@@ -820,7 +987,9 @@ class Agent:
                 self._md_stream_start()
                 # Arm the sticky footer for the duration of the turn.
                 self.output.footer_start()
-                self.output.footer_update(self._footer_status())
+                self._footer_refresh()
+                # Capture mid-turn keystrokes so the user can steer.
+                self._steer_start()
                 try:
                     end = remote.prompt(text=user_input, on_event=self._handle_event)
                     # Flush the streaming renderer before the statusline so
@@ -866,8 +1035,13 @@ class Agent:
                     self._md_stream_stop()
                     self._turn_in_progress = False
                     self._cancel_all_spinners()
-                    # Disarm the sticky footer before the prompt returns.
+                    # Disarm mid-turn steering and the sticky footer before
+                    # the prompt returns (queued lines survive the restart).
+                    self.output.steer_stop()
+                    self.output.footer_spinner("")
                     self.output.footer_stop()
+                    self._footer_spinner = None
+                    self._footer_spinner_mine = False
         finally:
             self._remote_stop = True
             remote.close()

@@ -103,7 +103,33 @@ Cancellation is **observable state, not an exception**: `_stream_handler()` sets
 
 ### Sticky footer (`agent/footer.py`)
 
-During an assistant turn the REPL pins a status line (model, session, memory usage) to the bottom of the terminal using the ANSI scroll region (`DECSTBM`, `\x1b[1;<H-2>r`): the bottom rows are excluded from scrolling, so they stay put while output streams. No cursor-position queries, no Rich file swapping — output code is untouched. Both modules degrade to no-ops when stdout is not a TTY or the terminal is too small.
+During an assistant turn the REPL pins a status line (model, session, memory usage) to the bottom of the terminal using the ANSI scroll region (`DECSTBM`, `\x1b[1;<H-4>r`): the bottom four rows (separator, status, steering input / spinner, key hints) are excluded from scrolling, so they stay put while output streams. No cursor-position queries, no Rich file swapping — output code is untouched. Both modules degrade to no-ops when stdout is not a TTY or the terminal is too small.
+
+Two invariants matter here:
+
+- **One writer at a time.** `Footer.start()` swaps `sys.stdout` for a `_LockedWriter` proxy guarded by the module-level `WRITE_LOCK`, and `stop()` restores it. Once the footer is armed there are two independent writers on fd 1 (the footer and whatever is streaming the response), and without serialization a redraw can be split mid-escape-sequence by a streamed chunk. Rich resolves `sys.stdout` lazily (`Console.file` is a property), so the proxy is picked up without recreating the console.
+- **Never write the footer through a Rich `FileProxy`.** `console.status()` builds a `Live` display, and `Live` replaces `sys.stdout` with a `FileProxy` for its lifetime. A `FileProxy` *interprets* ANSI escapes: the footer's `\x1b[24;1H` cursor addressing would be decoded, markup-parsed and re-emitted as the literal text `[24;1H`. All footer write sites therefore go through `real_stream()`, which follows `rich_proxied_file` to skip any proxy while stopping at our own `_LockedWriter` (so the lock is still taken). `Agent._spinner()` avoids the conflict at the source: while `output.footer_active()` it returns `None` and hands the label to `OutputAdapter.footer_spinner()` instead of starting a `Live` at all.
+- **The footer animates its own spinner.** `Footer.set_spinner(label)` starts a daemon thread that ticks the braille frames (`SPINNER_FRAMES`, every `SPINNER_INTERVAL`) and redraws the *transient* row — the third row, which otherwise shows the steering input. Each tick takes `WRITE_LOCK` and only ever addresses rows inside the reserved zone, so it cannot disturb the streaming response. Typed input wins: `update_status()` records whether the transient row holds a caller-supplied line (`_input_is_spinner`), and a tick that finds a foreign owner on the row does nothing rather than overwriting what the user is typing. `set_spinner("")` joins the thread before blanking. `stop()` calls it first, so no thread can redraw into a torn-down footer.
+- **Re-read the geometry.** `update_status()` re-reads the terminal size on every redraw, so a resize mid-turn cannot leave stale row numbers behind. Every line is passed through `clip_ansi()` so it can never wrap into the row below.
+
+Set `agent.footer_debug_bytes: true` to append every byte written to the footer (repr'd) to `$XDG_STATE_HOME/wisemonkey/footer.log` — useful when a terminal renders something unexpected.
+
+### Mid-turn steering (`agent/steer.py`)
+
+While a turn is running, `agent/steer.py` puts the tty in **cbreak** mode and reads keystrokes on a daemon thread. Enter queues the line; the REPL main loop drains the queue *before* showing the prompt again (`Agent._steer_drain`), so a queued line goes through the exact same `@`-expansion, command dispatch and turn path as a typed prompt.
+
+It clears `ICANON` and `ECHO` but deliberately **keeps `ISIG`**. With `ISIG` off the kernel never turns Ctrl+C into SIGINT: the reader thread would just see a literal `0x03` byte and set a flag, which the turn does not check while it is blocked in `router.chat()` or inside a tool — so Ctrl+C would silently do nothing during exactly the phases it is most needed. Keeping `ISIG` on means Ctrl+C raises `KeyboardInterrupt` in the main thread, which `core.py` already unwinds (`TurnResult(cancelled=True)`). `0x03` is dropped in `_handle_byte` as a belt-and-braces measure.
+
+This is deliberately **not** a line editor: nothing is echoed to the terminal, the partial line is only surfaced on the footer's dedicated input row (`⤷ <text>` while typing, `↳ queued: <text>` once submitted; the footer draws its spinner animation on that same row when the row is otherwise free), and there is no history or completion. Keeping it out of stdout means no second writer on the cursor and no risk of corrupting the stream.
+
+Lifecycle hooks in `agent/output.py`:
+
+- `RichOutputAdapter.steer_start/stop/take/line/pending` — the real implementation; the protocol, `TuiOutputAdapter` and `IpcOutputAdapter` get no-op defaults.
+- `footer_update(status_line, input_line)` takes the status line and the steering input as two separate arguments; they are drawn on two separate rows by `agent/footer.py`.
+- `footer_spinner(text)` starts/stops the footer's own animation for a stage label. `_spinner()` returns `None` while the footer is armed, so `spinner_prompt`/`spinner_thinking` stay `None` in that case — ownership of the footer row is tracked by `_footer_spinner_mine` instead, so only the stage that started a spinner clears it.
+- `steer_paused()` — a context manager that stops the reader while the agent asks the user something (`ask_*`) or hands the terminal to a subprocess (`run_subprocess`, which additionally tears down and restores the scroll region). Queued lines survive a pause.
+- `Footer` writes are serialized with a `threading.Lock`, since status updates now come from the main thread and the steer reader.
+- Disabled with `agent.steer_midturn: false` in `config.yaml`; a silent no-op when stdin is not a tty.
 
 ### Chat memory rolling window (`agent/memory.py`)
 
