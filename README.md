@@ -25,6 +25,7 @@ The sections of this document are:
 - [Configuration](#configuration)
 - [Soul file](#soul-file)
 - [Usage and commands](#usage-and-commands)
+- [Mid-turn steering](#mid-turn-steering)
 - [Global memory](#global-memory)
 - [Rolling chat memory](#rolling-chat-memory)
 - [Extend agent](#extend-agent)
@@ -166,7 +167,7 @@ Run the agent, and then you can enter your prompt. You can use the following key
 - <kbd>Enter</kbd>: submit the prompt
 - <kbd>Ctrl</kbd> + <kbd>q</kbd>: quit
 
-During inference, you can cancel the turn and return to the input prompt with <kbd>Ctrl</kbd> + <kbd>c</kbd>
+During inference, you can cancel the turn and return to the input prompt with <kbd>Ctrl</kbd> + <kbd>c</kbd>, or type into the footer to steer the running turn (see [mid-turn steering](#mid-turn-steering)).
 
 ### Sessions
 
@@ -256,6 +257,47 @@ Prefix an input with `!` to run it directly in the shell instead of sending it t
 
 The command runs synchronously (60 s timeout by default), its stdout, stderr, and exit code are printed, and the command together with its result is appended to the session chat memory, so the model can use it as context on the next turn. Since you type the command yourself, no confirmation is requested — this is the same trust model as running it in a terminal.
 
+## Mid-turn steering
+
+You don't have to wait for the agent to finish a turn before adding to it.
+
+While the model is working, Wisemonkey reserves the bottom four terminal rows as a **sticky footer**:
+
+```
+──────────────────────────────
+ ⇒ stealth/space-bunny  Mem…
+ ⠹ Processing prompt...
+ Ctrl+C: cancel turn   |   type + ↵ to steer
+```
+
+The footer stays pinned while the response scrolls, using the terminal's own scroll region (`DECSTBM`) — no output interception, so streaming, tools, and markdown rendering all behave exactly as they do otherwise.
+
+### Steering a running turn
+
+Type in the footer's input row while the turn runs and press <kbd>Enter</kbd>. The line is queued and shown as `↳ queued: <text>  (next tool result)`.
+
+It does **not** have to wait for the turn to end. Wisemonkey delivers it to the model at the **next tool-call seam** — right after the current batch of tools finishes, just before the model is asked again. The line becomes a regular `user` message, so it is persisted to chat history and counts tokens like any other user message, and it is echoed on screen at the moment the model actually receives it:
+
+```
+⤷ Read the CSV first, then plot the two columns. [steered mid-turn]
+```
+
+That makes a genuine mid-turn correction rather than a new turn: the model already has its earlier work in context when your line lands.
+
+If the turn finishes before another tool call happens, nothing is lost. The line stays queued, and it runs as an ordinary next prompt.
+
+### Details
+
+- The footer input row is deliberately **not** a line editor: no history, no completion, and nothing is echoed to stdout while you type. It only draws the transient row. The spinner yields to whatever you are typing.
+- <kbd>Ctrl</kbd> + <kbd>c</kbd> still cancels the running turn, even mid-turn. The key is deliberately left enabled in cbreak mode for exactly this reason.
+- Lines you type are captured as raw keystrokes, so an accidental keypress is harmless; it just does not appear until you press <kbd>Enter</kbd>.
+- Steering works in both modes: local, and attached to a daemon server (the client forwards the line over the socket, and the server confirms delivery before the client drops its own copy).
+- Nothing is lost on cancellation — a queued line survives a cancelled turn.
+
+You can turn the whole thing off with `agent.steer_midturn: false` in the [configuration](#configuration).
+
+> If your terminal renders the footer oddly, set `agent.footer_debug_bytes: true` and look at `$XDG_STATE_HOME/wisemonkey/footer.log`, which records every byte the footer writes.
+
 ## Session memory
 
 Persistent memory follows XDG Base Directory spec in `~/.local/share/wisemonkey/session/$SESSION_NAME`:
@@ -336,8 +378,11 @@ wisemonkey/
 │   ├── config.py           # Configuration loading and handling.
 │   ├── console.py          # Rich console output with themed formatting.
 │   ├── output.py           # Output adapter protocol (REPL, TUI, IPC).
+│   ├── footer.py           # Sticky footer (DECSTBM scroll region) + spinner.
+│   ├── steer.py            # Mid-turn steering input (cbreak key capture).
 │   ├── core.py             # Core agent functions, like API connection and tool calls.
 │   ├── mcp.py              # MCP server support.
+│   ├── mdstream.py         # Streaming markdown renderer for the REPL.
 │   ├── memory.py           # Session memory, paste file creation.
 │   ├── router.py           # API router implementation for OpenAI, Ollama, and Anthropic.
 │   ├── skills.py           # Skill loading and management.
@@ -350,6 +395,7 @@ wisemonkey/
 │   ├── files.py            # File read/write tools.
 │   ├── memory.py            # search_knowledge tool.
 │   ├── network.py          # URL fetching.
+│   ├── screenshot.py       # Screen capture tool (base64 JPEG, user-confirmed).
 │   ├── terminal.py         # Shell command execution.
 │   └── vectorstore.py      # Vector store tool handler.
 ├── skills/                 # Skill definitions. Add new skills here.

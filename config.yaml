@@ -73,10 +73,13 @@ agent:
   # Context files to load into the system prompt (relative to workspace root)
   context_files:
     - AGENTS.md
-  # Mid-turn steering: while the model is generating, keystrokes typed into the
-  # footer zone are collected in cbreak mode and queued. Pressing Enter on a
-  # queued line runs it as the next turn; Ctrl+C on an empty line cancels the
-  # running turn (as usual). No-op when stdin is not a terminal.
+  # Mid-turn steering: while the model is generating, the bottom four terminal
+  # rows are pinned as a sticky footer (DECSTBM scroll region) showing the
+  # status line, a spinner, and key hints. Keystrokes typed there are captured
+  # in cbreak mode; Enter queues the line and it is delivered to the model at
+  # the next tool-call seam (mid-turn), falling back to running as the next
+  # prompt if the turn ends first. Ctrl+C cancels the running turn as usual.
+  # No-op when stdout or stdin is not a terminal.
   steer_midturn: true
   # Append every byte written to the sticky footer to
   # $XDG_STATE_HOME/wisemonkey/footer.log, for diagnosing terminal
