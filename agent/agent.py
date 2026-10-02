@@ -411,7 +411,7 @@ class Agent:
             # Show the tail of a long line, so the caret stays visible.
             room = max(20, term_width() - 8)
             if len(line) > room:
-                line = "…" + line[-(room - 1):]
+                line = "…" + line[-(room - 1) :]
             return f" {_ACCENT}⤷{_RESET} {_LABEL}{line}{_RESET}"
         if queued:
             # A submitted line is handed to the running turn at its next tool
@@ -517,7 +517,6 @@ class Agent:
     def _footer_refresh(self) -> None:
         """Redraw the footer (status line + steering input row)."""
         self.output.footer_update(self._footer_status(), self._footer_input())
-
 
     def _cancel_all_spinners(self):
         self._footer_spinner = None
@@ -899,6 +898,168 @@ class Agent:
             self.remote.close()
 
     # ── remote (daemon) mode ────────────────────────────────────────────────
+
+    def run_once(self, prompt: str) -> str:
+        """Run a single turn with the given prompt, then return the response.
+
+        Non-interactive counterpart of run_interactive(): no prompt_toolkit
+        session, no prompt loop, no mid-turn steering or footer (a one-shot
+        run has no user at the keyboard). Works in both local and remote
+        (daemon) mode, and cleans up events/connections before returning.
+        """
+        user_input = str(prompt).strip()
+        if not user_input:
+            return ""
+
+        if self.remote is not None:
+            response = self._run_once_remote(user_input)
+        else:
+            response = self._run_once_local(user_input)
+
+        # Persist memory, stop the event pump, and shut down core.
+        if self.core:
+            self.stop_events()
+            self.core.save_memory()
+            self.core.shutdown()
+        if self.remote is not None:
+            self.remote.close()
+
+        return response
+
+    def _run_once_local(self, user_input: str) -> str:
+        """One turn against the in-process Core."""
+        # No startup_info(): a one-shot run is meant for scripting, so the
+        # banner, update check and session report would just be noise.
+        self.emitter.reset()
+        self.start_events()
+
+        self.output.newline()
+        self.output.rule(style="agent")
+        self.output.print(
+            f"[agent]⩥ [bold]Wisemonkey[/bold] ⩤ [/agent]  "
+            f"[accent]⇒ {self.core.config.get('model.name')}[/accent]"
+        )
+        self.output.print("  [kbd]Ctrl[/kbd]+[kbd]C[/kbd]: Cancel turn\n")
+
+        response = ""
+        try:
+            self._turn_in_progress = True
+            self.emitter.reset()
+            self._md_stream_start()
+            # Expand @file references into attached context, exactly as the
+            # interactive loop does.
+            max_at = self.core.config.get("agent.at_file_max_chars", 8000)
+            prompt = (
+                expand_at_references(user_input, max_at) if max_at > 0 else user_input
+            )
+            result = self.core.run_turn(
+                prompt,
+                self.emitter.prompt,
+                self.emitter.reasoning,
+                self.emitter.content,
+                self.emitter.tool_call,
+                self.emitter.cancelled,
+                self.emitter.error,
+                tool_result_callback=self.emitter.tool_result,
+            )
+            response = result.response
+            self._md_stream_stop()
+            self.output.newline()
+            self.output.newline()
+
+            if result.max_turns_reached:
+                self.output.err(
+                    f"Turn stopped: maximum number of turns reached "
+                    f"(agent.max_turns = "
+                    f"{self.core.config.get('agent.max_turns', 50)}). "
+                    "The model kept requesting tools without a final answer."
+                )
+
+            if not result.cancelled:
+                self._statusline(result.total_tokens, result.n_tools, result.gen_time)
+                self.output.newline()
+
+            if (
+                self.core.config.get("agent.markdown", False)
+                and self._md_stream is None
+            ):
+                md = Panel(
+                    Markdown(response),
+                    border_style="output-frame",
+                    title="Markdown",
+                    subtitle="Markdown",
+                    highlight=True,
+                )
+                self.output.print_rich(md)
+        except Exception as e:
+            self._cancel_all_spinners()
+            self.emitter.cancel("error")
+            self.output.err(f"Error sending prompt: {e}")
+        finally:
+            self._md_stream_stop()
+            self._turn_in_progress = False
+            self._cancel_all_spinners()
+
+        return response
+
+    def _run_once_remote(self, user_input: str) -> str:
+        """One turn against a remote daemon server."""
+        from agent.client import ServerConnection
+        from agent.ipc import HandshakePayload
+
+        remote = cast(ServerConnection, self.remote)
+        handshake = cast(HandshakePayload, remote.handshake)
+        self.output.print(
+            f"[server]One-shot run against daemon server for session "
+            f"[accent-bold]{handshake.session}[/accent-bold] "
+            f"(pid {handshake.server_pid}, model [accent]{handshake.model}[/accent])[/server]"
+        )
+        self.output.newline()
+
+        self._remote_stop = False
+        remote.on_disconnect = self._on_server_lost
+        rpc_thread = threading.Thread(
+            target=self._remote_serve_requests, name="wisemonkey-rpc", daemon=True
+        )
+        rpc_thread.start()
+
+        response = ""
+        try:
+            self.output.newline()
+            self.output.rule(style="agent")
+            self.output.print(
+                f"[agent]⩥ [bold]Wisemonkey[/bold] ⩤ [/agent]  "
+                f"[accent]⇒ {handshake.model}[/accent]"
+            )
+            self.output.print("  [kbd]Ctrl[/kbd]+[kbd]C[/kbd]: Cancel turn\n")
+            self._turn_in_progress = True
+            self._md_stream_start()
+            end = remote.prompt(text=user_input, on_event=self._handle_event)
+            response = end.response
+            self._md_stream_stop()
+            self.output.newline()
+            if not end.cancelled:
+                if end.max_turns_reached:
+                    self.output.err(
+                        f"Turn stopped: maximum number of turns reached "
+                        f"(agent.max_turns = "
+                        f"{self.core.config.get('agent.max_turns', 50)}). "
+                        "The model kept requesting tools without a final answer."
+                    )
+                self._statusline(end.total_tokens, end.n_tools, end.gen_time)
+                self.output.newline()
+        except Exception as e:
+            self._cancel_all_spinners()
+            self.output.err(f"Error sending prompt: {e}")
+        finally:
+            self._md_stream_stop()
+            self._turn_in_progress = False
+            self._cancel_all_spinners()
+            self._remote_stop = True
+
+        return response
+
+    # ── remote (daemon) mode ─────────────────────────────────────────
 
     def _run_interactive_remote(self):
         """Run the REPL against a remote daemon server."""

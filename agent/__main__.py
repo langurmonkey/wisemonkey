@@ -82,6 +82,12 @@ def main():
         help='Update wmk from upstream and reinstall',
     )
     parser.add_argument(
+        '-p', '--prompt',
+        type=str,
+        metavar="TEXT",
+        help='Run a single prompt non-interactively, print the answer and exit',
+    )
+    parser.add_argument(
         '-t', '--tui',
         action='store_true',
         help='WIP/EXPERIMENTAL! Launch the Textual full-screen TUI',
@@ -224,6 +230,16 @@ def main():
         err(f"Agent creation failed: {e}")
         traceback.print_exc()
         sys.exit(1)
+
+    # One-shot prompt mode
+    if args.prompt:
+        try:
+            agent.run_once(args.prompt)
+        except Exception as e:
+            print(e)
+            traceback.print_exc()
+            sys.exit(1)
+        return
 
     # Interactive mode
     try:
