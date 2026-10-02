@@ -458,11 +458,55 @@ def _cmd_history_compact(
 
 
 @cmd(
-    "/session-plan",
-    "List all saved session plans in the current session",
-    aliases=["/session-plans"],
+    "/plan-read",
+    "Read a saved session plan by name",
+    examples=[
+        "/plan read REFACTOR_20260626_120000   # Read a specific plan",
+        "/plan read REFACTOR                   # Read the most recent matching plan",
+    ],
 )
-def _cmd_session_plan_list(
+def _cmd_plan_read(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
+    if not params:
+        return (
+            False,
+            "provide a plan name (e.g., REFACTOR or REFACTOR_20260626_120000)",
+            None,
+            None,
+        )
+
+    name = " ".join(params).strip().upper().replace(" ", "_")
+    from agent.memory import Memory
+
+    mem = Memory()
+    plans_dir = mem.session_dir / "plans"
+    if not plans_dir.exists():
+        return False, "no plans directory found", None, None
+
+    # Try exact match first
+    exact = plans_dir / f"{name}.md"
+    target = None
+    if exact.exists():
+        target = exact
+    else:
+        matches = sorted(plans_dir.glob(f"{name}_*.md"), reverse=True)
+        if matches:
+            target = matches[0]
+
+    if not target:
+        return False, f"no plan found matching '{name}'", None, None
+
+    content = target.read_text(encoding="utf-8")
+    return True, f"Plan: {target.name}", content, content
+
+
+@cmd(
+    "/plan-list",
+    "List all saved session plans in the current session",
+    aliases=["/plan-ls", "/plans-list", "/plans-ls"],
+)
+def _cmd_plan_list(
     core, params, output: OutputAdapter | None = None
 ) -> tuple[bool, str | None, str | None, str | None]:
     if params:
@@ -505,58 +549,14 @@ def _cmd_session_plan_list(
 
 
 @cmd(
-    "/session-plan-read",
-    "Read a saved session plan by name",
-    examples=[
-        "/session plan read REFACTOR_20260626_120000   # Read a specific plan",
-        "/session-plan read REFACTOR                    # Read the most recent matching plan",
-    ],
-)
-def _cmd_session_plan_read(
-    core, params, output: OutputAdapter | None = None
-) -> tuple[bool, str | None, str | None, str | None]:
-    if not params:
-        return (
-            False,
-            "provide a plan name (e.g., REFACTOR or REFACTOR_20260626_120000)",
-            None,
-            None,
-        )
-
-    name = " ".join(params).strip().upper().replace(" ", "_")
-    from agent.memory import Memory
-
-    mem = Memory()
-    plans_dir = mem.session_dir / "plans"
-    if not plans_dir.exists():
-        return False, "no plans directory found", None, None
-
-    # Try exact match first
-    exact = plans_dir / f"{name}.md"
-    target = None
-    if exact.exists():
-        target = exact
-    else:
-        matches = sorted(plans_dir.glob(f"{name}_*.md"), reverse=True)
-        if matches:
-            target = matches[0]
-
-    if not target:
-        return False, f"no plan found matching '{name}'", None, None
-
-    content = target.read_text(encoding="utf-8")
-    return True, f"Plan: {target.name}", content, content
-
-
-@cmd(
-    "/session-plan-edit",
+    "/plan-edit",
     "Edit a saved session plan with $EDITOR or $VISUAL",
     examples=[
-        "/session plan edit REFACTOR_20260626_120000   # Edit a specific plan",
-        "/session plan edit REFACTOR                    # Edit the most recent matching plan",
+        "/plan edit REFACTOR_20260626_120000   # Edit a specific plan",
+        "/plan edit REFACTOR                    # Edit the most recent matching plan",
     ],
 )
-def _cmd_session_plan_edit(
+def _cmd_plan_edit(
     core, params, output: OutputAdapter | None = None
 ) -> tuple[bool, str | None, str | None, str | None]:
     if not params:

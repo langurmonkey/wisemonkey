@@ -7,12 +7,13 @@ Allows the agent to operate on memory:
 - Set user profile
 - Session plans
 """
-import os
+
 import datetime
+import os
 
 from agent.memory import Memory
-from agent.tools import tool
 from agent.output import get_output_or_ipc
+from agent.tools import tool
 
 
 def _get_plans_dir():
@@ -26,6 +27,7 @@ def _get_plans_dir():
 def _parse_frontmatter(content):
     """Extract YAML frontmatter and body from plan content."""
     import re
+
     match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)", content, re.DOTALL)
     if not match:
         return {}, content.strip()
@@ -49,11 +51,11 @@ def _parse_frontmatter(content):
         "properties": {
             "name": {
                 "type": "string",
-                "description": "Short name for the plan (e.g., 'REFACTOR', 'FEATURE_X')."
+                "description": "Short name for the plan (e.g., 'REFACTOR', 'FEATURE_X').",
             },
             "content": {
                 "type": "string",
-                "description": "The full plan content in markdown."
+                "description": "The full plan content in markdown.",
             },
         },
         "required": ["name", "content"],
@@ -64,7 +66,7 @@ def save_session_plan_handler(args):
     name = args.get("name", "").strip().upper().replace(" ", "_")
     content = args.get("content", "")
     output = get_output_or_ipc()
-    
+
     if not name:
         output.err("Plan name is required")
         return {"saved": False, "error": "Plan name is required"}
@@ -81,7 +83,9 @@ def save_session_plan_handler(args):
 
     # Add YAML frontmatter with status
     now_iso = datetime.datetime.now().isoformat()
-    frontmatter = f"---\nname: {name}\ncreated: {now_iso}\nstatus: active\ncompleted: ~\n---\n\n"
+    frontmatter = (
+        f"---\nname: {name}\ncreated: {now_iso}\nstatus: active\ncompleted: ~\n---\n\n"
+    )
     filepath.write_text(frontmatter + content, encoding="utf-8")
 
     return {"saved": True, "file": str(filepath), "name": name, "status": "active"}
@@ -113,12 +117,14 @@ def list_session_plans_handler(args):
         content = f.read_text()
         meta, _ = _parse_frontmatter(content)
         status = meta.get("status", "unknown")
-        plans.append({
-            "name": name,
-            "file": str(f),
-            "modified": mod_time.isoformat(),
-            "status": status,
-        })
+        plans.append(
+            {
+                "name": name,
+                "file": str(f),
+                "modified": mod_time.isoformat(),
+                "status": status,
+            }
+        )
     return {"plans": plans, "count": len(plans)}
 
 
@@ -134,11 +140,11 @@ def list_session_plans_handler(args):
         "properties": {
             "name": {
                 "type": "string",
-                "description": "The full name or prefix of the plan to update (e.g., 'REFACTOR_20260626_120000' or 'REFACTOR')."
+                "description": "The full name or prefix of the plan to update (e.g., 'REFACTOR_20260626_120000' or 'REFACTOR').",
             },
             "status": {
                 "type": "string",
-                "description": "New status: 'active', 'done', or 'obsolete'."
+                "description": "New status: 'active', 'done', or 'obsolete'.",
             },
         },
         "required": ["name", "status"],
@@ -151,7 +157,10 @@ def update_session_plan_status_handler(args):
     if not name:
         return {"updated": False, "error": "Plan name is required"}
     if status not in ("active", "done", "obsolete"):
-        return {"updated": False, "error": f"Invalid status '{status}'. Valid: active, done, obsolete"}
+        return {
+            "updated": False,
+            "error": f"Invalid status '{status}'. Valid: active, done, obsolete",
+        }
 
     plans_dir = _get_plans_dir()
     # Try exact match first
@@ -175,7 +184,9 @@ def update_session_plan_status_handler(args):
     elif status == "active":
         meta["completed"] = "~"
 
-    new_frontmatter = "---\n" + "\n".join(f"{k}: {v}" for k, v in meta.items()) + "\n---\n\n"
+    new_frontmatter = (
+        "---\n" + "\n".join(f"{k}: {v}" for k, v in meta.items()) + "\n---\n\n"
+    )
     target.write_text(new_frontmatter + body)
 
     return {"updated": True, "file": str(target), "name": target.stem, "status": status}
@@ -193,7 +204,7 @@ def update_session_plan_status_handler(args):
         "properties": {
             "name": {
                 "type": "string",
-                "description": "The full name or prefix of the plan to read (e.g., 'REFACTOR_20260626_120000' or 'REFACTOR')."
+                "description": "The full name or prefix of the plan to read (e.g., 'REFACTOR_20260626_120000' or 'REFACTOR').",
             },
         },
         "required": ["name"],
@@ -211,7 +222,13 @@ def read_session_plan_handler(args):
     if exact.exists():
         content = exact.read_text(encoding="utf-8")
         meta, body = _parse_frontmatter(content)
-        return {"found": True, "name": name, "file": str(exact), "content": content, "status": meta.get("status", "unknown")}
+        return {
+            "found": True,
+            "name": name,
+            "file": str(exact),
+            "content": content,
+            "status": meta.get("status", "unknown"),
+        }
 
     # Try prefix match — find all files starting with name
     matches = sorted(plans_dir.glob(f"{name}_*.md"), reverse=True)
@@ -219,7 +236,13 @@ def read_session_plan_handler(args):
         f = matches[0]
         content = f.read_text(encoding="utf-8")
         meta, body = _parse_frontmatter(content)
-        return {"found": True, "name": f.stem, "file": str(f), "content": content, "status": meta.get("status", "unknown")}
+        return {
+            "found": True,
+            "name": f.stem,
+            "file": str(f),
+            "content": content,
+            "status": meta.get("status", "unknown"),
+        }
 
     return {"found": False, "error": f"No plan found matching '{name}'"}
 
@@ -236,11 +259,11 @@ def read_session_plan_handler(args):
         "properties": {
             "name": {
                 "type": "string",
-                "description": "The full name or prefix of the plan to update (e.g., 'REFACTOR_20260626_120000' or 'REFACTOR')."
+                "description": "The full name or prefix of the plan to update (e.g., 'REFACTOR_20260626_120000' or 'REFACTOR').",
             },
             "content": {
                 "type": "string",
-                "description": "The new markdown content for the plan body (frontmatter is preserved automatically)."
+                "description": "The new markdown content for the plan body (frontmatter is preserved automatically).",
             },
         },
         "required": ["name", "content"],
@@ -273,25 +296,35 @@ def update_session_plan_content_handler(args):
     meta, _ = _parse_frontmatter(old_content)
 
     # Rebuild with preserved frontmatter + new body
-    new_frontmatter = "---\n" + "\n".join(f"{k}: {v}" for k, v in meta.items()) + "\n---\n\n"
+    new_frontmatter = (
+        "---\n" + "\n".join(f"{k}: {v}" for k, v in meta.items()) + "\n---\n\n"
+    )
     target.write_text(new_frontmatter + content, encoding="utf-8")
 
-    return {"updated": True, "file": str(target), "name": target.stem, "status": meta.get("status", "unknown")}
+    return {
+        "updated": True,
+        "file": str(target),
+        "name": target.stem,
+        "status": meta.get("status", "unknown"),
+    }
 
 
 @tool(
     name="save_note",
     description=(
-      "Save a persistent note.\n"
-      "Notes are stored persistently and survive across sessions. "
-      "Use notes to remember things long-term. Notes are not added to the context, but"
-      "can be retrieved with the tool 'get_memory'"
+        "Save a persistent note.\n"
+        "Notes are stored persistently and survive across sessions. "
+        "Use notes to remember things long-term. Notes are not added to the context, but"
+        "can be retrieved with the tool 'get_memory'"
     ),
     parameters={
         "type": "object",
         "properties": {
             "content": {"type": "string", "description": "Note content"},
-            "category": {"type": "string", "description": "Note category (default: general)"},
+            "category": {
+                "type": "string",
+                "description": "Note category (default: general)",
+            },
         },
         "required": ["content"],
     },
@@ -299,8 +332,11 @@ def update_session_plan_content_handler(args):
 def save_note_handler(args):
     """Save a note to persistent memory."""
     mem = Memory()
-    note = mem.add_note(args.get("content", ""), category=args.get("category", "general"))
+    note = mem.add_note(
+        args.get("content", ""), category=args.get("category", "general")
+    )
     return {"saved": True, "note_id": note["id"], "category": note["category"]}
+
 
 @tool(
     name="save_memory",
@@ -319,6 +355,7 @@ def save_memory_handler(args):
     mem = Memory()
     mem.save()
     return {"saved": True, "message": "Memory persisted to disk"}
+
 
 @tool(
     name="get_memory",
@@ -339,6 +376,7 @@ def get_memory_handler(args):
     if text:
         return {"memory": text}
     return {"memory": None, "message": "No memory yet"}
+
 
 @tool(
     name="set_user_profile",
@@ -368,6 +406,7 @@ def set_user_profile_handler(args):
     mem.set_user_profile(profile)
     return {"saved": True, "profile": profile}
 
+
 @tool(
     name="get_session_info",
     description=(
@@ -385,5 +424,5 @@ def get_session_info_handler(args):
     return {
         "session_name": mem.session,
         "working_directory": os.getcwd(),
-        "session_directory": str(mem.session_dir)
+        "session_directory": str(mem.session_dir),
     }
