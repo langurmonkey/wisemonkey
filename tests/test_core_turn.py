@@ -231,6 +231,26 @@ class TestCancellation(unittest.TestCase):
         with self.assertRaises(ValueError):
             core.run_turn("hello")
 
+    def test_keyboard_interrupt_in_tool_returns_cancelled_turn(self):
+        """Ctrl+C while a tool runs must cancel the turn, not crash."""
+        core = make_core([{"text": "narrate", "tool_calls": [{"id": "1", "type": "function",
+                         "function": {"name": "slow", "arguments": "{}"}}]}])
+        with patch("agent.core.execute_tool", side_effect=KeyboardInterrupt):
+            result = core.run_turn("go")
+        assert result.cancelled is True
+        # A cancelled turn persists nothing (no dangling tool result).
+        assert core.memory.saved == 0
+
+    def test_keyboard_interrupt_in_tool_keeps_prior_exchanges(self):
+        """The already-finished tool results stay in the in-memory history."""
+        tool_call = {"id": "1", "type": "function",
+                     "function": {"name": "ok", "arguments": "{}"}}
+        core = make_core([{"text": "narrate", "tool_calls": [tool_call]},
+                          {"text": "answer"}])
+        with patch("agent.core.execute_tool", return_value="fine"):
+            core.run_turn("go")
+        assert core.memory.saved == 1
+
 
 class TestToolCallbacks(unittest.TestCase):
     def _core_with_one_tool(self):

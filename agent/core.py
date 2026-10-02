@@ -826,6 +826,18 @@ class Core:
             self._persist_partial_turn(user_input)
             raise
 
+        except KeyboardInterrupt:
+            # Ctrl+C that escaped the streaming/tool paths (e.g. raised inside
+            # a tool handler). A cancelled turn persists nothing, so the chat
+            # history is not left with a dangling tool call.
+            return TurnResult(
+                response=self.response_buffer or "[Cancelled]",
+                total_tokens=total_tokens,
+                n_tools=n_tools,
+                gen_time=total_gen_time,
+                cancelled=True,
+            )
+
     def _persist_partial_turn(self, user_input: str) -> None:
         """Persist a partially completed turn to chat history and save memory.
 
@@ -916,7 +928,14 @@ class Core:
                 tool_callback(tool_name, tool_args)
 
             started = time.time()
-            result = execute_tool(tool_name, json.loads(tool_args) if isinstance(tool_args, str) else tool_args)
+            try:
+                result = execute_tool(tool_name, json.loads(tool_args) if isinstance(tool_args, str) else tool_args)
+            except KeyboardInterrupt:
+                # Ctrl+C while a tool is running. Mark the turn cancelled so
+                # run_turn() unwinds cleanly instead of persisting a partial
+                # tool batch, then re-raise for the turn-level handler.
+                self._turn_cancelled = True
+                raise
             duration = time.time() - started
 
             # Check if the result contains an image (e.g. screenshot tool)
