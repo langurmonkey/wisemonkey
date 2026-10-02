@@ -308,6 +308,26 @@ If the turn finishes before another tool call happens, nothing is lost. The line
 - Steering works in both modes: local, and attached to a daemon server (the client forwards the line over the socket, and the server confirms delivery before the client drops its own copy).
 - Nothing is lost on cancellation — a queued line survives a cancelled turn.
 
+### Tool output
+
+Each tool prints one line when it is activated:
+
+```
+↸ Activating tool:  read_file  (agent/core.py)
+```
+
+That is the only line a *successful, quick* tool produces. A "finished in 0.0s" line under every call turns a fifteen-tool turn into fifteen lines of noise, so the result line is printed only when it tells you something:
+
+- **Failures** are always reported, with the error text and the duration.
+- **Slow tools** — at least `agent.tool_slow_threshold` seconds (default 1 s) — print `Tool X finished in Y.Ys`, so the tool that made you wait is the one you can name.
+
+```yaml
+agent:
+  tool_slow_threshold: 1.0   # 0 = always print a result line; a huge value = errors only
+```
+
+This is purely about what you see. The tool's full result still goes to the model and into chat history either way.
+
 You can turn the whole thing off with `agent.steer_midturn: false` in the [configuration](#configuration).
 
 > If your terminal renders the footer oddly, set `agent.footer_debug_bytes: true` and look at `$XDG_STATE_HOME/wisemonkey/footer.log`, which records every byte the footer writes.

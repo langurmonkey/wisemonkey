@@ -153,5 +153,88 @@ class TestPromptStage(unittest.TestCase):
         self.assertEqual(agent._spinner_stops(), stops_before)
 
 
+
+class _RecordingOutput:
+    """OutputAdapter stand-in capturing what the turn printed."""
+
+    def __init__(self) -> None:
+        self.errors: list[str] = []
+        self.oks: list[str] = []
+
+    def err(self, msg: str) -> None:
+        self.errors.append(msg)
+
+    def ok(self, msg: str) -> None:
+        self.oks.append(msg)
+
+
+class _ToolResultAgent(Agent):
+    """An Agent with just enough state for `tool_result_callback`."""
+
+    def __init__(self, threshold: object = None) -> None:
+        self.output = _RecordingOutput()
+
+        class _Config:
+            def get(self, _key: str, default: object = None) -> object:
+                return threshold if threshold is not None else default
+
+        class _Core:
+            config = _Config()
+
+        self.core = _Core()
+
+
+class TestToolResultLine(unittest.TestCase):
+    """A successful fast tool is silent; slow and failed ones are not.
+
+    The activation line ("Activating tool: read_file") already says the tool
+    ran. A "finished in 0.0s" line under every call turns a fifteen-tool turn
+    into fifteen lines of noise, so the duration is only worth printing when
+    the tool was actually slow enough to make you wait.
+    """
+
+    def _run(self, *, threshold=1.0, duration=0.1, is_error=False):
+        agent = _ToolResultAgent(threshold)
+        agent.tool_result_callback("1", "read_file", "ok", is_error, duration)
+        return agent
+
+    def test_fast_success_prints_nothing(self):
+        agent = self._run(duration=0.05)
+        self.assertEqual(agent.output.oks, [])
+        self.assertEqual(agent.output.errors, [])
+
+    def test_slow_success_prints_the_duration(self):
+        agent = self._run(duration=2.4)
+        self.assertEqual(len(agent.output.oks), 1)
+        self.assertIn("read_file", agent.output.oks[0])
+        self.assertIn("2.4s", agent.output.oks[0])
+
+    def test_threshold_is_inclusive(self):
+        """Exactly at the threshold still counts as slow."""
+        self.assertEqual(self._run(duration=1.0).output.oks,
+                         ["Tool read_file finished in 1.0s"])
+
+    def test_error_is_always_reported(self):
+        agent = self._run(is_error=True, duration=0.01)
+        self.assertEqual(agent.output.oks, [])
+        self.assertEqual(len(agent.output.errors), 1)
+        self.assertIn("failed", agent.output.errors[0])
+
+    def test_error_line_carries_the_duration_too(self):
+        agent = self._run(is_error=True, duration=3.0)
+        self.assertIn("3.0s", agent.output.errors[0])
+
+    def test_zero_threshold_always_prints(self):
+        self.assertEqual(len(self._run(threshold=0, duration=0.0).output.oks), 1)
+
+    def test_bad_threshold_falls_back_to_the_default(self):
+        agent = _ToolResultAgent("not a number")
+        agent._tool_slow_threshold()
+        self.assertEqual(agent._tool_slow_threshold(), 1.0)
+
+    def test_negative_threshold_is_clamped(self):
+        self.assertEqual(self._run(threshold=-5)._tool_slow_threshold(), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -34,6 +34,11 @@ agent:
   memory_rolling_window_turns: 10
   # Hard cap on tool executions per turn. 0 = unlimited.
   max_tool_calls: 0
+  # A successful tool that takes at least this many seconds prints a
+  # "finished in Xs" line; faster ones stay silent, since the "Activating
+  # tool" line above already said it ran. Errors are always reported.
+  # 0 = always print, a large value = never print.
+  tool_slow_threshold: 1.0
   system_prompt: You are a helpful assistant, expert in many domains of science and engineering. Respond concisely and clearly. No fluff. Ask for clarification if needed. Do not invent. On first interaction, analyze the user's message for their name, role, interests, and preferences. Record them with `set_user_profile`.
     Use the `get_session_info` tool to check the session name and working directory. Never use tools with directories other than the session working directory unless the user requests it specifically. Record them with set_user_profile.
     **Memory policy:** You have access to persistent notes via the `get_memory` tool. These notes survive chat resets and contain important information about the user and past interactions.

@@ -490,10 +490,24 @@ class WisemonkeyTui(App):
             self.output.print(
                 f"[red]✗ Tool {tool_name} failed ({duration:.1f}s): {summary}[/red]"
             )
-        else:
+        elif duration >= self._tool_slow_threshold():
             self.output.print(
                 f"[dim]✓ Tool {tool_name} finished ({duration:.1f}s)[/dim]"
             )
+
+    def _tool_slow_threshold(self) -> float:
+        """Seconds after which a successful tool earns a result line.
+
+        Same rule as the REPL: fast tools stay silent because the tool-call
+        row above already said it ran. See `agent.tool_slow_threshold`.
+        """
+        config = self.core.config if self.core else None
+        value = config.get("agent.tool_slow_threshold", 1.0) if config else 1.0
+        try:
+            threshold = float(value)
+        except (TypeError, ValueError):
+            return 1.0
+        return max(0.0, threshold)
 
     # Reasoning callback
 

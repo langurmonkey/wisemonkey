@@ -360,11 +360,33 @@ class Agent:
             info(f"🛠️ [weak]Activating tool:[/weak]  [tool]{tool_name}[/tool]")
 
     def tool_result_callback(self, tool_id, tool_name, content, is_error, duration):
-        """Called after a tool finishes (event: TOOL_RESULT)."""
+        """Called after a tool finishes (event: TOOL_RESULT).
+
+        A successful tool that finished fast prints nothing: its activation
+        line is already on screen, and a "finished in 0.0s" line under every
+        single call turns a fifteen-tool turn into fifteen lines of noise.
+        Errors are always reported, and a tool slow enough to have made you
+        wait gets its duration so it can be spotted as the culprit.
+        """
         if is_error:
-            self.output.err(f"Tool {tool_name} failed: {content}")
-        else:
+            self.output.err(
+                f"Tool {tool_name} failed ({duration:.1f}s): {content}")
+            return
+        if duration >= self._tool_slow_threshold():
             self.output.ok(f"Tool {tool_name} finished in {duration:.1f}s")
+
+    def _tool_slow_threshold(self) -> float:
+        """Seconds after which a successful tool earns a result line.
+
+        Set ``agent.tool_slow_threshold`` to 0 to always print, or to a large
+        value to never print anything but errors.
+        """
+        value = self.core.config.get("agent.tool_slow_threshold", 1.0)
+        try:
+            threshold = float(value)
+        except (TypeError, ValueError):
+            return 1.0
+        return max(0.0, threshold)
 
     def _statusline(self, total_tokens, ntools, total_gen_time):
         if self.remote is not None:
