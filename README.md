@@ -245,6 +245,20 @@ You can enable `vi` mode for the current session with the [command](#commands) `
 
 There are a few commands available to use in the agent loop. You can list them with `/help`. Also, use `/[command-name] help` (e.g. `/config help`) to show additional help for a command.
 
+### Correcting a turn
+
+A prompt you already sent is easy to reach but hard to take back: <kbd>↑</kbd> re-sends it verbatim, and the bad exchange stays in the agent's context either way, so the model keeps building on it. Three commands deal with that:
+
+| Command | What it does |
+|-|-|
+| `/edit` | Open the last prompt in `$EDITOR`, and re-run it — the edited prompt **replaces** the old exchange, so the model never sees both versions |
+| `/retry` | Re-run the last prompt unchanged. `--drop` also removes the old answer first, so the re-run starts from the same context the original did |
+| `/undo [n]` | Drop the last *n* exchanges from the context entirely, without running anything |
+
+`/undo` drops *whole* exchanges — the prompt, the answer, and any tool calls and results that belonged to it — never a fragment, which would leave a tool result in the prompt with no matching call.
+
+Slash commands are still written to `history.txt`, but they are filtered out of what <kbd>↑</kbd> walks through, so the commands you ran early on no longer push your real prompts out of reach.
+
 ### Shell commands
 
 Prefix an input with `!` to run it directly in the shell instead of sending it to the model:

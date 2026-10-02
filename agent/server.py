@@ -385,6 +385,10 @@ class WisemonkeyServer:
             ok_flag, msg, content, markdown, should_exit = registry.run_command(
                 self.core, payload.raw, output
             )
+            # A command may hand a prompt back to the client (`/retry`,
+            # `/edit`); the client owns the turn loop.
+            pending = getattr(self.core, "pending_prompt", None) or ""
+            self.core.pending_prompt = None
             result = CommandResultPayload(
                 command=command.name if command else payload.name,
                 params=params or payload.params,
@@ -393,6 +397,7 @@ class WisemonkeyServer:
                 content=content or "",
                 markdown=markdown or "",
                 should_exit=bool(should_exit),
+                pending_prompt=pending,
             )
         except Exception as e:
             result = CommandResultPayload(

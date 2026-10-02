@@ -366,3 +366,112 @@ class TestChatMemoryWindow(BaseTest):
         cm2 = ChatMemory(self.session_dir, max_tokens=10**9, window_turns=2)
         assert len(cm2._exchanges) == 4
         assert cm2._exchanges[0]["content"] == "msg 2"
+
+
+class TestChatMemoryDropLast(BaseTest):
+    """`drop_last` removes whole exchanges from the tail of the history.
+
+    The unit under test is the real ChatMemory, not a stand-in: the subtlety
+    is which entries count as an exchange, and only the real implementation
+    knows that.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.session_dir = self._tmpdir / "sessions" / "droplast"
+
+    def _fill(self) -> ChatMemory:
+        cm = ChatMemory(self.session_dir, max_tokens=10**9)
+        for role, content in [
+            ("user", "q1"),
+            ("assistant", "a1"),
+            ("user", "q2"),
+            ("assistant", "a2"),
+            ("tool_call", "{}"),
+            ("tool_result", "42"),
+            ("user", "q3"),
+            ("assistant", "a3"),
+        ]:
+            cm._exchanges.append({"role": role, "content": content})
+        cm._recount_tokens()
+        return cm
+
+    def _roles(self, cm: ChatMemory) -> list[str]:
+        return [e["role"] for e in cm._exchanges]
+
+    def test_drops_last_exchange_only(self):
+        cm = self._fill()
+        removed = cm.drop_last(1)
+        assert removed == 2
+        assert self._roles(cm) == [
+            "user", "assistant", "user", "assistant",
+            "tool_call", "tool_result",
+        ]
+
+    def test_keeps_tool_calls_with_their_exchange(self):
+        cm = self._fill()
+        cm.drop_last(2)
+        assert self._roles(cm) == ["user", "assistant"]
+
+    def test_n_zero_drops_everything(self):
+        cm = self._fill()
+        removed = cm.drop_last(0)
+        assert removed == 8
+        assert cm._exchanges == []
+
+    def test_n_beyond_history_clears_it(self):
+        cm = self._fill()
+        assert cm.drop_last(99) == 8
+        assert cm._exchanges == []
+
+    def test_empty_history(self):
+        cm = ChatMemory(self.session_dir, max_tokens=10**9)
+        assert cm.drop_last(1) == 0
+
+    def test_recounts_and_persists(self):
+        cm = self._fill()
+        before = cm.total_tokens
+        cm.drop_last(1)
+        assert cm.total_tokens < before
+        # Reloaded from disk, so the drop survived the session.
+        reopened = ChatMemory(self.session_dir, max_tokens=10**9)
+        assert len(reopened._exchanges) == 6
+
+    def test_leading_orphan_is_not_mistaken_for_an_exchange(self):
+        """A stray tool result before any user message is not a turn start."""
+        cm = ChatMemory(self.session_dir, max_tokens=10**9)
+        cm._exchanges = [
+            {"role": "tool_result", "content": "leftover"},
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "q2"},
+            {"role": "assistant", "content": "a2"},
+        ]
+        assert cm.drop_last(1) == 2
+        assert [e["role"] for e in cm._exchanges] == [
+            "tool_result", "user", "assistant",
+        ]
+
+    def test_dropping_the_only_exchange_clears_the_orphan_too(self):
+        """Nothing coherent is left, so nothing is kept -- orphan included."""
+        cm = ChatMemory(self.session_dir, max_tokens=10**9)
+        cm._exchanges = [
+            {"role": "tool_result", "content": "leftover"},
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "a"},
+        ]
+        assert cm.drop_last(1) == 3
+        assert cm._exchanges == []
+
+    def test_last_user_prompt(self):
+        cm = self._fill()
+        assert cm.last_user_prompt() == "q3"
+
+    def test_last_user_prompt_ignores_injections_after_the_prompt(self):
+        cm = self._fill()
+        cm._exchanges.append({"role": "user", "content": "steered mid-turn"})
+        assert cm.last_user_prompt() == "steered mid-turn"
+
+    def test_last_user_prompt_on_empty(self):
+        assert ChatMemory(
+            self.session_dir, max_tokens=10**9).last_user_prompt() == ""

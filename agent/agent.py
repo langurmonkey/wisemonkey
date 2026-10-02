@@ -39,6 +39,7 @@ from agent.ipc import (
     payload_as,
 )
 from agent.mdstream import MarkdownStreamRenderer
+from agent.history import PromptHistory
 from agent.output import RichOutputAdapter, set_output
 from agent.startup import startup_info
 from agent.utils import add_command, collapse_none_dicts, format_tool_args, term_width
@@ -50,7 +51,6 @@ try:
     from prompt_toolkit.clipboard import InMemoryClipboard
     from prompt_toolkit.completion import NestedCompleter
     from prompt_toolkit.formatted_text import HTML
-    from prompt_toolkit.history import FileHistory
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.keys import Keys
     from prompt_toolkit.lexers import PygmentsLexer
@@ -484,6 +484,20 @@ class Agent:
             self._announce_steered(line, when="mid-turn")
         return lines
 
+    def _take_pending_prompt(self) -> str | None:
+        """Take a prompt a slash command asked to run (`/retry`, `/edit`).
+
+        The frontend owns the turn loop, so a command cannot start a turn
+        itself: it stores the text on the core and returns, and the loop picks
+        it up here. Reading it clears it, so a request can never be run twice
+        nor leak into the next prompt.
+        """
+        prompt = getattr(self.core, "pending_prompt", None)
+        if not prompt:
+            return None
+        self.core.pending_prompt = None
+        return str(prompt)
+
     def _steer_drain(self) -> str | None:
         """Pop the next queued steering line, if the user sent one.
 
@@ -648,7 +662,7 @@ class Agent:
             message=HTML(
                 f"⩥ You ⩤   <weak>model:</weak> <model>{model}</model>  <weak>session:</weak> <model>{self.core.memory.session}</model>{unsafe_warn}\n❯ "
             ),
-            history=FileHistory(str(history_path)),
+            history=PromptHistory(history_path),
             show_frame=True,
             multiline=True,
             key_bindings=kb,
@@ -777,15 +791,24 @@ class Agent:
                             self.output.ok(msg)
                         self.output.newline()
 
+                        # `/retry` and `/edit` cannot run a turn themselves
+                        # (the frontend owns the turn loop); they leave the
+                        # prompt here and it runs next, through exactly the
+                        # same path as a typed prompt.
+                        retry_prompt = self._take_pending_prompt()
+                        if not retry_prompt:
+                            continue
+                        user_input = retry_prompt
+
                     else:
                         # Error
                         if msg:
                             self.output.err(f"{msg}")
+                        continue
 
                 else:
                     self.output.err(f"Command not found: {user_input}")
-
-                continue
+                    continue
 
             else:
                 self.output.newline()
@@ -1178,6 +1201,13 @@ class Agent:
                         if result.msg:
                             self.output.ok(result.msg)
                         self.output.newline()
+
+                        # `/retry` and `/edit` run in the daemon but need the
+                        # client to drive the turn, so the server hands the
+                        # prompt back here and it runs next.
+                        if result.pending_prompt:
+                            user_input = result.pending_prompt
+                            continue
                     else:
                         if result.msg:
                             self.output.err(result.msg)

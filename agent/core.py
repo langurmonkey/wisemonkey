@@ -76,6 +76,12 @@ class TurnResult:
 class Core:
     """Agent core, which manages tools, skills, memory, and API communication."""
 
+    # One-shot request from a slash command to the frontend: run this text as
+    # the next prompt. Commands cannot run a turn themselves (the frontend owns
+    # the turn loop, the emitter, the footer and the spinner), so `/retry` and
+    # `/edit` use this to hand a prompt back. The frontend clears it after use.
+    pending_prompt: str | None = None
+
     def __init__(self, config_path=None, session='default', full_startup=True):
         self.config = get_config()
         self.config.load(config_path)
@@ -118,6 +124,9 @@ class Core:
 
             # Pending image to attach to the next user prompt
             self._pending_image: dict | None = None
+
+            # Per-instance, so a stale request can never leak between turns.
+            self.pending_prompt = None
 
             # Initialize tokenizer for token-counting
             encoding_name = "cl100k_base"

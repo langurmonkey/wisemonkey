@@ -409,6 +409,169 @@ def _cmd_history_clear(
 
 
 @cmd(
+    "/undo",
+    "Remove the last exchange(s) from the context; optional integer count (default 1)",
+    examples=[
+        "/undo        # Drop the last exchange (prompt + answer + tool calls)",
+        "/undo 3      # Drop the last three exchanges",
+    ],
+)
+def _cmd_undo(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
+    """Drop whole exchanges from the tail of the chat history.
+
+    The counterpart of ``/history-clear``, which removes them from the *front*
+    and knows nothing about turns. One bad answer otherwise poisons the rest
+    of the session: the model keeps re-reading it and keeps building on it.
+    """
+    n = 1
+    if params:
+        try:
+            n = int(params[0])
+        except ValueError:
+            return False, f"the parameter must be an integer: '{params[0]}'", None, None
+
+    mem = core.memory
+    entries = len(mem.get_chat_history_unformatted())
+    if not entries:
+        return False, "there is nothing to undo", None, None
+
+    removed = mem.drop_last_exchanges(n)
+    if not removed:
+        return False, "there is nothing to undo", None, None
+    return True, f"{removed} entries removed ({n} exchange(s))", None, None
+
+
+@cmd(
+    "/retry",
+    "Re-run the last prompt from scratch, optionally dropping its answer from the context",
+    aliases=["/r"],
+    examples=[
+        "/retry          # Re-run the last prompt, keeping the old answer in context",
+        "/retry --drop   # Re-run it and remove the old exchange first",
+    ],
+)
+def _cmd_retry(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
+    """Re-run the previous prompt.
+
+    By default the old exchange stays in the context, which is occasionally
+    what you want ("now do it properly"). ``--drop`` removes it first, so the
+    re-run sees the same context the original did -- that is the mode that
+    actually undoes a bad turn.
+    """
+    drop = any(p in ("--drop", "-d") for p in params)
+    if any(not (p in ("--drop", "-d")) for p in params):
+        return False, f"unknown option: {' '.join(params)}", None, None
+
+    prompt = core.memory.last_user_prompt()
+    if not prompt:
+        return False, "no previous prompt in this session", None, None
+
+    if drop:
+        removed = core.memory.drop_last_exchanges(1)
+        core.pending_prompt = prompt
+        return True, f"re-running ({removed} entries dropped)", None, None
+
+    core.pending_prompt = prompt
+    return True, "re-running the last prompt", None, None
+
+
+@cmd(
+    "/edit",
+    "Edit the last prompt in $EDITOR and re-run it, dropping its answer",
+    examples=[
+        "/edit        # Open the last prompt in $EDITOR, then re-run it",
+    ],
+)
+def _cmd_edit(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
+    """Amend the last prompt and re-run it as the same turn.
+
+    The edited prompt *replaces* the old exchange rather than being appended
+    after it: keeping both would leave the model reading the wrong version of
+    the question it is answering.
+    """
+    if params:
+        return False, no_params_error, None, None
+
+    prompt = core.memory.last_user_prompt()
+    if not prompt:
+        return False, "no previous prompt in this session", None, None
+
+    edited = _edit_in_editor(prompt, output)
+    if edited is None:
+        return False, "edit cancelled", None, None
+    edited = edited.strip()
+    if not edited:
+        return False, "the edited prompt is empty; nothing to re-run", None, None
+    if edited == prompt:
+        return False, "the prompt is unchanged; nothing to re-run", None, None
+
+    removed = core.memory.drop_last_exchanges(1)
+    core.pending_prompt = edited
+    return True, f"re-running the edited prompt ({removed} entries dropped)", None, None
+
+
+def _edit_in_editor(text: str, output: OutputAdapter | None) -> str | None:
+    """Open *text* in ``$EDITOR`` and return the edited content.
+
+    Returns None when the editor could not be run or exited non-zero, which
+    is what an abort (``Esc`` in vim, empty buffer) looks like. The scratch
+    file is deleted afterwards either way.
+    """
+    import os
+    import subprocess
+    import tempfile
+
+    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "nano"
+
+    # .md so syntax highlighting and spell-checking see a markdown document.
+    fd, path = tempfile.mkstemp(suffix=".md", prefix="wisemonkey-prompt-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            if not text.endswith("\n"):
+                handle.write("\n")
+
+        cmd = [editor, path]
+        if output is not None:
+            result = output.run_subprocess(cmd)
+        else:
+            result = subprocess.run(cmd)
+
+        if getattr(result, "returncode", 1) != 0:
+            return None
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
+    except OSError:
+        return None
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+@cmd(
+    "/last-prompt",
+    "Print the most recent user prompt (used by /retry and /edit)",
+)
+def _cmd_last_prompt(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
+    if params:
+        return False, no_params_error, None, None
+    text = core.memory.last_user_prompt()
+    if not text:
+        return False, "no previous prompt in this session", None, None
+    return True, None, text, None
+
+
+@cmd(
     "/history-compact",
     "Compact the session chat history by summarizing it into a shorter form",
 )

@@ -481,6 +481,11 @@ class CommandResultPayload:
     content: str = ""
     markdown: str = ""
     should_exit: bool = False
+    # Set when the command asked for a prompt to be run next (`/retry`,
+    # `/edit`). The frontend owns the turn loop, so a command cannot start a
+    # turn itself; it returns the text here and the frontend sends it as its
+    # next prompt.
+    pending_prompt: str = ""
 
 
 @dataclass

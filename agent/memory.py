@@ -316,6 +316,14 @@ class Memory:
         """
         return self._chat_history._clear(n)
 
+    def drop_last_exchanges(self, n=1):
+        """Remove the *n* most recent exchanges. See ChatMemory.drop_last."""
+        return self._chat_history.drop_last(n)
+
+    def last_user_prompt(self):
+        """Return the most recent user message, or "" if there is none."""
+        return self._chat_history.last_user_prompt()
+
 
 class ChatMemory:
     """Rolling chat memory that stores recent exchanges.
@@ -504,6 +512,49 @@ class ChatMemory:
         self.save()
 
         return cleared
+
+    def drop_last(self, n=1) -> int:
+        """Remove the *n* most recent exchanges (not *n* entries).
+
+        An exchange starts at a user message and runs until the next user
+        message, so dropping the tail of the history has to drop whole
+        exchanges: leaving an orphaned tool result behind would put a result
+        in the prompt with no matching call.
+
+        ``n <= 0`` drops everything. Returns the number of entries removed.
+        """
+        if not self._exchanges:
+            return 0
+        if n <= 0:
+            removed = len(self._exchanges)
+            self._exchanges = []
+            self._recount_tokens()
+            self.save()
+            return removed
+
+        starts = self._exchange_starts()
+        if len(starts) <= n:
+            # The request reaches past the first exchange: there is nothing
+            # coherent left to keep.
+            removed = len(self._exchanges)
+            self._exchanges = []
+            self._recount_tokens()
+            self.save()
+            return removed
+
+        cutoff = starts[-n]
+        removed = len(self._exchanges) - cutoff
+        self._exchanges = self._exchanges[:cutoff]
+        self._recount_tokens()
+        self.save()
+        return removed
+
+    def last_user_prompt(self) -> str:
+        """Return the content of the most recent user message, or ""."""
+        for entry in reversed(self._exchanges):
+            if entry.get("role") == "user":
+                return entry.get("content", "")
+        return ""
 
     def get_unformatted(self):
         return self._exchanges

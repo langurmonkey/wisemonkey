@@ -124,6 +124,7 @@ It clears `ICANON` and `ECHO` but deliberately **keeps `ISIG`**. With `ISIG` off
 
 Lifecycle hooks in `agent/output.py`:
 
+- `PromptHistory` (in `agent/history.py`) wraps `prompt_toolkit`'s `FileHistory` and filters lines whose first character is `/` out of `load_history_strings()`. Commands stay on disk; only what <kbd>↑</kbd> navigates is filtered, because commands cluster at the ends of a session and push real prompts out of reach.
 - `RichOutputAdapter.steer_start/stop/take/take_all/ack/line/pending` — the real implementation; the protocol, `TuiOutputAdapter` and `IpcOutputAdapter` get no-op defaults. `take_all` drains everything at once (injection seam); `ack(text)` removes one line by value, which is how the remote path confirms delivery.
 - `footer_update(status_line, input_line)` takes the status line and the steering input as two separate arguments; they are drawn on two separate rows by `agent/footer.py`.
 - `footer_spinner(text)` starts/stops the footer's own animation for a stage label. `_spinner()` returns `None` while the footer is armed, so `spinner_prompt`/`spinner_thinking` stay `None` in that case — ownership of the footer row is tracked by `_footer_spinner_mine` instead, so only the stage that started a spinner clears it.
@@ -159,6 +160,14 @@ Tools are defined using the `@tool(name, description, parameters)` decorator. Th
 ### Slash Commands (`agent/commands.py`)
 
 Commands use the `@cmd(name, description, aliases)` decorator and are auto-registered. Each returns `(ok: bool, msg: str, content: str, markdown: str)`.
+
+A command **cannot run a turn**: the frontend owns the turn loop, the emitter, the footer and the spinners. Commands that need a prompt to run instead set `Core.pending_prompt` and return; `Agent._take_pending_prompt` (local) or `CommandResultPayload.pending_prompt` (remote) picks it up and sends it as the next prompt, through exactly the same path as a typed one.
+
+### Correcting a turn (`/edit`, `/retry`, `/undo`)
+
+`ChatMemory.drop_last(n)` removes the *n* most recent **exchanges** from the tail, where an exchange starts at a user message and runs to the next one (so tool calls and results go with their turn). It never removes a fragment: a tool result left without its matching call would be malformed in the prompt. `n <= 0` clears everything. `last_user_prompt()` returns the most recent user message, which is what `/retry` and `/edit` re-run.
+
+`/edit` opens that prompt in `$EDITOR` on a temporary `.md` file, runs the editor through `OutputAdapter.run_subprocess` (so the sticky footer and steering are torn down around it), and replaces the old exchange. An unchanged, empty, or aborted edit re-runs nothing. `/retry --drop` is the same re-run from a clean context.
 
 ### Skills (`agent/skills.py` + `skills/`)
 

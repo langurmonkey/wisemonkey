@@ -10,12 +10,19 @@ lines (``+``), separated by a blank line::
     +Ok, now I see the drop down for the provider…
 
 Designed for use with the TUI's alt+up/alt+down navigation.
+
+This module also provides :class:`PromptHistory`, the ``prompt_toolkit``
+history used by the classic REPL, which keeps slash commands out of the
+navigable prompt history.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.history import History as PtHistory
 
 Timestamp = str  # ISO-8601-ish: "YYYY-MM-DD HH:MM:SS.ffffff"
 Entry = tuple[Timestamp, str]  # (timestamp, content)
@@ -122,3 +129,47 @@ class History:
                 lines.append(f"+{content_line}")
             lines.append("")  # blank line separator
         self._path.write_text("\n".join(lines) + "\n")
+
+
+class PromptHistory(PtHistory):
+    """``prompt_toolkit`` history that hides slash commands from navigation.
+
+    Everything is still written to disk, so ``/quit``, ``/config`` and friends
+    can still be recalled deliberately (``ctrl+r``-style full recall, or by
+    typing the leading slash yourself). What is filtered is only what shows up
+    when you press Up: commands cluster at the ends of a session and push the
+    prompts you actually want to reuse out of reach, and a suggestion popped
+    from a command is never what you meant to type next.
+
+    Only lines whose *first* character is ``/`` are dropped, and only when the
+    history is loaded: a command typed in the middle of a multiline prompt is
+    ordinary text and stays.
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        # `History` gives us prompt_toolkit's in-memory cursor semantics; the
+        # file handling is delegated to a FileHistory, whose
+        # `load_history_strings` is deliberately bypassed by the override
+        # below (FileHistory is composed, not inherited, so the override is
+        # actually reached).
+        super().__init__()
+        self._file_history = FileHistory(str(path))
+
+    @staticmethod
+    def _is_command(text: str) -> bool:
+        return text.lstrip().startswith("/")
+
+    def load_history_strings(self) -> list[str]:
+        """Return the stored strings, oldest first, without commands."""
+        return [
+            text
+            for text in self._file_history.load_history_strings()
+            if not self._is_command(text)
+        ]
+
+    def store_string(self, string: str) -> None:
+        """Persist *string* (commands included) and reset the cursor."""
+        self._file_history.store_string(string)
+
+    def append_string(self, string: str) -> None:
+        self._file_history.append_string(string)
