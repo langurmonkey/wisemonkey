@@ -322,14 +322,14 @@ Wisemonkey can embed documents into a per-session vector store, allowing the age
 
 The agent uses the `search_knowledge` tool to query embedded documents when answering questions about previously indexed files. Supported formats include PDF, Markdown, and plain text. Embeddings are powered by the configured embedding model and stored in the session directory under `vectordb/`.
 
-## Chat memory
+## Chat history
 
 In addition to persistent memory, the agent maintains a **chat history** of recent user input and assistant output pairs. This provides context that survives beyond the LLM's context window. Here is how it works:
 
 - Each user message and assistant response is stored in memory
 - Reasoning is omitted from chat memory
 - Automatically compacted when exceeding the configured character limit
-- The user can trigger the compaction any time with `/memory compact`
+- The user can trigger the compaction any time with `/history compact`
 - Chat memory is attached to the system prompt on each turn, as the **last section** (after identity, workspace instructions, memory, and skills) so the static prompt prefix stays stable and provider prompt caches are not invalidated on every turn
 - The agent displays the last 10 exchanges, with long messages truncated
 - Tool results are truncated in the formatted history unless `chat_history_full_tool_results` is enabled (see below)

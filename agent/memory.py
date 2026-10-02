@@ -25,9 +25,11 @@ def _load_vectorstore(session_dir):
     """Lazily initialize the vector store. Returns None if dependencies are missing."""
     try:
         from agent.vectorstore import VectorStore
+
         return VectorStore(session_dir)
     except Exception:
         return None
+
 
 SESSIONS_DIR = xdg_data_home() / "wisemonkey" / "sessions"
 SESSION_METADATA_FILE = ".session-metadata"
@@ -45,17 +47,23 @@ def _tool_result_limit() -> int:
     """
     try:
         from agent.config import get_config
+
         cfg = get_config()
         if cfg.get("agent.chat_history_full_tool_results", False):
             return 0
-        return int(cfg.get("agent.chat_history_tool_result_max_chars",
-                           DEFAULT_TOOL_RESULT_MAX_CHARS))
+        return int(
+            cfg.get(
+                "agent.chat_history_tool_result_max_chars",
+                DEFAULT_TOOL_RESULT_MAX_CHARS,
+            )
+        )
     except Exception:
         return DEFAULT_TOOL_RESULT_MAX_CHARS
 
 
 # Singleton instance
 _instance = None
+
 
 class Memory:
     """Persistent per-session memory with in-memory buffering.
@@ -69,15 +77,21 @@ class Memory:
     _notes_path = Path()
     _notes = []
 
-    def __new__(cls, max_chat_history=80000, session_dir=None, session='default',
-                window_turns=0):
+    def __new__(
+        cls, max_chat_history=80000, session_dir=None, session="default", window_turns=0
+    ):
         global _instance
         if _instance is None:
             _instance = super().__new__(cls)
         return _instance
 
-    def __init__(self, max_chat_history=80000, session_dir=None, session='default',
-                 window_turns=0):
+    def __init__(
+        self,
+        max_chat_history=80000,
+        session_dir=None,
+        session="default",
+        window_turns=0,
+    ):
         # Only initialize on first creation
         if hasattr(self, "_initialized"):
             return
@@ -88,7 +102,7 @@ class Memory:
         # Memory directory:
         # - if `session_dir` is present, use that
         # - else, use SESSIONS_DIR/session
-        self.session_dir = Path(session_dir) if session_dir else  SESSIONS_DIR / session
+        self.session_dir = Path(session_dir) if session_dir else SESSIONS_DIR / session
         self.session_is_new = not os.path.exists(self.session_dir)
         self.session_dir.mkdir(parents=True, exist_ok=True)
         # Update session metadata file
@@ -100,41 +114,44 @@ class Memory:
             self.session_created = now
             self.session_accessed = now
             # Write 'created' and 'accessed'
-            md = {
-                "created": now.isoformat(),
-                "accessed": now.isoformat()
-            }
+            md = {"created": now.isoformat(), "accessed": now.isoformat()}
             self._write_metadata(md)
 
         elif metadata_exists:
             # Restored session
             # Read 'created' and 'accessed'
             md = self._read_metadata()
-            if md and 'created' in md:
-                self.session_created = datetime.datetime.fromisoformat(md['created']).astimezone()
+            if md and "created" in md:
+                self.session_created = datetime.datetime.fromisoformat(
+                    md["created"]
+                ).astimezone()
             else:
                 self.session_created = None
-            if md and 'accessed' in md:
-                self.session_accessed = datetime.datetime.fromisoformat(md['accessed']).astimezone()
+            if md and "accessed" in md:
+                self.session_accessed = datetime.datetime.fromisoformat(
+                    md["accessed"]
+                ).astimezone()
             else:
                 self.session_accessed = None
 
             # Update 'accessed'
             if self.session_created:
                 # Write 'created' and 'accessed'
-                md['accessed'] = now.isoformat()
+                md["accessed"] = now.isoformat()
                 self._write_metadata(md)
         else:
-            raise RuntimeError("Invalid session state: new session but metadata already exists?")
-            
+            raise RuntimeError(
+                "Invalid session state: new session but metadata already exists?"
+            )
 
         # User profile
         self._user_profile_path = self.session_dir / "user_profile.json"
         # Persistent notes
         self._notes_path = self.session_dir / "notes.json"
         # Chat history
-        self._chat_history = ChatMemory(self.session_dir, max_tokens=max_chat_history,
-                                        window_turns=window_turns)
+        self._chat_history = ChatMemory(
+            self.session_dir, max_tokens=max_chat_history, window_turns=window_turns
+        )
         # Document vector store (lazy, optional)
         self.vectorstore = None
 
@@ -157,7 +174,6 @@ class Memory:
             except OSError:
                 pass
         return metadata
-
 
     def _write_metadata(self, metadata):
         """Write a dict to a .session-metadata file in key: value format."""
@@ -243,11 +259,13 @@ class Memory:
     def get_chat_history_unformatted(self):
         return self._chat_history.get_unformatted()
 
-    def get_chat_history_formatted(self,
-                           num_exchanges: int = 0,
-                           timestamps: bool = False,
-                           collapse_tools: bool = False,
-                           width: int = 0):
+    def get_chat_history_formatted(
+        self,
+        num_exchanges: int = 0,
+        timestamps: bool = False,
+        collapse_tools: bool = False,
+        width: int = 0,
+    ):
         """
         Returns the chat history as a formatted string.
 
@@ -257,7 +275,9 @@ class Memory:
         - collapse_tools: bool  - Collapse tool calls
         - width: int            - Maximum width of each entry's content (0 to not truncate)
         """
-        return self._chat_history.get_formatted(num_exchanges, timestamps, collapse_tools, width)
+        return self._chat_history.get_formatted(
+            num_exchanges, timestamps, collapse_tools, width
+        )
 
     def add_chat_exchange(self, core, role, content, **extra):
         self._chat_history.add_exchange(core, role, content, **extra)
@@ -299,7 +319,7 @@ class Memory:
 
 class ChatMemory:
     """Rolling chat memory that stores recent exchanges.
-    
+
     Maintains a rolling window of recent user input/assistant output pairs,
     limited by token count from configuration and (optionally) by a
     turn-based rolling window (`window_turns`: keep only the last n
@@ -336,7 +356,9 @@ class ChatMemory:
 
     def _recount_tokens(self) -> None:
         """Count exactly the rendered history text injected into the prompt."""
-        formatted = self.get_formatted(0, timestamps=False, collapse_tools=False, width=0)
+        formatted = self.get_formatted(
+            0, timestamps=False, collapse_tools=False, width=0
+        )
         self.total_tokens = count_tokens(formatted or "")
 
     @staticmethod
@@ -360,13 +382,13 @@ class ChatMemory:
                     self._recount_tokens()
             except (json.JSONDecodeError, IOError):
                 pass
-    
+
     def save(self):
         """Persist in-memory state to disk."""
         self._chat_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self._chat_path, "w") as f:
             json.dump({"exchanges": self._exchanges}, f, indent=2)
-    
+
     def add_exchange(self, core, role, content, **extra):
         """
         Add a user input, assistant output, or tool step to memory.
@@ -409,11 +431,12 @@ class ChatMemory:
         # Compact if exceeded
         if self.total_tokens > self.max_tokens:
             from agent.commands import registry
-            _, _, _, _, _ = registry.run_command(core, "/session-chat-compact")
-        
+
+            _, _, _, _, _ = registry.run_command(core, "/history-compact")
+
         # Persist immediately
         self.save()
-    
+
     def _trim(self):
         """Remove oldest exchanges until under the token limit."""
 
@@ -421,7 +444,7 @@ class ChatMemory:
         while self.total_tokens > self.max_tokens and self._exchanges:
             self._exchanges.pop(0)
             self._recount_tokens()
-        
+
         # Save after trimming
         self.save()
 
@@ -432,8 +455,7 @@ class ChatMemory:
         after it until the next user entry (assistant responses, tool
         calls and results).
         """
-        starts = [i for i, e in enumerate(self._exchanges)
-                  if e.get("role") == "user"]
+        starts = [i for i, e in enumerate(self._exchanges) if e.get("role") == "user"]
         return starts
 
     def _trim_to_window(self) -> int:
@@ -485,13 +507,14 @@ class ChatMemory:
 
     def get_unformatted(self):
         return self._exchanges
-    
-    
-    def get_formatted(self,
-                      num_exchanges: int,
-                      timestamps: bool = False,
-                      collapse_tools: bool = False,
-                      width: int = 0):
+
+    def get_formatted(
+        self,
+        num_exchanges: int,
+        timestamps: bool = False,
+        collapse_tools: bool = False,
+        width: int = 0,
+    ):
         """Return chat history formatted for the system prompt.
 
         Handles all exchange roles: user, assistant, summary, tool_call,
@@ -508,7 +531,9 @@ class ChatMemory:
 
         lines = []
         # Show most recent exchanges (num_exchanges == 0 -> all)
-        history = self._exchanges[-num_exchanges:] if num_exchanges > 0 else self._exchanges
+        history = (
+            self._exchanges[-num_exchanges:] if num_exchanges > 0 else self._exchanges
+        )
 
         def is_tool(turn) -> bool:
             return turn.get("role") in ("tool_call", "tool_result")
@@ -529,8 +554,7 @@ class ChatMemory:
                 continue
 
             # Render adjacent matching tool call/result entries together.
-            if (i + 1 < len(history)
-                    and self._tool_entries_match(turn, history[i + 1])):
+            if i + 1 < len(history) and self._tool_entries_match(turn, history[i + 1]):
                 result = history[i + 1]
                 name = turn.get("name", "unknown")
                 args = escape(str(turn.get("arguments", "")))
@@ -538,9 +562,7 @@ class ChatMemory:
                 if tool_limit > 0 and len(result_content) > tool_limit:
                     result_content = result_content[:tool_limit] + " …[truncated]"
                 lines.append(
-                    f"## Tool: {name}\n{t}\n"
-                    f"Args: {args}\n"
-                    f"Result: {result_content}\n\n"
+                    f"## Tool: {name}\n{t}\nArgs: {args}\nResult: {result_content}\n\n"
                 )
                 i += 2
                 continue

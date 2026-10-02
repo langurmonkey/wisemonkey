@@ -22,21 +22,27 @@ from agent.utils import resize_image
 # Global error messages for commands
 no_params_error = "This command does not take any parameters"
 
+
 def smart_cast(value, target_type):
     """Cast a string value to a given type, handling booleans correctly."""
     if target_type is bool:
-        return ast.literal_eval(value)   # 'False' → False
-    return target_type(value)            # '42' → 42, '3.14' → float, etc.
+        return ast.literal_eval(value)  # 'False' → False
+    return target_type(value)  # '42' → 42, '3.14' → float, etc.
+
 
 def empty():
     pass
 
+
 @dataclass(frozen=True)
 class Command:
     """A single slash command definition."""
+
     name: str
     description: str = ""
-    handler: Callable = empty # (agent, params: list[str], output: OutputAdapter | None) -> str | None
+    handler: Callable = (
+        empty  # (agent, params: list[str], output: OutputAdapter | None) -> str | None
+    )
     aliases: list[str] = field(default_factory=list)
     examples: list[str] = field(default_factory=list)
 
@@ -66,15 +72,21 @@ class CommandRegistry:
             return None, None
 
         n = len(tokens)
-        for words in reversed(range(1, n+1)):
-            name = '-'.join(tokens[i] for i in range(words))
+        for words in reversed(range(1, n + 1)):
+            name = "-".join(tokens[i] for i in range(words))
             command = self._commands.get(name.lower())
             if command:
                 return command, tokens[words:]
 
         return None, None
 
-    def execute(self, core, cmd: Command, params: list[str] | None, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None, bool]:
+    def execute(
+        self,
+        core,
+        cmd: Command,
+        params: list[str] | None,
+        output: OutputAdapter | None = None,
+    ) -> tuple[bool, str | None, str | None, str | None, bool]:
         """
         Execute a command.
 
@@ -98,17 +110,16 @@ class CommandRegistry:
         - markdown: str     - long text in Markdown format
         - should_exit: bool - boolean indicating whether the agent must exit
         """
-        if (
-            params and
-            (params[0].lower() == "-h" or params[0].lower() == "help")
-        ):
+        if params and (params[0].lower() == "-h" or params[0].lower() == "help"):
             return True, None, self._command_str(cmd), None, False
 
         ok, msg, content, markdown = cmd.handler(core, params, output)
         should_exit = msg in ("EXIT", "exit")
         return ok, msg, content, markdown, should_exit
 
-    def run_command(self, core, command: str, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None, bool]:
+    def run_command(
+        self, core, command: str, output: OutputAdapter | None = None
+    ) -> tuple[bool, str | None, str | None, str | None, bool]:
         """
         Shortcut to run a command from a string.
 
@@ -125,13 +136,13 @@ class CommandRegistry:
         else:
             raise RuntimeError(f"command not found: {command}")
 
-
     def list_commands(self) -> list[Command]:
         """
         Return all unique commands (deduplicated by primary name) and
         in alphabetical order.
         """
         import collections
+
         seen = set()
         result = []
         commands = collections.OrderedDict(sorted(self._commands.items()))
@@ -146,7 +157,7 @@ class CommandRegistry:
         return list(self._commands.keys())
 
     def get_commands_str(self):
-        """ Prints all defined commands to the output"""
+        """Prints all defined commands to the output"""
         all = ""
         for cmd in self.list_commands():
             all += f"{self._command_str(cmd)}"
@@ -175,11 +186,11 @@ class CommandRegistry:
 # Module-level singleton
 registry = CommandRegistry()
 
+
 # Decorator for commands
-def cmd(name: str,
-        description: str = "",
-        aliases: list[str] = [],
-        examples: list[str] = []):
+def cmd(
+    name: str, description: str = "", aliases: list[str] = [], examples: list[str] = []
+):
     """
     Decorator to register commands.
 
@@ -191,11 +202,7 @@ def cmd(name: str,
     """
 
     def command(handler):
-        registry.register(Command(name,
-                                  description,
-                                  handler,
-                                  aliases,
-                                  examples))
+        registry.register(Command(name, description, handler, aliases, examples))
 
     return command
 
@@ -203,40 +210,42 @@ def cmd(name: str,
 def _fallback_output() -> OutputAdapter:
     """Return a RichOutputAdapter for when no output is explicitly provided."""
     from agent.output import RichOutputAdapter
+
     return RichOutputAdapter()
 
 
 # Built-in command handlers
-@cmd(
-      "/quit",
-      "Exit the agent",
-      aliases=["/exit", "/q"]
-)
-def _cmd_quit(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+@cmd("/quit", "Exit the agent", aliases=["/exit", "/q"])
+def _cmd_quit(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     return True, "EXIT", None, None
 
 
 @cmd(
-      "/reasoning",
-       "Configure model reasoning",
+    "/reasoning",
+    "Configure model reasoning",
 )
-def _cmd_reasoning(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_reasoning(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
 
     if params:
         return False, no_params_error, None, None
 
     ui = output or _fallback_output()
     from agent.config import get_config
+
     config = get_config()
 
     try:
         # Reasoning effort
         opts = [
             ("high", "High"),
-            ("medium","Medium"),
-            ("low","Low"),
+            ("medium", "Medium"),
+            ("low", "Low"),
             ("none", "Disable model reasoning"),
-            ]
+        ]
         defa = core.router.thinking_effort
 
         effort = ui.ask_choice(
@@ -264,10 +273,12 @@ def _cmd_reasoning(core, params, output: OutputAdapter | None = None) -> tuple[b
 
 
 @cmd(
-      "/notes",
-      "List all notes",
+    "/notes",
+    "List all notes",
 )
-def _cmd_notes(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_notes(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     notes = core.memory.get_notes()
     buff = ""
     if notes:
@@ -278,29 +289,36 @@ def _cmd_notes(core, params, output: OutputAdapter | None = None) -> tuple[bool,
     else:
         return False, "no notes found", None, None
 
+
 @cmd(
-      "/notes-add",
-      "Add a note to memory",
-      examples=[
-          "/notes add This is my note   # Add a new note",
-      ]
+    "/notes-add",
+    "Add a note to memory",
+    examples=[
+        "/notes add This is my note   # Add a new note",
+    ],
 )
-def _cmd_notes_add(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_notes_add(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         core.memory.add_note(" ".join(params))
         return True, "note added successfully", None, None
 
     return False, "please, provide a note", None, None
 
+
 @cmd(
     "/session",
     "Print session information",
 )
-def _cmd_session(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_session(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
     from agent.utils import contractuser
+
     mem = core.memory
     name = mem.session
     session_dir = mem.session_dir
@@ -323,31 +341,35 @@ def _cmd_session(core, params, output: OutputAdapter | None = None) -> tuple[boo
     return True, None, result, None
 
 
-
 @cmd(
-      "/session-agent",
-      "Show the session agent memory contents (user profile and notes)",
+    "/session-agent",
+    "Show the session agent memory contents (user profile and notes)",
 )
-def _cmd_session_agent(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_session_agent(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
-    mem =  core.memory.get_formatted()
+    mem = core.memory.get_formatted()
     if mem:
         # Format in Markdown
         return True, None, None, mem
     else:
         return False, "agent memory is empty", None, None
 
+
 @cmd(
-      "/session-chat",
-      "Show the session chat memory contents",
-      examples=[
-          "/session chat     # Print entire session chat",
-          "/session chat 2   # Print last 2 interactions"
-      ]
+    "/history",
+    "Show the session chat history contents",
+    examples=[
+        "/history     # Print entire session chat history",
+        "/history 2   # Print last 2 interactions",
+    ],
 )
-def _cmd_session_chat(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_history(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     n = 0
     if params:
         try:
@@ -355,7 +377,9 @@ def _cmd_session_chat(core, params, output: OutputAdapter | None = None) -> tupl
         except ValueError:
             return False, f"Parameter must be integer: {params[0]}", None, None
 
-    mem = core.memory.get_chat_history_formatted(num_exchanges=n, timestamps=True, collapse_tools=True)
+    mem = core.memory.get_chat_history_formatted(
+        num_exchanges=n, timestamps=True, collapse_tools=True
+    )
     tokens, max, rate = core.memory.get_chat_stats()
     stats = f"Memory status: {tokens}/{max} tokens ({rate:.2f}%)"
     # Format in Markdown
@@ -363,14 +387,16 @@ def _cmd_session_chat(core, params, output: OutputAdapter | None = None) -> tupl
 
 
 @cmd(
-    "/session-chat-clear",
-    "Clear the current session chat memory; gets an optional integer with the number of exchanges to show",
+    "/history-clear",
+    "Clear the current session chat history; gets an optional integer with the number of exchanges to show",
     examples=[
-        "/session clear        # Clear chat memory for this sesson",
-        "/session clear 10     # Clear the 10 oldest chat exchanges of this session",
-    ]
+        "/history        # Clear chat memory for this sesson",
+        "/history clear 10     # Clear the 10 oldest chat exchanges of this session",
+    ],
 )
-def _cmd_session_chat_clear(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_history_clear(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     n = 0
     if params:
         try:
@@ -383,10 +409,12 @@ def _cmd_session_chat_clear(core, params, output: OutputAdapter | None = None) -
 
 
 @cmd(
-    "/session-chat-compact",
-    "Compact the session chat history by summarizing it into a shorter form"
+    "/history-compact",
+    "Compact the session chat history by summarizing it into a shorter form",
 )
-def _cmd_session_chat_compact(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_history_compact(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
@@ -406,10 +434,7 @@ def _cmd_session_chat_compact(core, params, output: OutputAdapter | None = None)
     )
     content += history_text
 
-    messages=[{
-        "role": "user",
-        "content": content
-    }]
+    messages = [{"role": "user", "content": content}]
 
     output = get_output_or_ipc()
     output.print("⏳ Compacting chat history...")
@@ -422,21 +447,29 @@ def _cmd_session_chat_compact(core, params, output: OutputAdapter | None = None)
 
         core.memory.reset_chat_memory(content=[{"role": "summary", "content": summary}])
 
-
-        return True, f"Memory compacted successfully from {chars_before} to {chars_after} chars ({tks_before} -> {tks_after} tks)", None, None
+        return (
+            True,
+            f"Memory compacted successfully from {chars_before} to {chars_after} chars ({tks_before} -> {tks_after} tks)",
+            None,
+            None,
+        )
     except Exception as e:
         return False, f"Memory compact operation failed: {e}", None, None
+
 
 @cmd(
     "/session-plan",
     "List all saved session plans in the current session",
-     aliases=["/session-plans"]
+    aliases=["/session-plans"],
 )
-def _cmd_session_plan_list(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_session_plan_list(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
     from agent.memory import Memory
+
     mem = Memory()
     plans_dir = mem.session_dir / "plans"
     if not plans_dir.exists():
@@ -464,6 +497,7 @@ def _cmd_session_plan_list(core, params, output: OutputAdapter | None = None) ->
         status = meta.get("status", "unknown")
         mod = datetime.datetime.fromtimestamp(f.stat().st_mtime)
         from agent.utils import pretty_timedelta
+
         age = pretty_timedelta(mod)
         results += f"  \u2022 [bold]{name_display}[/bold] \u2014 {status} ({age} ago)\n"
 
@@ -476,14 +510,22 @@ def _cmd_session_plan_list(core, params, output: OutputAdapter | None = None) ->
     examples=[
         "/session plan read REFACTOR_20260626_120000   # Read a specific plan",
         "/session-plan read REFACTOR                    # Read the most recent matching plan",
-    ]
+    ],
 )
-def _cmd_session_plan_read(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_session_plan_read(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     if not params:
-        return False, "provide a plan name (e.g., REFACTOR or REFACTOR_20260626_120000)", None, None
+        return (
+            False,
+            "provide a plan name (e.g., REFACTOR or REFACTOR_20260626_120000)",
+            None,
+            None,
+        )
 
     name = " ".join(params).strip().upper().replace(" ", "_")
     from agent.memory import Memory
+
     mem = Memory()
     plans_dir = mem.session_dir / "plans"
     if not plans_dir.exists():
@@ -512,14 +554,22 @@ def _cmd_session_plan_read(core, params, output: OutputAdapter | None = None) ->
     examples=[
         "/session plan edit REFACTOR_20260626_120000   # Edit a specific plan",
         "/session plan edit REFACTOR                    # Edit the most recent matching plan",
-    ]
+    ],
 )
-def _cmd_session_plan_edit(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_session_plan_edit(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     if not params:
-        return False, "provide a plan name (e.g., REFACTOR or REFACTOR_20260626_120000)", None, None
+        return (
+            False,
+            "provide a plan name (e.g., REFACTOR or REFACTOR_20260626_120000)",
+            None,
+            None,
+        )
 
     name = " ".join(params).strip().upper().replace(" ", "_")
     from agent.memory import Memory
+
     mem = Memory()
     plans_dir = mem.session_dir / "plans"
     if not plans_dir.exists():
@@ -540,6 +590,7 @@ def _cmd_session_plan_edit(core, params, output: OutputAdapter | None = None) ->
 
     import subprocess
     import os
+
     editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "nano"
     cmd = [editor, str(target)]
     if output is not None:
@@ -560,9 +611,11 @@ def _cmd_session_plan_edit(core, params, output: OutputAdapter | None = None) ->
     examples=[
         "/embed ~/documents/research_paper.pdf",
         "/embed ./notes.md",
-    ]
+    ],
 )
-def _cmd_embed(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_embed(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     if not params:
         return False, "please provide a file path", None, None
 
@@ -574,67 +627,92 @@ def _cmd_embed(core, params, output: OutputAdapter | None = None) -> tuple[bool,
     # Lazily initialize the vector store on first use
     if core.memory.vectorstore is None:
         from agent.memory import _load_vectorstore
+
         core.memory.vectorstore = _load_vectorstore(core.memory.session_dir)
 
     if core.memory.vectorstore is None:
-        return False, "Vector store is not available. Check that chromadb and tiktoken are installed, and embedding config is correct.", None, None
+        return (
+            False,
+            "Vector store is not available. Check that chromadb and tiktoken are installed, and embedding config is correct.",
+            None,
+            None,
+        )
 
     try:
         count = core.memory.vectorstore.ingest(file_path)
-        return True, f"Successfully embedded {count} chunks from '{file_path}'", None, None
+        return (
+            True,
+            f"Successfully embedded {count} chunks from '{file_path}'",
+            None,
+            None,
+        )
     except Exception as e:
         return False, f"Embedding failed: {e}", None, None
 
 
 @cmd(
-      "/tools",
-      "List all available tools ⚙",
+    "/tools",
+    "List all available tools ⚙",
 )
-def _cmd_tools(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_tools(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     from agent.tools import get_tools_str
+
     return True, None, get_tools_str(), None
 
+
 @cmd(
-      "/tools-native",
-      "List native tools ⚙",
+    "/tools-native",
+    "List native tools ⚙",
 )
-def _cmd_tools_native(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_tools_native(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     from agent.tools import get_tools_str
+
     buff = get_tools_str(prefix="mcp_", contains=False)
     if not buff:
         return False, "no native tools found", None, None
     return True, None, buff, None
 
+
 @cmd(
-      "/tools-mcp",
-      "List MCP tools ⚙",
+    "/tools-mcp",
+    "List MCP tools ⚙",
 )
-def _cmd_tools_mcp(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_tools_mcp(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     from agent.tools import get_tools_str
+
     buff = get_tools_str(prefix="mcp_", contains=True)
     if not buff:
         return False, "no MCP tools found", None, None
     return True, None, buff, None
 
+
 @cmd(
-      "/skills",
-      "List loaded skills ⚔",
+    "/skills",
+    "List loaded skills ⚔",
 )
-def _cmd_skills(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_skills(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     buff = core.skills.get_skills_str()
     if not buff:
         return False, "no skills found", None, None
     return True, None, buff, None
 
-@cmd(
-      "/model",
-      "Configure the model to use",
-      aliases=["/models"]
-)
-def _cmd_models(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+
+@cmd("/model", "Configure the model to use", aliases=["/models"])
+def _cmd_models(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     ui = output or _fallback_output()
     from agent.config import get_config
     from agent.router import Provider
+
     config = get_config()
 
     # Provider selection
@@ -659,7 +737,6 @@ def _cmd_models(core, params, output: OutputAdapter | None = None) -> tuple[bool
     if not ok:
         return False, f"Failed to initialize {selected_provider}: {msg}", None, None
 
-
     # Model selection
     try:
         models = core.get_models()
@@ -667,7 +744,12 @@ def _cmd_models(core, params, output: OutputAdapter | None = None) -> tuple[bool
         return False, f"{e}", None, None
 
     if not models:
-        return True, f"Provider set to {selected_provider} (no models listed)", None, None
+        return (
+            True,
+            f"Provider set to {selected_provider} (no models listed)",
+            None,
+            None,
+        )
 
     opts = [(m["id"], m["id"]) for m in models]
     defa = core.router.model_name
@@ -682,24 +764,31 @@ def _cmd_models(core, params, output: OutputAdapter | None = None) -> tuple[bool
         success = core.set_model(result)
         if success:
             pub.sendMessage("prompt-update")
-            return True, f"Provider: [accent]{selected_provider}[/accent]— Model: [accent]{result}[/accent]", None, None
+            return (
+                True,
+                f"Provider: [accent]{selected_provider}[/accent]— Model: [accent]{result}[/accent]",
+                None,
+                None,
+            )
         else:
             return False, "Model could not be set", None, None
     except NameError as e:
         return False, f"{e}", None, None
 
 
-
 @cmd(
-      "/url",
-      "Configure the base URL",
+    "/url",
+    "Configure the base URL",
 )
-def _cmd_url(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_url(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
     ui = output or _fallback_output()
     from agent.config import get_config
+
     config = get_config()
     base_url = config.get("model.base_url")
 
@@ -715,25 +804,32 @@ def _cmd_url(core, params, output: OutputAdapter | None = None) -> tuple[bool, s
 
 
 @cmd(
-      "/config-show",
-       "Show current configuration",
+    "/config-show",
+    "Show current configuration",
 )
-def _cmd_config_show(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_config_show(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
     from agent.config import log_config
+
     return True, None, log_config(), None
 
+
 @cmd(
-      "/config-edit",
-       "Edit the configuration file with $EDITOR or $VISUAL",
+    "/config-edit",
+    "Edit the configuration file with $EDITOR or $VISUAL",
 )
-def _cmd_config_edit(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_config_edit(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
     from agent.config import edit_base_config_visual
+
     result = edit_base_config_visual(output)
     if result.returncode != 0:
         return False, result.stderr or "Configuration editor failed", None, None
@@ -742,16 +838,20 @@ def _cmd_config_edit(core, params, output: OutputAdapter | None = None) -> tuple
     if ok:
         # Refresh frontend settings (e.g. vi mode and prompt metadata).
         from pubsub import pub
+
         pub.sendMessage("prompt-update")
         return True, "Configuration edited and reloaded successfully", None, None
     return False, f"Configuration reload failed: {message}", None, None
 
+
 @cmd(
     "/config",
     "Configure the agent interactively",
-    aliases = ["/configure"],
+    aliases=["/configure"],
 )
-def _cmd_config(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_config(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
@@ -765,15 +865,19 @@ def _cmd_config(core, params, output: OutputAdapter | None = None) -> tuple[bool
 
     return True, "Configuration updated", None, None
 
+
 @cmd(
-      "/mcp-edit",
-       "Edit the mcp.json configuration file with $EDITOR or $VISUAL",
+    "/mcp-edit",
+    "Edit the mcp.json configuration file with $EDITOR or $VISUAL",
 )
-def _cmd_mcp_edit(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_mcp_edit(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
     from agent.config import edit_mcp_config_visual
+
     result = edit_mcp_config_visual(output)
     ok = result.returncode == 0
     if ok:
@@ -782,16 +886,20 @@ def _cmd_mcp_edit(core, params, output: OutputAdapter | None = None) -> tuple[bo
     else:
         return ok, result.stderr, None, None
 
+
 @cmd(
-      "/mcp",
-      "Show the current MCP configuration file",
-      aliases = ["/mcp-show"],
+    "/mcp",
+    "Show the current MCP configuration file",
+    aliases=["/mcp-show"],
 )
-def _cmd_mcp_show(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_mcp_show(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
     from agent.config import get_mcp_config_path
+
     path = get_mcp_config_path()
     with path.open() as file:
         content = file.read()
@@ -801,25 +909,34 @@ def _cmd_mcp_show(core, params, output: OutputAdapter | None = None) -> tuple[bo
     else:
         return False, "Could not load MCP configuration file", None, None
 
+
 @cmd(
-      "/mcp-tools",
-      "List MCP tools ⚙",
+    "/mcp-tools",
+    "List MCP tools ⚙",
 )
-def _cmd_mcp_tools(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_mcp_tools(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     from agent.tools import get_tools_str
+
     return True, None, get_tools_str(prefix="mcp_", contains=True), None
+
 
 @cmd(
     "/temperature",
     "Set the inference temperature parameter in 0..2",
     aliases=["/temp", "/t"],
 )
-def _cmd_temperature(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_temperature(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
     ui = output or _fallback_output()
-    new_temp = ui.ask_float(" Enter the temperature [0..2]", default=core.router.temperature)
+    new_temp = ui.ask_float(
+        " Enter the temperature [0..2]", default=core.router.temperature
+    )
     if new_temp < 0 or new_temp > 2:
         return False, f"Temperature out of [0..2] range: {new_temp}", None, None
 
@@ -829,15 +946,18 @@ def _cmd_temperature(core, params, output: OutputAdapter | None = None) -> tuple
 
 
 @cmd(
-      "/vi",
-       "Enable/disable vi input mode",
+    "/vi",
+    "Enable/disable vi input mode",
 )
-def _cmd_vi(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_vi(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
     ui = output or _fallback_output()
     from agent.config import get_config
+
     config = get_config()
 
     opts = [("true", "On"), ("false", "Off")]
@@ -853,16 +973,20 @@ def _cmd_vi(core, params, output: OutputAdapter | None = None) -> tuple[bool, st
     pub.sendMessage("prompt-update")
     return True, f"Vi mode: {state_bool}", None, None
 
+
 @cmd(
-      "/unsafe",
-       "Enable/disable unsafe mode",
+    "/unsafe",
+    "Enable/disable unsafe mode",
 )
-def _cmd_unsafe(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_unsafe(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
     ui = output or _fallback_output()
     from agent.config import get_config
+
     config = get_config()
 
     opts = [("true", "On"), ("false", "Off")]
@@ -878,16 +1002,20 @@ def _cmd_unsafe(core, params, output: OutputAdapter | None = None) -> tuple[bool
     pub.sendMessage("prompt-update")
     return True, f"Unsafe mode: {state_bool}", None, None
 
+
 @cmd(
-      "/markdown",
-       "Configure markdown rendering after inference",
+    "/markdown",
+    "Configure markdown rendering after inference",
 )
-def _cmd_vi(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_vi(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 
     ui = output or _fallback_output()
     from agent.config import get_config
+
     config = get_config()
 
     opts = [("true", "On"), ("false", "Off")]
@@ -903,19 +1031,22 @@ def _cmd_vi(core, params, output: OutputAdapter | None = None) -> tuple[bool, st
     pub.sendMessage("prompt-update")
     return True, f"Markdown rendering: {state_bool}", None, None
 
+
 @cmd(
     "/attachimage",
     "Attach an image to the next prompt",
     examples=[
         "/attachimage path/to/screenshot.png",
         "/attachimage ~/Pictures/photo.jpg",
-    ]
+    ],
 )
-def _cmd_attach_image(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_attach_image(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     if not params:
         return False, "please provide an image file path", None, None
 
-    file_path = os.path.expanduser(' '.join(params))
+    file_path = os.path.expanduser(" ".join(params))
     path = Path(file_path)
 
     if not path.is_file():
@@ -925,10 +1056,14 @@ def _cmd_attach_image(core, params, output: OutputAdapter | None = None) -> tupl
         raw_bytes = path.read_bytes()
         result = resize_image(raw_bytes)
         core._pending_image = result
-        return True, f"🖼️  Image loaded and attached — will be sent with your next message. ([dim]{path.name}[/dim], {len(result['image_base64'])} bytes base64)", None, None
+        return (
+            True,
+            f"🖼️  Image loaded and attached — will be sent with your next message. ([dim]{path.name}[/dim], {len(result['image_base64'])} bytes base64)",
+            None,
+            None,
+        )
     except Exception as e:
         return False, f"failed to load image: {e}", None, None
-
 
 
 @cmd(
@@ -936,7 +1071,9 @@ def _cmd_attach_image(core, params, output: OutputAdapter | None = None) -> tupl
     "Show command help",
     aliases=["/commands"],
 )
-def _cmd_help(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_help(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     return True, None, registry.get_commands_str(), None
 
 
@@ -944,7 +1081,9 @@ def _cmd_help(core, params, output: OutputAdapter | None = None) -> tuple[bool, 
     "/context",
     "Show context usage: token breakdown per section of the prompt",
 )
-def _cmd_context(core, params, output: OutputAdapter | None = None) -> tuple[bool, str | None, str | None, str | None]:
+def _cmd_context(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
     if params:
         return False, no_params_error, None, None
 

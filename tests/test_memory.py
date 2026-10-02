@@ -147,7 +147,7 @@ class TestChatMemory(BaseTest):
 
     def test_trim_removes_oldest(self):
         # Directly test _trim() instead of add_exchange (which triggers
-        # /session-chat-compact via the command registry and needs a real core).
+        # /history-compact via the command registry and needs a real core).
         for i in range(20):
             self.cm._exchanges.append({"role": "user", "content": "x" * 50})
             self.cm.total_tokens += 12
@@ -201,8 +201,9 @@ class TestChatMemory(BaseTest):
         assert len(result) < len(long_content) + 100
 
     def test_tool_call_exchange(self):
-        self.cm.add_exchange(None, "tool_call", "", name="read_file",
-                             arguments='{"path": "x.py"}')
+        self.cm.add_exchange(
+            None, "tool_call", "", name="read_file", arguments='{"path": "x.py"}'
+        )
         result = self.cm.get_formatted(0, timestamps=False, width=0)
         assert "## Tool Call (read_file):" in result
         assert "x.py" in result
@@ -243,11 +244,18 @@ class TestChatMemory(BaseTest):
 
     def test_adjacent_tool_call_and_result_compact_into_one_block(self):
         self.cm.add_exchange(
-            None, "tool_call", "", name="read_file", arguments='{"path":"a.py"}',
+            None,
+            "tool_call",
+            "",
+            name="read_file",
+            arguments='{"path":"a.py"}',
             tool_call_id="call-1",
         )
         self.cm.add_exchange(
-            None, "tool_result", "file contents", name="read_file",
+            None,
+            "tool_result",
+            "file contents",
+            name="read_file",
             tool_call_id="call-1",
         )
         rendered = self.cm.get_formatted(0, timestamps=False, width=0)
@@ -259,11 +267,18 @@ class TestChatMemory(BaseTest):
 
     def test_unmatched_tool_entries_remain_separate(self):
         self.cm.add_exchange(
-            None, "tool_call", "", name="read_file", arguments="{}",
+            None,
+            "tool_call",
+            "",
+            name="read_file",
+            arguments="{}",
             tool_call_id="call-1",
         )
         self.cm.add_exchange(
-            None, "tool_result", "other result", name="read_file",
+            None,
+            "tool_result",
+            "other result",
+            name="read_file",
             tool_call_id="call-2",
         )
         rendered = self.cm.get_formatted(0, timestamps=False, width=0)
@@ -274,11 +289,18 @@ class TestChatMemory(BaseTest):
     def test_token_accounting_matches_exact_rendered_prompt_history(self):
         self.cm.add_exchange(None, "user", "hello")
         self.cm.add_exchange(
-            None, "tool_call", "", name="read_file", arguments='{"path":"a.py"}',
+            None,
+            "tool_call",
+            "",
+            name="read_file",
+            arguments='{"path":"a.py"}',
             tool_call_id="call-1",
         )
         self.cm.add_exchange(
-            None, "tool_result", "contents", name="read_file",
+            None,
+            "tool_result",
+            "contents",
+            name="read_file",
             tool_call_id="call-1",
         )
         self.cm.add_exchange(None, "assistant", "done")
