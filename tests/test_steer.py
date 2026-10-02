@@ -1,9 +1,14 @@
 """Tests for agent/steer.py: mid-turn steering input."""
 
 import os
+import sys
 import unittest
+from typing import TYPE_CHECKING, Any, cast
 
 from agent.steer import SteerInput
+
+if TYPE_CHECKING:
+    from agent.output import RichOutputAdapter
 
 
 class TestSteerInputBuffer(unittest.TestCase):
@@ -317,3 +322,153 @@ class TestSteerQueue(unittest.TestCase):
         self._queue("go on", "go on")
         self.assertTrue(self.steer.ack("go on"))
         self.assertEqual(self.steer.take_all(), ["go on"])
+
+
+class _FakeSteer:
+    """A SteerInput stand-in that records lifecycle calls."""
+
+    def __init__(self, armed: bool = False) -> None:
+        self._armed = armed
+        self.starts = 0
+        self.stops = 0
+
+    @property
+    def armed(self) -> bool:
+        return self._armed
+
+    def start(self) -> bool:
+        self.starts += 1
+        self._armed = True
+        return True
+
+    def stop(self) -> None:
+        self.stops += 1
+        self._armed = False
+
+
+class TestSteerPausedArmsOnlyIfAlreadyArmed(unittest.TestCase):
+    """A subprocess must not leave a second reader on the tty.
+
+    Between turns the agent calls ``output.steer_stop()``, so when the user
+    runs ``/config edit`` or ``/edit`` the reader is already disarmed and
+    prompt_toolkit owns the tty. ``steer_paused`` used to re-arm it
+    unconditionally, leaving two threads reading the same fd: the terminal
+    stayed in cbreak mode and every keystroke became a race between them, so
+    most keys vanished into the discarded steering buffer.
+    """
+
+    def _adapter(self, armed: bool) -> Any:
+        from agent.output import RichOutputAdapter
+
+        out = RichOutputAdapter.__new__(RichOutputAdapter)
+        # A stand-in is what we are testing the *policy* against; the real
+        # reader needs a tty, which this test deliberately does not assume.
+        out._steer = cast(Any, _FakeSteer(armed))
+        return out
+
+    @staticmethod
+    def _fake(out: Any) -> _FakeSteer:
+        return cast(_FakeSteer, out._steer)
+
+    def test_disarmed_reader_stays_disarmed(self):
+        """The real case: /config edit and /edit run between turns."""
+        out = self._adapter(armed=False)
+        with out.steer_paused():
+            self.assertEqual(self._fake(out).stops, 1)
+        self.assertEqual(self._fake(out).starts, 0)
+        self.assertFalse(self._fake(out).armed)
+
+    def test_armed_reader_is_rearmed(self):
+        """Mid-turn, the reader was armed and must survive the subprocess."""
+        out = self._adapter(armed=True)
+        with out.steer_paused():
+            self.assertFalse(self._fake(out).armed)
+        self.assertEqual(self._fake(out).stops, 1)
+        self.assertEqual(self._fake(out).starts, 1)
+        self.assertTrue(self._fake(out).armed)
+
+    def test_reader_is_stopped_even_if_the_body_raises(self):
+        out = self._adapter(armed=True)
+        with self.assertRaises(RuntimeError):
+            with out.steer_paused():
+                raise RuntimeError("editor exploded")
+        self.assertEqual(self._fake(out).starts, 1)
+
+    def test_no_reader_is_a_no_op(self):
+        out = self._adapter(armed=False)
+        out._steer = None
+        with out.steer_paused():
+            pass
+
+
+def _pty_state_after_run_subprocess() -> str:
+    """Child: turn end -> run_subprocess -> report tty state on stdout.
+
+    Run under a real pty, because the bug is only visible when there is a
+    terminal: the reader switches the tty to cbreak, and two readers on one
+    fd is invisible in a pipe.
+    """
+    import pty
+    import select
+    import subprocess
+    import termios
+    import time
+
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    child = (
+        "import os, sys, termios\n"
+        f"sys.path.insert(0, {repo!r})\n"
+        "from agent.output import RichOutputAdapter\n"
+        "from agent.steer import SteerInput\n"
+        "a = termios.tcgetattr(0)\n"
+        "out = RichOutputAdapter()\n"
+        "out._steer = SteerInput()\n"
+        "out._steer.start()\n"
+        "out._steer.stop()\n"
+        "out.run_subprocess(['true'])\n"
+        "b = termios.tcgetattr(0)\n"
+        "print('ARMED', out._steer.armed,\n"
+        "      'ICANON', bool(b[3] & termios.ICANON),\n"
+        "      'ECHO', bool(b[3] & termios.ECHO))\n"
+        "sys.stdout.flush()\n"
+    )
+
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.execv(sys.executable, [sys.executable, "-u", "-c", child])
+
+    out = b""
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        r, _, _ = select.select([fd], [], [], 0.2)
+        if not r:
+            continue
+        try:
+            chunk = os.read(fd, 4096)
+        except OSError:
+            break
+        if not chunk:
+            break
+        out += chunk
+        if b"ARMED" in out:
+            break
+    os.close(fd)
+    try:
+        os.waitpid(pid, 0)
+    except ChildProcessError:
+        pass
+    return out.decode(errors="replace")
+
+
+class TestEditLeavesTheTtyUsable(unittest.TestCase):
+    """End-to-end: the prompt still owns the tty after an editor runs."""
+
+    def test_tty_is_cooked_and_reader_disarmed(self):
+        text = _pty_state_after_run_subprocess()
+        self.assertIn("ARMED False", text, text)
+        self.assertIn("ICANON True", text, text)
+        self.assertIn("ECHO True", text, text)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -266,18 +266,28 @@ class RichOutputAdapter(OutputAdapter):
         """Temporarily hand the tty back (agent questions, subprocesses).
 
         The reader thread is stopped so the cooked tty the ask_*/run_subprocess
-        helpers expect works, and re-armed on exit. Queued steering lines are
-        kept.
+        helpers expect works. Queued steering lines are kept.
+
+        It is re-armed **only if it was armed when we entered**. Between turns
+        the agent calls :meth:`steer_stop`, so at the moment the user runs
+        ``/config edit`` or ``/edit`` the reader is already disarmed and the
+        prompt owns the tty. Blindly re-arming it here would leave a second
+        reader thread on the same fd: prompt_toolkit and ``SteerInput`` would
+        race for every byte, the tty would be left in cbreak mode after the
+        editor exited, and roughly one keystroke in ten would reach the
+        prompt -- the other nine going into the discarded steering buffer.
         """
         steer = self._steer
         if steer is None:
             yield
             return
+        was_armed = steer.armed
         steer.stop()
         try:
             yield
         finally:
-            steer.start()
+            if was_armed:
+                steer.start()
 
     def print(self, text: str, end='\n', indent: int = 0) -> None:
         self._console.print(f"{' ' * indent}{text}", end=end)
