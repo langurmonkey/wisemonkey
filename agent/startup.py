@@ -99,7 +99,7 @@ def startup_info(core, output: OutputAdapter):
 
     # Session info
     new_session = core.memory.session_is_new
-    d_created = pretty_timedelta(now - created) if created else "?"
+    d_created = pretty_timedelta(now - created.astimezone()) if created else "?"
     d_accessed = pretty_timedelta(now - accessed) if accessed else "?"
     # Context usage: total tokens of the full prompt (same as /context)
     # as a percentage of the configured budget.
