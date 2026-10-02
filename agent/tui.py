@@ -1,5 +1,6 @@
 """
-Textual TUI for Wisemonkey.
+@deprecated
+Textual TUI for Wisemonkey. This interface is DEPRECATED.
 
 Provides a full-screen terminal UI with:
   - Title bar (Header) at the top
