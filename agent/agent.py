@@ -40,6 +40,11 @@ from agent.ipc import (
 )
 from agent.mdstream import MarkdownStreamRenderer
 from agent.history import PromptHistory
+from agent.keys import (
+    disable_kitty_keyboard,
+    enable_kitty_keyboard,
+    install_enter_bindings,
+)
 from agent.output import RichOutputAdapter, set_output
 from agent.startup import startup_info
 from agent.utils import add_command, collapse_none_dicts, format_tool_args, term_width
@@ -90,6 +95,9 @@ class Agent:
         self._turn_in_progress = False
         self._md_stream = None
         self._prompt_reported = False
+        # Whether we pushed the kitty keyboard protocol in _create_prompt_session
+        # and still owe the terminal a pop. See agent/keys.py.
+        self._kitty_enabled = False
         # Number of LLM rounds already requested this turn. `Core.run_turn`
         # loops back to the model once per tool batch, and each pass fires
         # STAGE.START again, so this is what tells "processing the user's
@@ -568,15 +576,15 @@ class Agent:
         # Key bindings:
         kb = KeyBindings()
 
-        @kb.add("enter")
-        def _(event):
-            """Enter submits the input."""
-            event.current_buffer.validate_and_handle()
+        # Ask the terminal to stop sending a bare 0x0D for Shift/Ctrl+Enter.
+        # Terminals that do not understand it ignore the sequence, so this is
+        # safe to attempt unconditionally; the atexit hook registered inside
+        # pops it again if we are killed.
+        self._kitty_enabled = enable_kitty_keyboard()
 
-        @kb.add("escape", "enter")
-        def _(event):
-            """Alt+Enter inserts a newline."""
-            event.current_buffer.insert_text("\n")
+        # Enter submits; a modified Enter inserts a newline. Installed from
+        # agent/keys.py so the rule lives in one place.
+        install_enter_bindings(kb)
 
         @kb.add("c-c")
         def _(event):
@@ -673,7 +681,8 @@ class Agent:
         # Toolbar
         def prompt_toolbar():
             return HTML(
-                "  <kbd>Alt</kbd>+<kbd>↵</kbd>: new line | <kbd>Ctrl</kbd>+<kbd>C</kbd>: clear / double-tap to quit"
+                "  <kbd>Alt</kbd>/<kbd>Shift</kbd>+<kbd>↵</kbd>: new line"
+                " | <kbd>Ctrl</kbd>+<kbd>C</kbd>: clear / double-tap to quit"
             )
 
         model = self.core.config.get("model.name")
@@ -933,6 +942,7 @@ class Agent:
                     self._footer_spinner_mine = False
 
         # Persist memory, stop the event pump, and shut down core on exit
+        self._pop_kitty_keyboard()
         if self.core:
             self.stop_events()
             self.core.save_memory()
@@ -1295,6 +1305,19 @@ class Agent:
         finally:
             self._remote_stop = True
             remote.close()
+            self._pop_kitty_keyboard()
+
+    def _pop_kitty_keyboard(self) -> None:
+        """Restore the terminal's default key mode before we hand it back.
+
+        A terminal left in disambiguate mode keeps prefixing key codes with
+        the ``CSI 27 ; mods ;`` wrapper, which would break whatever the user
+        runs next -- in the common case, their shell. Idempotent, and called
+        from both interactive loops plus ``run_once``.
+        """
+        if getattr(self, "_kitty_enabled", False):
+            self._kitty_enabled = False
+            disable_kitty_keyboard()
 
     def _on_server_lost(self):
         """Called on the reader thread when the daemon connection drops."""

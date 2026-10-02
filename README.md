@@ -163,9 +163,23 @@ agent:
 
 Run the agent, and then you can enter your prompt. You can use the following key bindings during input:
 
-- <kbd>Alt</kbd> + <kbd>Enter</kbd>: add a new line
 - <kbd>Enter</kbd>: submit the prompt
+- <kbd>Alt</kbd> / <kbd>Shift</kbd> / <kbd>Ctrl</kbd> + <kbd>Enter</kbd>, or <kbd>Ctrl</kbd> + <kbd>j</kbd>: add a new line
 - <kbd>Ctrl</kbd> + <kbd>q</kbd>: quit
+
+#### Newline keys and your terminal
+
+A terminal sends the *same* byte for <kbd>Enter</kbd>, <kbd>Shift</kbd>+<kbd>Enter</kbd> and <kbd>Ctrl</kbd>+<kbd>Enter</kbd>, so the agent cannot tell them apart unless the terminal is asked to. On start-up it enables the [kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) (supported by kitty, Ghostty, Alacritty, WezTerm, foot and Rio, no configuration needed) and disables it again on exit, so your shell is left exactly as it was.
+
+| Your terminal | Newline keys |
+|-|-|
+| kitty, Ghostty, Alacritty, WezTerm, foot, Rio, iTerm2 | <kbd>Shift</kbd>+<kbd>Enter</kbd>, <kbd>Ctrl</kbd>+<kbd>Enter</kbd>, <kbd>Alt</kbd>+<kbd>Enter</kbd>, <kbd>Ctrl</kbd>+<kbd>j</kbd> |
+| Terminals sending xterm `modifyOtherKeys` | <kbd>Shift</kbd>+<kbd>Enter</kbd>, <kbd>Alt</kbd>+<kbd>Enter</kbd>, <kbd>Ctrl</kbd>+<kbd>j</kbd> |
+| macOS Terminal.app | <kbd>Alt</kbd>+<kbd>Enter</kbd> (needs *Use Option as Meta Key*), <kbd>Ctrl</kbd>+<kbd>j</kbd> |
+| GNOME Terminal, PuTTY, screen | <kbd>Ctrl</kbd>+<kbd>j</kbd> |
+| tmux | as the outer terminal, plus `set -g extended-keys on` and `set -g extended-keys-format csi-u` |
+
+When a terminal ignores the protocol, <kbd>Shift</kbd>+<kbd>Enter</kbd> simply arrives as <kbd>Enter</kbd> and submits, so <kbd>Ctrl</kbd>+<kbd>j</kbd> is the reliable one. Nothing is printed about this: the fallback is silent.
 
 During inference, you can cancel the turn and return to the input prompt with <kbd>Ctrl</kbd> + <kbd>c</kbd>, or type into the footer to steer the running turn (see [mid-turn steering](#mid-turn-steering)).
 
@@ -414,6 +428,7 @@ wisemonkey/
 │   ├── output.py           # Output adapter protocol (REPL, TUI, IPC).
 │   ├── footer.py           # Sticky footer (DECSTBM scroll region) + spinner.
 │   ├── steer.py            # Mid-turn steering input (cbreak key capture).
+│   ├── keys.py             # Terminal key protocol (modified Enter, kitty keys).
 │   ├── core.py             # Core agent functions, like API connection and tool calls.
 │   ├── mcp.py              # MCP server support.
 │   ├── mdstream.py         # Streaming markdown renderer for the REPL.

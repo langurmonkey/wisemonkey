@@ -18,6 +18,7 @@ wisemonkey/
 │   ├── footer.py           # Sticky REPL footer via ANSI scroll regions (DECSTBM).
 │   ├── commands.py         # Slash commands (e.g. /embed, /quit).
 │   ├── completion.py       # Smart path completion for the prompt.
+│   ├── keys.py             # Terminal key protocol (modified Enter, kitty keys).
 │   ├── at_files.py         # @file/@dir reference expansion.
 │   ├── shellcmd.py         # `!` shell command handling.
 │   ├── startup.py          # Startup banner and info rendering.
@@ -102,6 +103,15 @@ Cancellation is **observable state, not an exception**: `_stream_handler()` sets
 `run_turn()` accepts an optional `tool_result_callback` invoked as `(tool_id, tool_name, content, is_error, duration[, image_base64, mime_type])` after each tool finishes, so tool results can be streamed as events.
 
 Frontends must not print a line per successful tool. The `TOOL_CALL` event ("Activating tool: X") already says the tool ran, so a "finished in 0.0s" line under every call is pure noise: `Agent.tool_result_callback` and `Tui._append_tool_result` stay silent below `agent.tool_slow_threshold` (default `1.0` s, inclusive) and print the duration only above it. Errors are always reported. The tool's own result text is still streamed to the model and stored in chat history; this is only about what the human sees.
+
+### Modified Enter (`agent/keys.py`)
+
+A terminal sends the *same* byte (`0x0D`) for Enter, Shift+Enter and Ctrl+Enter, so "Shift+Enter inserts a newline" is only possible when the terminal sends something distinguishable. Two mechanisms do that, and both decode to `c-m` — the raw sequence survives in `event.data`, which is what the bindings test:
+
+- **xterm `modifyOtherKeys`** (`CSI 27 ; mods ; 13 ~`) — already in prompt_toolkit's table.
+- **Kitty keyboard protocol** (`CSI > 1 u` to push the disambiguate flag, `CSI < u` to pop) — kitty, Ghostty, Alacritty, WezTerm, foot, Rio. `enable_kitty_keyboard()` writes the push and registers an `atexit` pop; `_pop_kitty_keyboard()` runs it on the normal exit path too, because a terminal left in disambiguate mode breaks the shell that takes over. Terminals that ignore the sequence degrade silently, so nothing is gated on TERM on the send path.
+
+prompt_toolkit 3.0.52 does not parse the `CSI u` form, so `extend_ansi_sequences()` adds those sequences to its table (idempotent, never clobbering an existing mapping). `install_enter_bindings(kb)` is the single definition of the rule — **Enter submits, a modified Enter inserts a newline** — including an explicit `c-j` binding: prompt_toolkit's default for Ctrl+J is a newline, but the `enter` binding resolves the same key on some terminals and a bound handler wins, which made Ctrl+J submit the prompt instead of continuing the line.
 
 ### Sticky footer (`agent/footer.py`)
 
@@ -258,6 +268,7 @@ tests/
 ├── test_files.py        # read_file handler (full read + head-style max_lines)
 ├── test_ipc.py          # IPC protocol: message factories, serialization, loopback transport
 ├── test_emitter.py      # TurnEmitter: core callbacks -> events, cancel state
+├── test_keys.py         # Terminal key protocol: modified Enter, newline bindings
 └── test_tools.py        # Tool registration, discovery, execution
 ```
 
