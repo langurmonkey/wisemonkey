@@ -190,9 +190,16 @@ class TestFooterRendering(unittest.TestCase):
         self.tty = FakeTTY()
         sys.stdout = self.tty
         self.size = (80, 24)
-        with mock.patch.object(Footer, "_read_terminal_size", return_value=self.size):
-            self.footer = Footer()
-            self.footer.start()
+        # The patch must outlive setUp: update_status() re-reads the size on
+        # every redraw, so a mock scoped to start() alone would fall back to
+        # the real terminal geometry and make these tests environment-dependent.
+        patcher = mock.patch.object(
+            Footer, "_read_terminal_size", return_value=self.size
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.footer = Footer()
+        self.footer.start()
         self.tty.seek(0)
         self.tty.truncate(0)
 
@@ -401,9 +408,14 @@ class TestFooterSpinner(unittest.TestCase):
         self.saved = sys.stdout
         self.tty = FakeTTY()
         sys.stdout = self.tty
-        with mock.patch.object(Footer, "_read_terminal_size", return_value=(80, 24)):
-            self.footer = Footer()
-            self.footer.start()
+        # Kept active for the whole test: the spinner thread re-reads the size
+        # on every tick, so a mock scoped to start() would let the animation
+        # fall back to the real terminal geometry.
+        patcher = mock.patch.object(Footer, "_read_terminal_size", return_value=(80, 24))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.footer = Footer()
+        self.footer.start()
         self._clear()
 
     def tearDown(self) -> None:
