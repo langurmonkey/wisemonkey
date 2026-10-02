@@ -749,11 +749,11 @@ class Agent:
 
                 user_input = str(user_input)
 
-            # Ctrl+C while a turn is running: cancel the turn (state, not an
-            # exception — the core observes it via poll() between chunks).
-            if self._turn_in_progress:
-                self.emitter.cancel("user")
-                continue
+            # No cancel-on-empty-prompt branch here: Ctrl+C during a turn is
+            # caught inside the turn handler above and sets
+            # _turn_in_progress = False before the prompt is shown again, so
+            # by the time we reach the prompt no turn is running. Cancelling
+            # from here would be dead code.
 
             # Process user-invoked shell commands (`!` prefix)
             if user_input.startswith("!"):
@@ -879,7 +879,6 @@ class Agent:
                     self._md_stream_stop()
                     self.output.newline()
 
-                    self.output.newline()
                     if result.cancelled:
                         continue  # skip status line, go straight back to prompt
 
@@ -892,7 +891,6 @@ class Agent:
                         )
 
                     self._statusline(total_tokens, ntools, total_gen_time)
-                    self.output.newline()
                     self.output.newline()
 
                     if (
@@ -1009,7 +1007,6 @@ class Agent:
             )
             response = result.response
             self._md_stream_stop()
-            self.output.newline()
             self.output.newline()
 
             if result.max_turns_reached:
@@ -1162,10 +1159,6 @@ class Agent:
                     if not user_input:
                         continue
 
-                if self._turn_in_progress:
-                    remote.cancel("user")
-                    continue
-
                 if user_input.startswith("!"):
                     from agent.shellcmd import run_shell_command
 
@@ -1265,7 +1258,6 @@ class Agent:
                             )
                         self._statusline(end.total_tokens, end.n_tools, end.gen_time)
                         self.output.newline()
-                        self.output.newline()
 
                         # Markdown summary (same as local mode), using the
                         # response carried in the turn-end payload. Skipped
@@ -1285,7 +1277,6 @@ class Agent:
                             self._statusline(
                                 end.total_tokens, end.n_tools, end.gen_time
                             )
-                            self.output.newline()
                             self.output.newline()
                 except Exception as e:
                     self._cancel_all_spinners()
