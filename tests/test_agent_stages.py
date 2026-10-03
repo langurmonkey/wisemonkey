@@ -184,6 +184,68 @@ class _ToolResultAgent(Agent):
         self.core = _Core()
 
 
+class _SteerOutput:
+    """OutputAdapter stand-in with a real queue for the injection seam."""
+
+    def __init__(self, lines: list[str]) -> None:
+        self.queue = list(lines)
+        self.printed: list[str] = []
+
+    def steer_take_all(self) -> list[str]:
+        lines, self.queue = self.queue, []
+        return lines
+
+    def steer_pending(self) -> str | None:
+        return self.queue[0] if self.queue else None
+
+    def newline(self) -> None:
+        pass
+
+    def print(self, text: str, end: str = "\n", indent: int = 0) -> None:
+        self.printed.append(text)
+
+
+class _SteerAgent(Agent):
+    """Just enough Agent state for `_steer_inject`."""
+
+    def __init__(self, lines: list[str]) -> None:
+        self.out = _SteerOutput(lines)
+        self.output: Any = self.out
+        self._turn_in_progress = True
+        self.refreshes = 0
+
+    def _footer_refresh(self) -> None:
+        self.refreshes += 1
+
+
+class TestSteerInjection(unittest.TestCase):
+    """A delivered line must not leave `↳ queued:` on the footer row.
+
+    `_announce_steered` echoes the line on stdout (in blue), but the footer
+    keeps showing the queued text until something redraws that row. Without a
+    redraw here, the user sees "queued: <text>" next to a line that has
+    obviously already been delivered.
+    """
+
+    def test_delivery_redraws_the_footer(self):
+        agent = _SteerAgent(["do this instead"])
+        lines = agent._steer_inject()
+        self.assertEqual(lines, ["do this instead"])
+        self.assertEqual(agent.refreshes, 1)
+        self.assertEqual(len(agent.out.printed), 1)
+
+    def test_the_queued_row_is_stale_after_delivery(self):
+        agent = _SteerAgent(["a", "b"])
+        agent._steer_inject()
+        self.assertIsNone(agent.out.steer_pending())
+
+    def test_an_empty_queue_still_refreshes(self):
+        """Cheap and keeps the seam free of special cases."""
+        agent = _SteerAgent([])
+        self.assertEqual(agent._steer_inject(), [])
+        self.assertEqual(agent.refreshes, 1)
+
+
 class TestToolResultLine(unittest.TestCase):
     """A successful fast tool is silent; slow and failed ones are not.
 

@@ -512,6 +512,14 @@ class Agent:
         lines = self.output.steer_take_all()
         for line in lines:
             self._announce_steered(line, when="mid-turn")
+        # The queue is empty now, so the `↳ queued: <text>` row is stale and
+        # has to be redrawn away. The remote path does this in
+        # _handle_injected; doing it here as well is what keeps local mode
+        # from leaving "queued: ..." on screen after the line was delivered
+        # (and printed in blue on stdout). Redrawing when nothing was drained
+        # is harmless -- _footer_input() returns "" and the footer falls back
+        # to its own spinner on that row.
+        self._footer_refresh()
         return lines
 
     def _take_pending_prompt(self) -> str | None:
