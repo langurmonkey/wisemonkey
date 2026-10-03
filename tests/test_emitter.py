@@ -246,6 +246,37 @@ class TestCancellation(unittest.TestCase):
         with self.assertRaises(TurnCancelled):
             emitter.cancelled(KeyboardInterrupt())
 
+    def test_cancelled_is_emitted_only_once_per_turn(self):
+        """A turn can be reported cancelled by more than one core path.
+
+        An interrupt while streaming is caught in `_send_to_llm`; one raised
+        inside a tool handler is caught by `run_turn`. Both unwind through the
+        cancel callback, and the user should see the notice once.
+        """
+        emitter, peer = _connected_emitter()
+        emitter.cancelled(KeyboardInterrupt())
+        emitter.cancelled(KeyboardInterrupt())
+        assert peer.recv(timeout=0.1).name == Event.CANCELLED
+        assert peer.recv(timeout=0.1) is None
+
+    def test_a_second_cancelled_still_raises_in_legacy_mode(self):
+        """Suppressing the duplicate event must not suppress the raise."""
+        from agent.core import TurnCancelled
+
+        emitter = TurnEmitter(raise_on_cancel=True)
+        with self.assertRaises(TurnCancelled):
+            emitter.cancelled(KeyboardInterrupt())
+        with self.assertRaises(TurnCancelled):
+            emitter.cancelled(KeyboardInterrupt())
+
+    def test_reset_allows_a_new_notice(self):
+        emitter, peer = _connected_emitter()
+        emitter.cancelled(KeyboardInterrupt())
+        peer.recv(timeout=0.1)
+        emitter.reset()
+        emitter.cancelled(KeyboardInterrupt())
+        assert peer.recv(timeout=0.1).name == Event.CANCELLED
+
     def test_reset_clears_cancellation(self):
         emitter = TurnEmitter()
         emitter.cancel()

@@ -252,6 +252,51 @@ class TestCancellation(unittest.TestCase):
         assert core.memory.saved == 1
 
 
+class TestCancellationIsAnnounced(unittest.TestCase):
+    """A cancelled turn must say so, not just end.
+
+    The frontends skip their status line when `TurnResult.cancelled` is set,
+    so the cancel event is the only thing that tells the user why the turn
+    stopped. A Ctrl+C during a tool used to produce a silent cancel.
+    """
+
+    def test_keyboard_interrupt_in_tool_notifies_the_cancel_callback(self):
+        core = make_core([{"text": "narrate", "tool_calls": [{"id": "1", "type": "function",
+                         "function": {"name": "slow", "arguments": "{}"}}]}])
+        emitter = TurnEmitter()
+        seen = []
+        with patch("agent.core.execute_tool", side_effect=KeyboardInterrupt):
+            with patch.object(emitter, "emit",
+                              side_effect=lambda name, payload=None: seen.append(name)):
+                result = core.run_turn("go", cancel_callback=emitter.cancelled)
+        assert result.cancelled is True
+        assert Event.CANCELLED in seen
+
+    def test_poll_cancellation_also_announces(self):
+        """The same holds for cancellation driven through poll()."""
+        core = make_core([{"text": "never", "tool_calls": None}])
+
+        emitter = TurnEmitter()
+        emitter.cancel()
+        seen = []
+        with patch.object(emitter, "emit",
+                          side_effect=lambda name, payload=None: seen.append(name)):
+            result = core.run_turn("go", cancel_callback=emitter.cancelled,
+                                   poll=emitter.poll)
+        assert result.cancelled is True
+        assert Event.CANCELLED in seen
+
+    def test_the_notice_is_not_duplicated_when_streaming_also_reports(self):
+        """One cancellation, one notice, even if both core paths report it."""
+        emitter = TurnEmitter()
+        seen = []
+        with patch.object(emitter, "emit",
+                          side_effect=lambda name, payload=None: seen.append(name)):
+            emitter.cancelled(KeyboardInterrupt())
+            emitter.cancelled(KeyboardInterrupt())
+        assert seen.count(Event.CANCELLED) == 1
+
+
 class TestToolCallbacks(unittest.TestCase):
     def _core_with_one_tool(self):
         reply = {

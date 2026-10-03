@@ -88,6 +88,11 @@ class TurnEmitter:
         self.echo = echo
         self.started_at = time.time()
         self._cancelled = False
+        # Whether the CANCELLED event has already been emitted for this turn.
+        # Tracked apart from _cancelled because cancel() only *requests*
+        # cancellation; a poll-driven cancel is requested first and reported
+        # afterwards, and must still announce itself.
+        self._cancelled_announced = False
         self.cancel_reason = ""
         self._tool_index = 0
 
@@ -226,9 +231,28 @@ class TurnEmitter:
         and returns, letting ``run_turn`` notice via :meth:`poll` and finish
         cleanly.  With ``raise_on_cancel=True`` it raises ``TurnCancelled`` so
         that the legacy unwinding behaviour is preserved.
+
+        Idempotent per turn. A turn can be reported cancelled by more than one
+        core path -- an interrupt while streaming is caught in
+        ``_send_to_llm``, one raised inside a tool is caught by ``run_turn``,
+        and both unwind through here -- and each would otherwise print its own
+        "Turn cancelled by user" at the user.
+
+        Note that :meth:`cancel` only *requests* cancellation; it does not
+        announce anything, so the request flag and "already announced" are
+        tracked separately. A turn cancelled through ``poll()`` is requested
+        first and reported afterwards, and must still emit.
         """
         self.cancel_reason = self.cancel_reason or "user"
+        if self._cancelled_announced:
+            # Already reported for this turn; only the legacy raise remains.
+            if self.raise_on_cancel:
+                from agent.core import TurnCancelled
+
+                raise TurnCancelled() from exc
+            return
         self._cancelled = True
+        self._cancelled_announced = True
         self.emit(Event.CANCELLED, CancelledPayload(turn_id=self.turn_id, reason=self.cancel_reason))
         if self.raise_on_cancel:
             from agent.core import TurnCancelled
@@ -274,6 +298,7 @@ class TurnEmitter:
         self.turn_id = turn_id or uuid.uuid4().hex
         self.started_at = time.time()
         self._cancelled = False
+        self._cancelled_announced = False
         self.cancel_reason = ""
         self._tool_index = 0
 

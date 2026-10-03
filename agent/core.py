@@ -684,6 +684,12 @@ class Core:
                 # persist a partial answer, but report it as cancelled so the
                 # caller can skip the status line without string matching.
                 if self._turn_cancelled:
+                    # Same reasoning as the KeyboardInterrupt handler below:
+                    # the frontend learns "cancelled" from this result and skips
+                    # its status line, so the only way the user learns *why*
+                    # the turn stopped is the cancel event.
+                    if cancel_callback:
+                        cancel_callback()
                     return TurnResult(
                         response=self.response_buffer or "[Cancelled]",
                         total_tokens=total_tokens,
@@ -839,6 +845,17 @@ class Core:
             # Ctrl+C that escaped the streaming/tool paths (e.g. raised inside
             # a tool handler). A cancelled turn persists nothing, so the chat
             # history is not left with a dangling tool call.
+            #
+            # Notify the cancel callback here too. `_send_to_llm` only calls it
+            # when the interrupt arrives while talking to the LLM, so a Ctrl+C
+            # that lands during a tool -- exactly when a long-running command
+            # is most likely to be interrupted -- produced a silently
+            # cancelled turn: `TurnResult(cancelled=True)` with no event, and
+            # the frontends, which skip the status line on `cancelled`, showed
+            # nothing at all. Cancellation is state, so every path that ends a
+            # turn cancelled must report it the same way.
+            if cancel_callback:
+                cancel_callback()
             return TurnResult(
                 response=self.response_buffer or "[Cancelled]",
                 total_tokens=total_tokens,
