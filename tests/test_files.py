@@ -234,3 +234,317 @@ class TestReadFileOffset(BaseTest):
         assert result["start_line"] == 49999
         assert result["end_line"] == 50000
         assert result["truncated"] is True
+
+
+class TestPatchFile(BaseTest):
+    """`patch_file` in both its text and line modes.
+
+    The text mode is the legacy exact-match behaviour, with trailing
+    whitespace forgiven. The line mode is the point: an edit anchored to line
+    numbers does not care what the characters are, which removes the re-read
+    round trip that an exact-match failure costs.
+    """
+
+    def setUp(self):
+        super().setUp()
+        discover_tools()
+        self.handler = get_registry()["patch_file"]["handler"]
+        set_output(cast(OutputAdapter, _FakeOutput()))
+        self.addCleanup(set_output, None)
+
+    def _file(self, text, name="f.py"):
+        return self._write_file(name, text)
+
+    # --- text mode, the legacy path ---
+
+    def test_replaces_an_exact_block(self):
+        path = self._file("alpha\nbeta\ngamma\n")
+        result = self.handler(
+            {"path": str(path), "old_string": "beta", "new_string": "BETA"}
+        )
+        assert result["success"] is True
+        assert result["changed"] is True
+        assert path.read_text() == "alpha\nBETA\ngamma\n"
+
+    def test_multiline_block_replacement(self):
+        path = self._file("def f():\n    return 1\n")
+        result = self.handler(
+            {
+                "path": str(path),
+                "old_string": "def f():\n    return 1",
+                "new_string": "def f():\n    return 2",
+            }
+        )
+        assert result["success"] is True
+        assert path.read_text() == "def f():\n    return 2\n"
+
+    def test_trailing_whitespace_in_the_match_is_forgiven(self):
+        """The single most common reason an exact match failed by hand."""
+        path = self._file("alpha\nbeta   \ngamma\n")
+        result = self.handler(
+            {"path": str(path), "old_string": "beta", "new_string": "BETA"}
+        )
+        assert result["success"] is True
+        assert path.read_text() == "alpha\nBETA\ngamma\n"
+
+    def test_trailing_whitespace_in_every_line_is_forgiven(self):
+        path = self._file("a\nb   \nc  \nd   \n")
+        result = self.handler(
+            {
+                "path": str(path),
+                "old_string": "b\nc\nd",
+                "new_string": "x\ny\nz",
+            }
+        )
+        assert result["success"] is True
+        assert path.read_text() == "a\nx\ny\nz\n"
+
+    def test_indentation_is_not_forgiven(self):
+        """Leading whitespace is meaning, not noise. Silently forgiving it
+        would move a block out of (or into) a function body."""
+        path = self._file("    beta\n")
+        result = self.handler(
+            {"path": str(path), "old_string": "beta", "new_string": "BETA"}
+        )
+        assert "error" in result
+        assert path.read_text() == "    beta\n"
+
+    def test_ambiguous_match_reports_the_line_numbers(self):
+        path = self._file("x\ndup\ny\ndup\n")
+        result = self.handler(
+            {"path": str(path), "old_string": "dup", "new_string": "DUP"}
+        )
+        assert "error" in result
+        assert "2, 4" in result["error"]
+        # Unchanged, and it points at the fix.
+        assert path.read_text() == "x\ndup\ny\ndup\n"
+
+    def test_start_line_disambiguates(self):
+        path = self._file("x\ndup\ny\ndup\n")
+        result = self.handler(
+            {
+                "path": str(path),
+                "old_string": "dup",
+                "new_string": "DUP",
+                "start_line": 4,
+            }
+        )
+        assert result["success"] is True
+        assert path.read_text() == "x\ndup\ny\nDUP\n"
+
+    def test_scoped_search_reports_where_the_text_actually_is(self):
+        """A window that excludes the real match must not read as 'gone'."""
+        path = self._file("x\ndup\ny\ndup\n")
+        result = self.handler(
+            {
+                "path": str(path),
+                "old_string": "dup",
+                "new_string": "DUP",
+                "start_line": 3,
+                "end_line": 3,
+            }
+        )
+        assert "error" in result
+        assert "within lines 3-3" in result["error"]
+        assert "line(s) 2, 4" in result["error"]
+
+    def test_a_window_containing_one_occurrence_succeeds(self):
+        """The window has to be an honest disambiguator, not a stricter match."""
+        path = self._file("x\ndup\ny\ndup\n")
+        result = self.handler(
+            {
+                "path": str(path),
+                "old_string": "dup",
+                "new_string": "DUP",
+                "start_line": 1,
+                "end_line": 3,
+            }
+        )
+        assert result["success"] is True
+        assert path.read_text() == "x\nDUP\ny\ndup\n"
+
+    def test_the_window_boundaries_are_inclusive(self):
+        """`end_line` is inclusive: a match on the last line of the window is in."""
+        path = self._file("a\nb\ndup\n")
+        result = self.handler(
+            {
+                "path": str(path),
+                "old_string": "dup",
+                "new_string": "DUP",
+                "start_line": 1,
+                "end_line": 3,
+            }
+        )
+        assert result["success"] is True
+        assert path.read_text() == "a\nb\nDUP\n"
+
+    def test_missing_text_names_the_line_mode_alternative(self):
+        path = self._file("alpha\n")
+        result = self.handler(
+            {"path": str(path), "old_string": "nope", "new_string": "x"}
+        )
+        assert "start_line" in result["error"]
+
+    def test_no_op_replacement_is_reported_not_rewritten(self):
+        path = self._file("alpha\n")
+        result = self.handler(
+            {"path": str(path), "old_string": "alpha", "new_string": "alpha"}
+        )
+        assert result["success"] is True
+        assert result["changed"] is False
+
+    def test_empty_old_string_is_refused(self):
+        path = self._file("alpha\n")
+        result = self.handler({"path": str(path), "old_string": "", "new_string": ""})
+        assert "error" in result
+
+    def test_new_string_is_required(self):
+        """Deleting is `new_string: ""`, so a missing key is a different thing."""
+        path = self._file("alpha\n")
+        result = self.handler({"path": str(path), "old_string": "alpha"})
+        assert "error" in result
+        assert path.read_text() == "alpha\n"
+
+    # --- line mode ---
+
+    def test_replaces_a_line_range(self):
+        path = self._file("a\nb\nc\nd\ne\n")
+        result = self.handler(
+            {"path": str(path), "start_line": 2, "end_line": 3, "new_string": "X\nY"}
+        )
+        assert result["success"] is True
+        assert result["changed"] is True
+        assert path.read_text() == "a\nX\nY\nd\ne\n"
+
+    def test_replaces_a_single_line(self):
+        path = self._file("a\nb\nc\n")
+        result = self.handler(
+            {"path": str(path), "start_line": 2, "new_string": "B"}
+        )
+        assert result["success"] is True
+        assert path.read_text() == "a\nB\nc\n"
+
+    def test_replaces_a_single_line_without_a_trailing_newline(self):
+        """The replacement must not swallow the following line."""
+        path = self._file("a\nb\nc\n")
+        result = self.handler(
+            {"path": str(path), "start_line": 2, "new_string": "B"}
+        )
+        assert path.read_text() == "a\nB\nc\n"
+
+    def test_line_mode_ignores_indentation_mismatches(self):
+        """The point of the mode: the characters do not have to be right."""
+        path = self._file("a\n        b\nc\n")
+        result = self.handler(
+            {"path": str(path), "start_line": 2, "new_string": "\tb"}
+        )
+        assert result["success"] is True
+        assert path.read_text() == "a\n\tb\nc\n"
+
+    def test_line_mode_does_not_need_the_text_at_all(self):
+        path = self._file("a\nb\nc\n")
+        result = self.handler(
+            {"path": str(path), "start_line": 1, "end_line": 2, "new_string": "z"}
+        )
+        assert result["success"] is True
+        assert path.read_text() == "z\nc\n"
+
+    def test_empty_new_string_deletes_the_lines(self):
+        path = self._file("a\nb\nc\nd\n")
+        result = self.handler(
+            {"path": str(path), "start_line": 2, "end_line": 3, "new_string": ""}
+        )
+        assert result["success"] is True
+        assert path.read_text() == "a\nd\n"
+
+    def test_deleting_everything_leaves_an_empty_file(self):
+        path = self._file("a\nb\n")
+        result = self.handler(
+            {"path": str(path), "start_line": 1, "end_line": 2, "new_string": ""}
+        )
+        assert result["success"] is True
+        assert path.read_text() == ""
+
+    def test_reports_the_lines_it_changed(self):
+        path = self._file("a\nb\nc\nd\ne\n")
+        result = self.handler(
+            {"path": str(path), "start_line": 2, "end_line": 3, "new_string": "X\nY\nZ"}
+        )
+        assert result["start_line"] == 2
+        assert result["end_line"] == 4
+        assert result["removed_lines"] == 2
+        assert result["added_lines"] == 3
+
+    def test_start_line_past_the_end_is_refused(self):
+        path = self._file("a\nb\n")
+        result = self.handler(
+            {"path": str(path), "start_line": 50, "new_string": "x"}
+        )
+        assert "error" in result
+        assert "2 lines" in result["error"]
+
+    def test_end_line_past_the_end_is_clamped(self):
+        """A line count from a stale read should still be usable."""
+        path = self._file("a\nb\nc\n")
+        result = self.handler(
+            {"path": str(path), "start_line": 2, "end_line": 99, "new_string": "B"}
+        )
+        assert result["success"] is True
+        assert result["removed_lines"] == 2
+        assert path.read_text() == "a\nB\n"
+
+    def test_end_line_before_start_line_is_refused(self):
+        path = self._file("a\nb\nc\n")
+        result = self.handler(
+            {"path": str(path), "start_line": 3, "end_line": 2, "new_string": "x"}
+        )
+        assert "error" in result
+
+    def test_neither_text_nor_line_is_refused(self):
+        path = self._file("a\n")
+        result = self.handler({"path": str(path), "new_string": "x"})
+        assert "error" in result
+        assert "start_line" in result["error"]
+
+    def test_line_numbers_given_as_strings_still_work(self):
+        path = self._file("a\nb\nc\n")
+        result = self.handler(
+            {"path": str(path), "start_line": "2", "end_line": "2", "new_string": "B"}
+        )
+        assert result["success"] is True
+        assert path.read_text() == "a\nB\nc\n"
+
+    def test_unparseable_line_number_does_not_edit_somewhere_random(self):
+        """Failing to parse must not mean "line 0" and rewrite the whole file."""
+        path = self._file("a\nb\nc\n")
+        result = self.handler(
+            {"path": str(path), "start_line": "not-a-number", "new_string": "x"}
+        )
+        assert "error" in result
+        assert path.read_text() == "a\nb\nc\n"
+
+    def test_insertion_at_the_end_of_a_file(self):
+        path = self._file("a\nb\n")
+        result = self.handler(
+            {"path": str(path), "start_line": 3, "new_string": "c\n"}
+        )
+        assert result["success"] is True
+        assert path.read_text() == "a\nb\nc\n"
+
+    def test_a_file_without_a_trailing_newline_stays_that_way(self):
+        path = self._file("a\nb")
+        result = self.handler(
+            {"path": str(path), "start_line": 2, "new_string": "B\nC"}
+        )
+        assert result["success"] is True
+        # The replaced block had no trailing newline, so the new text does not
+        # gain one: a whole-file trailing-newline change is a spurious diff.
+        assert path.read_text() == "a\nB\nC"
+
+    def test_text_mode_on_a_file_without_a_trailing_newline(self):
+        path = self._file("a\nb")
+        result = self.handler(
+            {"path": str(path), "old_string": "b", "new_string": "B"}
+        )
+        assert result["success"] is True
+        assert path.read_text() == "a\nB"

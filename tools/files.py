@@ -108,17 +108,6 @@ def read_file_handler(args):
         output.err(f"Path is not a file: {path}")
         return {"error": f"The path exists but does not point to a file: {contractuser(path)}"}
 
-    def _as_int(value):
-        """Best-effort int from a JSON argument, 0 when it is not one.
-
-        Models do send numbers as strings when they mean to send numbers, so a
-        bad value has to degrade to "no limit" rather than fail the read.
-        """
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return 0
-
     max_lines = _as_int(max_lines)
     offset = _as_int(offset)
 
@@ -322,14 +311,101 @@ def write_file_handler(args):
     return {"path": path, "success": True, "message": f"Wrote {len(content)} bytes to {contractuser(path)}"}
 
 
+def _as_int(value, default: int = 0) -> int:
+    """Best-effort int from a JSON argument, *default* when it is not one.
+
+    Models do send numbers as strings when they mean to send numbers, so a bad
+    value has to degrade rather than raise: an unparseable line number is
+    treated as "not given", which keeps a malformed argument from turning a
+    patch into a wrong-place edit.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _match_key(line: str) -> str:
+    """The form of *line* used for whitespace-tolerant matching.
+
+    Only trailing whitespace is dropped. Leading indentation is preserved
+    because it carries meaning in every language we edit, while trailing
+    whitespace is the one difference that reliably comes from a model's
+    retyping of a block rather than from the file itself.
+    """
+    return line.rstrip()
+
+
+def _find_line_blocks(file_lines: list[str], needle_lines: list[str]) -> list[int]:
+    """Start indices of every contiguous occurrence of *needle_lines*.
+
+    Matching is line-based and ignores trailing whitespace, so it needs the
+    same line count in both: a block that differs only in indentation width
+    inside it is a real difference and is *not* forgiven.
+    """
+    keys = [_match_key(line) for line in file_lines]
+    needle = [_match_key(line) for line in needle_lines]
+    span = len(needle)
+    if span == 0 or span > len(keys):
+        return []
+    return [
+        i
+        for i in range(len(keys) - span + 1)
+        if keys[i : i + span] == needle
+    ]
+
+
+def _apply_line_edit(
+    file_lines: list[str],
+    start: int,
+    count: int,
+    new_text: str,
+) -> tuple[list[str], int, int]:
+    """Replace *count* lines at *start* with *new_text*.
+
+    Returns the new line list and the 1-based first line of the inserted text.
+
+    The trailing-newline convention of the *replaced* block is honoured, not the
+    one in *new_text*: a model that writes a replacement without a final
+    newline must not silently join the following line onto the last inserted
+    one, which is the kind of corruption that only shows up as a syntax error
+    much later.
+    """
+    replaced = file_lines[start : start + count]
+    had_newline = bool(replaced) and replaced[-1].endswith("\n")
+
+    if new_text == "":
+        inserted: list[str] = []
+    else:
+        inserted = new_text.splitlines(keepends=True)
+        if had_newline and not inserted[-1].endswith("\n"):
+            inserted[-1] += "\n"
+
+    return file_lines[:start] + inserted + file_lines[start + count :], start + 1, start + len(inserted)
+
+
 @tool(
     name="patch_file",
     description=(
-        "Apply a targeted edit to a file by replacing exact text.\n"
-        "Provide the EXACT text to find (old_string) and the replacement (new_string). "
-        "The edit only succeeds if old_string appears exactly once in the file. "
-        "Use this for surgical edits like changing a variable name, fixing a bug, "
-        "or updating a function body. For large changes, prefer 'write_file'."
+        "Apply a targeted edit to a file. Two modes, both line-based.\n"
+        "\n"
+        "1. Text mode (default): give 'old_string' (exact text to find) and "
+        "'new_string' (the replacement). Matching is whitespace-tolerant -- "
+        "trailing whitespace is ignored, indentation is not -- so a block "
+        "retyped by hand usually still matches. The edit only succeeds if the "
+        "block appears exactly once; if it appears more than once, narrow it "
+        "with 'start_line'/'end_line' to disambiguate.\n"
+        "\n"
+        "2. Line mode: give 'start_line' and 'end_line' (1-based, inclusive) "
+        "with no 'old_string', and 'new_string' becomes the text replacing "
+        "exactly those lines. Use this when you know the line numbers from "
+        "'read_file' but not the exact text. Omit 'end_line' to replace a "
+        "single line.\n"
+        "\n"
+        "Use this for surgical edits like changing a variable name, fixing a "
+        "bug, or updating a function body. For large changes, prefer "
+        "'write_file'. Both modes write atomically and report the line numbers "
+        "they changed."
     ),
     parameters={
         "type": "object",
@@ -340,29 +416,52 @@ def write_file_handler(args):
             },
             "old_string": {
                 "type": "string",
-                "description": "EXACT text to be replaced. Must match the file contents precisely.",
+                "description": "EXACT text to be replaced. Must match the file contents precisely, modulo trailing whitespace. Omit to use line mode.",
             },
             "new_string": {
                 "type": "string",
-                "description": "The replacement text to insert",
+                "description": "The replacement text to insert. An empty string deletes the replaced lines.",
+            },
+            "start_line": {
+                "type": "integer",
+                "description": "1-based first line of the region to edit. With 'old_string' it narrows the search (use it to disambiguate a block that appears more than once); without it, this selects the start of the lines to replace.",
+            },
+            "end_line": {
+                "type": "integer",
+                "description": "1-based last line of the region to edit, inclusive. Only used in line mode; omit to replace just 'start_line'.",
             },
         },
-        "required": ["path", "old_string", "new_string"],
+        "required": ["path", "new_string"],
     },
 )
 def patch_file_handler(args):
-    """Apply a targeted edit to a file using search/replace."""
+    """Apply a targeted edit to a file, by matching text or by line range.
+
+    Args:
+        path: The file to edit.
+        old_string: Text to find. Enables text mode.
+        new_string: The replacement text; empty deletes the replaced lines.
+        start_line: 1-based line bound. In text mode it narrows the search; in
+            line mode (no old_string) it is the first line to replace.
+        end_line: 1-based inclusive end, line mode only.
+
+    Returns:
+        Dict with 'path', 'success' and 'start_line'/'end_line' of the
+        inserted text, or 'error' describing what did not match.
+    """
     path = args.get("path", "")
     old_string = args.get("old_string", "")
     new_string = args.get("new_string", "")
+    start_line = _as_int(args.get("start_line", 0))
+    end_line = _as_int(args.get("end_line", 0))
     output = get_output_or_ipc()
 
     if not path:
         output.err("Path not given :/")
         return {"error": "No file path provided"}
-    if not old_string:
-        output.err("Replace 'old_string' not provided :/")
-        return {"error": "No 'old_string' provided."}
+    if "new_string" not in args:
+        output.err("Replace 'new_string' not provided :/")
+        return {"error": "No 'new_string' provided."}
 
     path = os.path.expanduser(path)
     path = os.path.abspath(path)
@@ -373,36 +472,160 @@ def patch_file_handler(args):
     if not os.path.isfile(path):
         output.err(f"Path is not a file: {path}")
         return {"error": f"The path is not a file: {contractuser(path)}"}
-    
-    from rich.markup import escape
-    output.print(f"[weak]Patching[/weak] [path]{contractuser(path)}[/path]",
-                 indent=2)
-    output.print(f"[patch-remove]{escape(indent(old_string, '  - '))}[/patch-remove]")
-    output.print(f"[patch-add]{escape(indent(new_string, '  + '))}[/patch-add]")
 
     with open(path, "r") as f:
         file_content = f.read()
+    # `splitlines(keepends=True)` keeps a file that ends without a newline
+    # distinguishable from one that does, which matters for the write-back.
+    file_lines = file_content.splitlines(keepends=True)
+    total_lines = len(file_lines)
 
-    count = file_content.count(old_string)
+    from rich.markup import escape
 
-    if count == 0:
-        return {"error": (
-            f"old_string not found in {contractuser(path)}. "
-            f"Use 'read_file' to check current contents and copy exact text."
-        )}
+    # --- resolve the edit -------------------------------------------------
+    if old_string:
+        needle_lines = old_string.splitlines()
+        if not needle_lines:
+            output.err("'old_string' has no content :/")
+            return {"error": "'old_string' is empty; nothing to match."}
 
-    if count > 1:
-        return {"error": (
-            f"old_string found {count} times. "
-            f"Include more surrounding context for unique match."
-        )}
+        # The window is half-open in 0-based indices, and `end_line` is
+        # inclusive and 1-based, so it converts to `end_line` with no shift:
+        # a match starting at 0-based `i` ends at `i + len(needle)`, which is
+        # the first index *past* its last line. Treating `end_line` as an
+        # exclusive 1-based bound would cut the last matching line off.
+        lo = start_line - 1 if start_line > 0 else 0
+        hi = end_line if end_line > 0 else len(file_lines)
+        if lo < 0:
+            lo = 0
+        if hi > len(file_lines):
+            hi = len(file_lines)
+        candidates = _find_line_blocks(file_lines, needle_lines)
+        in_window = [i for i in candidates if lo <= i and i + len(needle_lines) <= hi]
 
-    new_content = file_content.replace(old_string, new_string, 1)
+        if not in_window and start_line > 0:
+            # Scoping can exclude the real match; say so rather than reporting
+            # a bare "not found", since the text may well be in the file.
+            return {
+                "error": (
+                    f"'old_string' not found within lines {start_line}-{end_line} "
+                    f"of {contractuser(path)}"
+                    + (
+                        f". It occurs at line(s) "
+                        f"{', '.join(str(i + 1) for i in candidates)} "
+                        f"({len(candidates)} occurrence(s) in the file) -- widen "
+                        f"'start_line'/'end_line' or move the edit there."
+                        if candidates
+                        else ". Use 'read_file' with offset to check the region."
+                    )
+                )
+            }
+
+        if not in_window:
+            return {
+                "error": (
+                    f"old_string not found in {contractuser(path)}. "
+                    f"Use 'read_file' to check current contents and copy exact "
+                    f"text, or use 'start_line'/'end_line' to patch by line."
+                )
+            }
+
+        if len(in_window) > 1:
+            return {
+                "error": (
+                    f"old_string found {len(in_window)} times "
+                    f"(lines {', '.join(str(i + 1) for i in in_window)}). "
+                    f"Narrow it with 'start_line'/'end_line', or include more "
+                    f"surrounding context."
+                )
+            }
+
+        at = in_window[0]
+        verb = "Patched"
+        removed = needle_lines
+        new_lines, new_start, new_end = _apply_line_edit(
+            file_lines, at, len(needle_lines), new_string
+        )
+    else:
+        # --- line mode -----------------------------------------------------
+        if start_line <= 0:
+            output.err("Neither 'old_string' nor 'start_line' given :/")
+            return {
+                "error": (
+                    "Provide 'old_string' to patch by text, or 'start_line' "
+                    "(with optional 'end_line') to patch by line."
+                )
+            }
+        if end_line > 0 and end_line < start_line:
+            return {
+                "error": (
+                    f"'end_line' ({end_line}) is before 'start_line' "
+                    f"({start_line})."
+                )
+            }
+        if start_line > total_lines + 1:
+            return {
+                "error": (
+                    f"'start_line' {start_line} is past the end of "
+                    f"{contractuser(path)}, which has {total_lines} lines. "
+                    f"Use {total_lines + 1} to append."
+                )
+            }
+        if start_line == total_lines + 1:
+            # Append. The line after the last one is a legitimate place to
+            # insert, and refusing it would push the caller into text mode for
+            # the one edit where the line numbers are already unambiguous.
+            # Falls through to the shared write below with an empty
+            # `removed`, so there is only one write path in this tool.
+            at = total_lines
+            removed = []
+            new_lines, new_start, new_end = _apply_line_edit(
+                file_lines, at, 0, new_string
+            )
+            verb = "Appended"
+        else:
+            last = end_line if end_line > 0 else start_line
+            # A stale line count from an earlier read is normal; clamping is
+            # more useful than refusing an edit that is otherwise well-formed.
+            last = min(last, total_lines)
+            at = start_line - 1
+            removed = file_lines[at:last]
+            new_lines, new_start, new_end = _apply_line_edit(
+                file_lines, at, last - start_line + 1, new_string
+            )
+            verb = "Patched"
+
+    # --- report and write --------------------------------------------------
+    if new_lines == file_lines:
+        output.print(
+            f"[weak]No change[/weak] [path]{contractuser(path)}[/path] "
+            f"[weak](replacement is identical to lines {new_start}-{new_end})[/weak]",
+            indent=2,
+        )
+        return {
+            "path": path,
+            "success": True,
+            "changed": False,
+            "start_line": new_start,
+            "end_line": new_end,
+            "message": f"No change: the replacement matched the existing text in {contractuser(path)}",
+        }
+
+    output.print(f"[weak]{verb}[/weak] [path]{contractuser(path)}[/path]", indent=2)
+    if removed:
+        output.print(
+            f"[weak]lines[/weak] [path]{at + 1}-{at + len(removed)}[/path] "
+            f"[weak]→[/weak] [path]{new_start}-{new_end}[/path]"
+        )
+    if removed:
+        output.print(f"[patch-remove]{escape(indent(''.join(removed), '  - '))}[/patch-remove]")
+    if new_string:
+        output.print(f"[patch-add]{escape(indent(new_string, '  + '))}[/patch-add]")
 
     parent = os.path.dirname(path)
     fd, tmp_path = tempfile.mkstemp(dir=parent if parent else None, prefix=".patched-")
     try:
-        os.write(fd, new_content.encode("utf-8"))
+        os.write(fd, "".join(new_lines).encode("utf-8"))
         os.fsync(fd)
     finally:
         os.close(fd)
@@ -411,7 +634,15 @@ def patch_file_handler(args):
     return {
         "path": path,
         "success": True,
-        "message": f"Replaced text in {contractuser(path)}",
+        "changed": True,
+        "start_line": new_start,
+        "end_line": new_end,
+        "removed_lines": len(removed),
+        "added_lines": new_end - new_start + 1,
+        "message": (
+            f"Replaced lines {at + 1}-{at + len(removed)} with "
+            f"{new_end - new_start + 1} line(s) in {contractuser(path)}"
+        ),
     }
 
 

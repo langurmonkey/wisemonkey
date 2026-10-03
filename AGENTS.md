@@ -175,6 +175,13 @@ Tools are defined using the `@tool(name, description, parameters)` decorator. Th
 
 Every result carries `start_line` and `end_line`. When the file was not returned whole it also carries `truncated`, `total_lines` (the file's real length, not the window's) and `shown_lines`. `offset` accepts a string, since models send numbers as strings; a negative `offset` is ignored rather than read as `tail -n -N`.
 
+`patch_file` also has two modes, both line-based:
+
+- **Text mode** (default) — `old_string` + `new_string`. Matching is whitespace-tolerant: *trailing* whitespace is ignored, leading indentation is not, so a block retyped by hand still matches. It must occur exactly once; if it occurs more than once, `start_line`/`end_line` narrow the search to disambiguate.
+- **Line mode** — `start_line` (+ optional `end_line`) with no `old_string`, and `new_string` replaces exactly those lines. This is the mode that removes the re-read round trip: the characters do not have to be right, only the line numbers. `start_line = total_lines + 1` appends.
+
+In text mode `start_line`/`end_line` are a search *window*, not a replacement range; the two are different parameters for different jobs, and `end_line` is inclusive. A window that excludes the real match reports where the text actually is rather than claiming it is gone. Both modes write atomically and report the line numbers changed; `new_string: ""` deletes.
+
 #### Chat memory accounting
 
 `ChatMemory` tracks `total_tokens` and triggers `/history-compact` when it exceeds `agent.max_chat_history`. `total_tokens` is computed by tokenizing the exact rendered history returned by `get_formatted(timestamps=False, width=0)`, including tool-result truncation and compact adjacent tool call/result blocks. Recount after changes to stored exchanges, loading, trimming, or clearing. Keep this accounting in sync with `get_formatted()` if its rendering changes.
@@ -275,7 +282,7 @@ tests/
 ├── test_core_turn.py    # run_turn: TurnResult, cancellation state, tool result callbacks
 ├── test_memory.py       # Memory, ChatMemory persistence and trimming
 ├── test_skills.py       # SkillLoader frontmatter parsing, load_all
-├── test_files.py        # read_file handler (full read, head-style max_lines, offset window)
+├── test_files.py        # read_file (full read, max_lines, offset window) + patch_file (text/line modes)
 ├── test_ipc.py          # IPC protocol: message factories, serialization, loopback transport
 ├── test_emitter.py      # TurnEmitter: core callbacks -> events, cancel state
 ├── test_keys.py         # Terminal key protocol: modified Enter, newline bindings
