@@ -282,15 +282,34 @@ class Footer:
         try:
             # Set the scroll region to the rows above the footer zone.
             out.write(f"\x1b[1;{footer_top - 1}r")
-            # Move into the footer zone and blank it.
-            out.write(f"\x1b[{footer_top};1H")
-            for _ in range(FOOTER_LINES):
-                out.write("\x1b[2K\r\n")
+            self._blank_footer_rows(out)
+            # Leave the cursor at the bottom of the scroll region, where
+            # streamed output expects to continue.
+            out.write(f"\x1b[{footer_top - 1};1H")
             out.flush()
         except Exception:
             self._restore_stdout()
             return
         self._active = True
+
+    def _blank_footer_rows(self, out) -> None:
+        """Erase each reserved row without moving the cursor off the screen.
+
+        The obvious spelling is ``CUP`` to the first row followed by
+        ``\\x1b[2K\\r\\n`` per row, but the final newline lands *below the last
+        screen row* and makes the terminal scroll: with the scroll region reset
+        (which is the case in :meth:`stop`) the whole visible screen shifts up
+        one line, and the REPL's turn header is the line that gets eaten. This
+        is why "Prompt processed" occasionally appears to overwrite the
+        banner above it -- the two are unrelated, and the scroll happens
+        first.
+
+        Addressing each row in turn keeps every write inside the screen, so
+        blanking is idempotent and nothing above the footer moves.
+        """
+        top = self._term_height - FOOTER_LINES + 1
+        for row in range(top, top + FOOTER_LINES):
+            out.write(f"\x1b[{row};1H\x1b[2K")
 
     def stop(self) -> None:
         """Disarm the footer: reset the scroll region and clean up.
@@ -308,11 +327,7 @@ class Footer:
         try:
             # Reset the scroll region to the full screen.
             out.write("\x1b[r")
-            # Move to the footer zone and blank it.
-            footer_top = self._term_height - FOOTER_LINES + 1
-            out.write(f"\x1b[{footer_top};1H")
-            for _ in range(FOOTER_LINES):
-                out.write("\x1b[2K\r\n")
+            self._blank_footer_rows(out)
             # Leave the cursor at the bottom of the screen.
             out.write(f"\x1b[{self._term_height};1H")
             out.flush()

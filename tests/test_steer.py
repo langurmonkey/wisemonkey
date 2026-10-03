@@ -156,10 +156,19 @@ class TestSteerCbreakMode(unittest.TestCase):
             if fd is not None:
                 os.close(fd)
             self.skipTest("no controlling tty")
+        # Start from a known cooked state, whatever the test runner is in.
+        # EIO here means this sandbox has a /dev/tty that can be opened and
+        # queried but not reconfigured. The cbreak transition under test is a
+        # tcsetattr, so there is nothing observable here and the test would
+        # fail for an environment reason rather than a code one. Checked
+        # *before* the try/finally, so a skip is not masked by the restore.
         try:
             pristine = termios.tcgetattr(fd)
-            # Start from a known cooked state, whatever the test runner is in.
             termios.tcsetattr(fd, termios.TCSANOW, _cooked_attrs(pristine))
+        except termios.error as exc:
+            os.close(fd)
+            self.skipTest(f"/dev/tty cannot be reconfigured: {exc}")
+        try:
             steer = SteerInput(on_submit=lambda _t: None)
             steer._fd = fd
             self.assertTrue(steer._enter_cbreak(fd))
@@ -172,39 +181,57 @@ class TestSteerCbreakMode(unittest.TestCase):
             os.close(fd)
 
     def test_ctrl_c_is_delivered_as_sigint(self):
-        """End-to-end: Ctrl+C reaches the main thread as KeyboardInterrupt."""
+        """End-to-end: Ctrl+C reaches the main thread as KeyboardInterrupt.
+
+        Driven entirely over the pty, with a handshake: the child announces
+        that it is armed, and only then does the parent send Ctrl+C. Two
+        things depend on that ordering.
+
+        A fixed sleep is a race. If Ctrl+C arrives before the child has
+        installed a handler, the kernel's *default* disposition applies and it
+        terminates the child outright -- the test then reports a missing file
+        rather than a missing SIGINT. Under load (several suites at once) the
+        imports alone can outlast the sleep, which is exactly how this test
+        used to fail intermittently.
+
+        The result also goes over the pty rather than a temp file: a file has
+        to be created, written, closed and unlinked across a process boundary,
+        so parallel runs can race each other out of existence.
+        """
         import pty
         import select
-        import signal
         import struct
         import fcntl
         import termios
         import time
 
-        log = "/tmp/_steer_isig_result"
-        if os.path.exists(log):
-            os.unlink(log)
-
         def body() -> None:  # pragma: no cover - child process
+            import signal
             import termios as T
 
-            with open(log, "w") as out:
-                steer = SteerInput(on_submit=lambda _t: None)
-                armed = steer.start()
-                lflag = T.tcgetattr(0)[3]
-                out.write("armed=%s isig=%s icanon=%s\n" % (
-                    armed,
-                    bool(lflag & T.ISIG),
-                    bool(lflag & T.ICANON),
-                ))
-                out.flush()
-                try:
-                    time.sleep(2.5)
-                    out.write("none\n")
-                except KeyboardInterrupt:
-                    out.write("sigint\n")
-                out.flush()
-                steer.stop()
+            # unittest installs a SIGINT handler in the *parent* to report
+            # Ctrl+C as a test result, and fork() inherits it. With that
+            # handler in place the kernel never raises KeyboardInterrupt, so
+            # the child could not observe SIGINT no matter what SteerInput did
+            # with ISIG -- it would fail for a reason unrelated to the code
+            # under test. (SIG_DFL would kill the child outright; the default
+            # *int handler* is what turns SIGINT into KeyboardInterrupt.)
+            signal.signal(signal.SIGINT, signal.default_int_handler)
+
+            steer = SteerInput(on_submit=lambda _t: None)
+            armed = steer.start()
+            lflag = T.tcgetattr(0)[3]
+            sys.stdout.write("READY armed=%s isig=%s icanon=%s\n" % (
+                armed, bool(lflag & T.ISIG), bool(lflag & T.ICANON),
+            ))
+            sys.stdout.flush()
+            try:
+                time.sleep(3.0)
+                sys.stdout.write("none\n")
+            except KeyboardInterrupt:
+                sys.stdout.write("sigint\n")
+            sys.stdout.flush()
+            steer.stop()
             os._exit(0)
 
         pid, mfd = pty.fork()
@@ -214,28 +241,37 @@ class TestSteerCbreakMode(unittest.TestCase):
             finally:
                 os._exit(0)
         fcntl.ioctl(mfd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
-        time.sleep(0.7)
-        os.write(mfd, b"\x03")  # Ctrl+C, in through the master
-        deadline = time.time() + 6
+
+        out = b""
+        sent = False
+        deadline = time.time() + 15
         while time.time() < deadline:
             r, _, _ = select.select([mfd], [], [], 0.2)
-            if not r:
-                continue
-            try:
-                chunk = os.read(mfd, 65536)
-            except OSError:
+            if r:
+                try:
+                    chunk = os.read(mfd, 65536)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                out += chunk
+            if not sent and b"READY" in out:
+                os.write(mfd, b"\x03")  # Ctrl+C, in through the master
+                sent = True
+            if sent and b"sigint" in out:
                 break
-            if not chunk:
-                break
+        try:
+            os.close(mfd)
+        except OSError:
+            pass
         os.waitpid(pid, 0)
 
-        with open(log) as result:
-            text = result.read()
-        os.unlink(log)
+        text = out.decode(errors="replace")
+        self.assertIn("READY", text, f"child never armed: {text!r}")
         self.assertIn("armed=True", text)
         self.assertIn("isig=True", text)
         self.assertIn("icanon=False", text)
-        self.assertIn("sigint", text, "Ctrl+C did not reach the main thread")
+        self.assertIn("sigint", text, f"Ctrl+C did not reach the main thread: {text!r}")
 
 
 class TestSteerInputNoTty(unittest.TestCase):

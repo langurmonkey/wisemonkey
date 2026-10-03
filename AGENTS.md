@@ -126,6 +126,8 @@ Two invariants matter here:
 
 Set `agent.footer_debug_bytes: true` to append every byte written to the footer (repr'd) to `$XDG_STATE_HOME/wisemonkey/footer.log` — useful when a terminal renders something unexpected.
 
+**Never blank the reserved rows with `\x1b[2K\r\n`.** That is the obvious spelling — go to the first footer row, erase, CR, LF, repeat — but the final `\n` puts the cursor *below the last screen row*, and leaving the bottom margin scrolls the viewport up by one. In `stop()` the scroll region has just been reset to the full screen, so the whole visible screen shifts and the REPL's turn header is the line that gets eaten (it looks like "Prompt processed" overwriting the banner; the two are unrelated). `_blank_footer_rows()` addresses each row explicitly (`CUP` + `EL`) so no write ever lands past the last row. `tests/test_footer.py` pins the invariant: no newline in the blanking output, and no row addressed beyond the screen height.
+
 ### Mid-turn steering (`agent/steer.py`)
 
 While a turn is running, `agent/steer.py` puts the tty in **cbreak** mode and reads keystrokes on a daemon thread. Enter queues the line; the REPL main loop drains the queue *before* showing the prompt again (`Agent._steer_drain`), so a queued line goes through the exact same `@`-expansion, command dispatch and turn path as a typed prompt.

@@ -170,6 +170,60 @@ class TestFooterGeometry(unittest.TestCase):
         self.assertEqual(plain.getvalue(), "")
         self.assertIs(sys.stdout, plain)
 
+    def test_blanking_never_moves_the_cursor_past_the_last_row(self):
+        """Blanking the footer must not scroll the screen.
+
+        The natural spelling -- go to the first footer row, then
+        "\\x1b[2K\\r\\n" per row -- ends with the cursor one line *below* the
+        last screen row, which makes the terminal scroll the whole viewport
+        up by one. In the REPL that is what ate the turn header, so the
+        yellow "Prompt processed" line appeared to land on top of it.
+
+        A scroll is triggered by leaving the bottom margin, so the invariant
+        that prevents it is simply that no write addresses a row beyond the
+        last one.
+        """
+        footer = self._footer()
+        height = footer._term_height
+        out = self.tty.getvalue()
+        rows = [int(m.group(1)) for m in re.finditer(r"\x1b\[(\d+);1H", out)]
+        self.assertTrue(rows, "footer wrote no cursor addressing at all")
+        self.assertLessEqual(
+            max(rows), height, f"a write addressed a row past the screen: {out!r}"
+        )
+
+    def test_start_leaves_the_cursor_in_the_scroll_region(self):
+        """Blanking must not leave the cursor below the scroll region either."""
+        footer = self._footer()
+        out = self.tty.getvalue()
+        region_bottom = footer._term_height - FOOTER_LINES
+        self.assertTrue(out.rstrip().endswith(f"\x1b[{region_bottom};1H"))
+        self.assertNotIn("\r\n", out.split("\x1b[1;", 1)[1])
+
+    def test_stop_leaves_the_cursor_on_the_last_row(self):
+        footer = self._footer()
+        height = footer._term_height
+        self.tty.seek(0)
+        self.tty.truncate()
+        footer.stop()
+        self.assertTrue(self.tty.getvalue().rstrip().endswith(f"\x1b[{height};1H"))
+
+    def test_blanking_writes_no_newlines(self):
+        """The fix is addressed erases, so no newline may appear at all."""
+        footer = self._footer()
+        self.tty.seek(0)
+        self.tty.truncate()
+        footer._blank_footer_rows(self.tty)
+        out = self.tty.getvalue()
+        self.assertNotIn("\n", out)
+        self.assertNotIn("\r", out)
+        # Read the height the footer settled on rather than assuming the
+        # mocked 24: _blank_footer_rows derives its rows from
+        # _term_height, which a redraw re-reads from the real terminal.
+        top = footer._term_height - FOOTER_LINES + 1
+        for offset in range(FOOTER_LINES):
+            self.assertIn(f"\x1b[{top + offset};1H\x1b[2K", out)
+
     def test_start_is_noop_on_small_terminal(self):
         with mock.patch.object(Footer, "_read_terminal_size", return_value=(80, 4)):
             footer = Footer()
@@ -615,27 +669,28 @@ class TestFooterInPty(unittest.TestCase):
         def body() -> None:
             from agent.steer import SteerInput
 
-            with open("/tmp/_footer_pty_result", "w") as res:
-                pristine = termios.tcgetattr(0)
-                steer = SteerInput()
-                steer.start()
-                res.write("cbreak=%s\n" % (
-                    not termios.tcgetattr(0)[3] & termios.ICANON
-                ))
-                steer.stop()
-                res.write("restored=%s\n" % (
-                    termios.tcgetattr(0) == pristine
-                ))
-                res.close()
-                os._exit(0)
+            # Reported over the pty itself rather than through a shared temp
+            # file: the file has to be created, written, closed and unlinked
+            # across a process boundary, so under load (several suites at once,
+            # or two runs of this file in parallel) the parent can read it
+            # before the child wrote it, or after another run unlinked it. The
+            # pty is the channel that already exists between the two.
+            pristine = termios.tcgetattr(0)
+            steer = SteerInput()
+            steer.start()
+            cbreak = not termios.tcgetattr(0)[3] & termios.ICANON
+            steer.stop()
+            restored = termios.tcgetattr(0) == pristine
+            sys.stdout.write(f"cbreak={cbreak}\nrestored={restored}\n")
+            sys.stdout.flush()
+            os._exit(0)
 
         out = self._run(body)
-        with open("/tmp/_footer_pty_result") as res:
-            result = res.read()
-        os.unlink("/tmp/_footer_pty_result")
-        self.assertIn("cbreak=True", result)
-        self.assertIn("restored=True", result)
-        self.assertEqual(out.count(b"\x1b"), 0, "no bytes expected in this probe")
+        result = out.decode(errors="replace")
+        self.assertIn("cbreak=True", result, result)
+        self.assertIn("restored=True", result, result)
+        # The probe itself must emit no escape codes.
+        self.assertNotIn("\x1b", result, f"unexpected escapes: {result!r}")
 
     def test_footer_emits_esc_sequences_on_a_real_tty(self):
         def body() -> None:
