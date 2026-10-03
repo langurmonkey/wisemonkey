@@ -10,9 +10,10 @@ import tempfile
 from pathlib import Path
 from textwrap import indent
 
-from agent.utils import contractuser
-from agent.tools import tool
 from agent.output import get_output_or_ipc
+from agent.tools import tool
+from agent.utils import contractuser
+
 
 def _prompt_user(command: str, reason: str) -> bool:
     """Ask the user to confirm (or reject) a search."""
@@ -41,7 +42,12 @@ def _prompt_user(command: str, reason: str) -> bool:
         "Takes a 'path' argument (absolute or relative path to the file). "
         "Optional 'show_line_numbers' (bool) to prepend line numbers. "
         "Optional 'max_lines' (int) to read only the first N lines from the "
-        "top (like the 'head' command) \u2014 use this for large files."
+        "top (like the 'head' command) \u2014 use this for large files. "
+        "Optional 'offset' (int, 1-based) to start at a given line, so a "
+        "region of a big file can be read directly instead of shelling out to "
+        "'sed'. Combine it with 'max_lines' to read a window; line numbers and "
+        "the 'start_line'/'end_line' metadata always refer to real positions in "
+        "the file, not to the window."
     ),
     parameters={
         "type": "object",
@@ -56,7 +62,11 @@ def _prompt_user(command: str, reason: str) -> bool:
             },
             "max_lines": {
                 "type": "integer",
-                "description": "Read only the first N lines from the top of the file (like the 'head' command). Omit or set to 0 to read the whole file.",
+                "description": "Read at most N lines (like the 'head' command). Combined with 'offset' this reads a window; omit or set to 0 for no limit.",
+            },
+            "offset": {
+                "type": "integer",
+                "description": "1-based line number to start reading from (like 'tail -n +N'). Omit or set to 0 to start at the top of the file.",
             },
         },
         "required": ["path"],
@@ -68,14 +78,18 @@ def read_file_handler(args):
     Args:
         path: File path to read.
         show_line_numbers: If True, prepend line numbers (e.g. "1: line1\n").
-        max_lines: If > 0, read only the first N lines (like 'head').
+        max_lines: If > 0, read at most this many lines (like 'head').
+        offset: If > 0, start at this 1-based line (like 'tail -n +N').
 
     Returns:
-        Dict with 'path' and 'content'.
+        Dict with 'path' and 'content', plus 'start_line' and 'end_line'. When
+        the file was not returned whole it also carries 'truncated',
+        'total_lines' and 'shown_lines'.
     """
     path = args.get("path", "")
     show_line_numbers = args.get("show_line_numbers", False)
     max_lines = args.get("max_lines", 0)
+    offset = args.get("offset", 0)
     output = get_output_or_ipc()
 
     if not path:
@@ -94,48 +108,96 @@ def read_file_handler(args):
         output.err(f"Path is not a file: {path}")
         return {"error": f"The path exists but does not point to a file: {contractuser(path)}"}
 
-    truncated = False
-    total_lines = None
-    try:
-        max_lines = int(max_lines)
-    except (TypeError, ValueError):
-        max_lines = 0
+    def _as_int(value):
+        """Best-effort int from a JSON argument, 0 when it is not one.
 
+        Models do send numbers as strings when they mean to send numbers, so a
+        bad value has to degrade to "no limit" rather than fail the read.
+        """
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    max_lines = _as_int(max_lines)
+    offset = _as_int(offset)
+
+    # `offset` is 1-based for the caller, like `tail -n +N`. A negative value
+    # is not a range from the end -- that is `tail -n -N` territory, and it is
+    # far more likely to be a miscount than an intent.
+    if offset < 0:
+        offset = 0
+
+    # Read the window without pulling the whole file into memory: `offset`
+    # exists precisely for the large-file case, and `readlines()` would defeat
+    # it. The loop still walks the skipped prefix, but it holds one line at a
+    # time instead of the whole file, and stops as soon as the window is full.
+    selected: list[str] = []
+    total_lines = 0
     with open(path, "r") as file:
-        if max_lines and max_lines > 0:
-            # Read only the first `max_lines` lines (like `head`).
-            all_lines = file.readlines()
-            total_lines = len(all_lines)
-            head = all_lines[:max_lines]
-            truncated = total_lines > max_lines
-            content = "".join(head)
-            output.print(
-                f"[weak]Reading[/weak] [path]{contractuser(path)}[/path] "
-                f"[weak](first {min(max_lines, total_lines)} of {total_lines} lines)[/weak]",
-                indent=2,
-            )
-        else:
-            output.print(f"[weak]Reading[/weak] [path]{contractuser(path)}[/path]",
-                         indent=2)
-            content = file.read()
+        for index, line in enumerate(file, start=1):
+            total_lines = index
+            if index < offset:
+                continue
+            if max_lines and len(selected) >= max_lines:
+                # The window is full, but `total_lines` is reported to the
+                # caller and has to be the real length of the file, so the
+                # rest is counted rather than iterated away.
+                for _ in file:
+                    total_lines += 1
+                break
+            selected.append(line)
 
-    # Optionally add line numbers
+    window_lines = len(selected)
+    first_line = offset if offset > 1 else 1
+    end_line = first_line + window_lines - 1 if window_lines else first_line
+    # "Truncated" means lines existed that the caller did not see. Reaching the
+    # end of a short file while looking for more is not that: the window asked
+    # for 100 lines of a 2-line file, and got the whole file. Only a window that
+    # starts past line 1 or that stops before the last line is truncated.
+    truncated = first_line > 1 or end_line < total_lines
+
+    where = (
+        f"[weak](lines {first_line}-{end_line} of {total_lines} lines)[/weak]"
+        if first_line > 1
+        else ""
+    )
+    if where:
+        output.print(
+            f"[weak]Reading[/weak] [path]{contractuser(path)}[/path] {where}",
+            indent=2,
+        )
+    else:
+        output.print(f"[weak]Reading[/weak] [path]{contractuser(path)}[/path]",
+                     indent=2)
+
+    content = "".join(selected)
+
+    # Optionally add line numbers. These are the real positions in the file, so
+    # the width is computed from `total_lines`: numbering a window relative to
+    # itself would make the numbers useless as an anchor for a later edit, and
+    # would change the alignment between two reads of the same file.
     if show_line_numbers:
         lines = content.split("\n")
-        max_width = len(str(len(lines)))
+        # A trailing newline yields an empty final element; it is not a line.
+        if lines and lines[-1] == "":
+            lines.pop()
+        max_width = len(str(total_lines))
         numbered = "\n".join(
-            f"{i+1:>{max_width}}: {line}" for i, line in enumerate(lines)
+            f"{first_line + i:>{max_width}}: {line}" for i, line in enumerate(lines)
         )
         content = numbered
 
     result = {
         "path": path,
-        "content": content
+        "content": content,
+        "start_line": first_line,
+        "end_line": end_line,
     }
     if truncated:
         result["truncated"] = True
         result["total_lines"] = total_lines
-        result["shown_lines"] = max_lines
+        result["shown_lines"] = window_lines
     return result
 
 

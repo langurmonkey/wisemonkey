@@ -401,7 +401,7 @@ In addition to persistent memory, the agent maintains a **chat history** of rece
 - Chat memory is attached to the system prompt on each turn, as the **last section** (after identity, workspace instructions, memory, and skills) so the static prompt prefix stays stable and provider prompt caches are not invalidated on every turn
 - The agent displays the last 10 exchanges, with long messages truncated
 - Tool results are truncated in the formatted history unless `chat_history_full_tool_results` is enabled (see below)
-- Large file reads can be limited with the `read_file` tool's `max_lines` parameter (like `head`)
+- Large file reads can be limited with the `read_file` tool's `max_lines` parameter (like `head`), or read as a window with `offset` (a 1-based start line, like `tail -n +N`)
 
 **Persistence:**
 - Chat history is persisted to `~/.local/share/wisemonkey/session/$SESSION_NAME/chat_history.json`

@@ -165,7 +165,15 @@ In both modes the line stays in the client FIFO until delivery is confirmed, so 
 
 Tools are defined using the `@tool(name, description, parameters)` decorator. They are auto-discovered on startup. Each tool file in `tools/` contains one or more decorated handler functions.
 
-`read_file` accepts an optional `max_lines` parameter to read only the first N lines from the top (like `head`). This is useful for large files: it keeps the tool result small and avoids flooding the chat history. When set, the result includes `truncated`, `total_lines`, and `shown_lines` metadata. Omit it or set it to `0` to read the whole file.
+`read_file` reads a *window* of a file. Three optional parameters:
+
+- `max_lines` — at most N lines, like `head`. Keeps the tool result small and avoids flooding the chat history.
+- `offset` — a 1-based line to start at, like `tail -n +N`. The skipped prefix is streamed past, never buffered, so a window near the end of a large file does not load it.
+- `show_line_numbers` — prepend numbers, always at their **real** positions in the file and padded to the width of the file's line count. Numbering a window 1..n would make the numbers useless as an anchor for a later edit.
+
+`offset` and `max_lines` compose as a window (start, then how many): `offset: 700, max_lines: 90` is lines 700-789, not 0-89 and not an empty range. Either may be omitted for "no limit" on that side.
+
+Every result carries `start_line` and `end_line`. When the file was not returned whole it also carries `truncated`, `total_lines` (the file's real length, not the window's) and `shown_lines`. `offset` accepts a string, since models send numbers as strings; a negative `offset` is ignored rather than read as `tail -n -N`.
 
 #### Chat memory accounting
 
@@ -267,7 +275,7 @@ tests/
 ├── test_core_turn.py    # run_turn: TurnResult, cancellation state, tool result callbacks
 ├── test_memory.py       # Memory, ChatMemory persistence and trimming
 ├── test_skills.py       # SkillLoader frontmatter parsing, load_all
-├── test_files.py        # read_file handler (full read + head-style max_lines)
+├── test_files.py        # read_file handler (full read, head-style max_lines, offset window)
 ├── test_ipc.py          # IPC protocol: message factories, serialization, loopback transport
 ├── test_emitter.py      # TurnEmitter: core callbacks -> events, cancel state
 ├── test_keys.py         # Terminal key protocol: modified Enter, newline bindings
