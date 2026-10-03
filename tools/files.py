@@ -6,6 +6,7 @@ including searching by name and content.
 
 import fnmatch
 import os
+import re
 import tempfile
 from pathlib import Path
 from textwrap import indent
@@ -757,11 +758,22 @@ def find_files_handler(args):
 @tool(
     name="search_content",
     description=(
-        "Search file contents for a text string. "
-        "Recursively searches all text files in a directory for lines containing the given query string. "
-        "Use this instead of the shell 'grep' command. "
-        "Returns matching file paths with line numbers and context. "
-        "Binary files are automatically skipped."
+        "Search file contents. Recursively searches all text files in a "
+        "directory and returns matching file paths with line numbers and "
+        "context. Use this instead of the shell 'grep' command. Binary files "
+        "are automatically skipped.\n"
+        "\n"
+        "By default 'query' is a literal substring. Set 'regex': true to treat "
+        "it as a Python regular expression -- that is how to search for "
+        "patterns like '^def ', 'self\\.\\w+ = ', or '@cmd\\(' instead of "
+        "shell-quoting a regex into grep. With 'regex' false a query containing "
+        "regex metacharacters is matched literally, so no escaping is needed "
+        "for ordinary text.\n"
+        "\n"
+        "Regexes are applied per line with multiline anchors active, so '^' "
+        "and '$' match the start and end of a line rather than the file. Set "
+        "'multiline': true to match across newlines (for a pattern that spans "
+        "lines), at the cost of holding the whole file in memory."
     ),
     parameters={
         "type": "object",
@@ -772,7 +784,15 @@ def find_files_handler(args):
             },
             "query": {
                 "type": "string",
-                "description": "The text to search for in file contents.",
+                "description": "The text to search for. A literal substring by default, or a Python regular expression when 'regex' is true.",
+            },
+            "regex": {
+                "type": "boolean",
+                "description": "If True, 'query' is a regular expression rather than a literal substring. Default: False.",
+            },
+            "multiline": {
+                "type": "boolean",
+                "description": "If True (requires 'regex'), allow matches spanning multiple lines. Default: False.",
             },
             "case_sensitive": {
                 "type": "boolean",
@@ -791,18 +811,35 @@ def find_files_handler(args):
                 "items": {"type": "string"},
                 "description": "Optional list of glob patterns to filter files by name (e.g., ['*.py', '*.md']). If not provided, all text files are searched.",
             },
+            "max_results": {
+                "type": "integer",
+                "description": "Maximum matches to return. Default: 500. 'truncated' in the result says whether matches were dropped.",
+            },
         },
         "required": ["root", "query"],
     },
 )
 def search_content_handler(args):
-    """Recursively search file contents for a text string."""
+    """Recursively search file contents for a literal string or a regex.
+
+    The literal path is the original behaviour and stays the default, because
+    a query with regex metacharacters in it ("config.yaml", "a(b)c") must keep
+    matching itself rather than silently becoming a pattern. Regex is opt-in
+    via `regex`, and an invalid pattern is an error rather than a fallback to
+    a literal search: a query that looks like a regex and fails to compile is
+    a mistake worth reporting, not something to quietly reinterpret.
+    """
     root = args.get("root", "")
     query = args.get("query", "")
+    use_regex = bool(args.get("regex", False))
+    multiline = bool(args.get("multiline", False))
     case_sensitive = args.get("case_sensitive", False)
-    context_lines = args.get("context_lines", 0)
+    context_lines = _as_int(args.get("context_lines", 0))
     max_depth = args.get("max_depth", -1)
     include_patterns = args.get("include_patterns", None)
+    max_results = _as_int(args.get("max_results", 500), default=500)
+    if max_results <= 0:
+        max_results = 500
 
     if not root or not query:
         return {"error": "Both 'root' and 'query' are required"}
@@ -813,12 +850,40 @@ def search_content_handler(args):
     if not os.path.isdir(root):
         return {"error": f"Directory does not exist: {contractuser(root)}"}
 
+    pattern: re.Pattern[str] | None = None
+    if use_regex:
+        flags = 0 if case_sensitive else re.IGNORECASE
+        # MULTILINE so '^' and '$' are line anchors, which is what a per-line
+        # search means and what makes '^def ' work. Without it those anchors
+        # would only ever match the start and end of the whole file, so a
+        # pattern written the way it looks in grep would match nothing.
+        if not multiline:
+            flags |= re.MULTILINE
+        try:
+            pattern = re.compile(query, flags)
+        except re.error as exc:
+            return {
+                "error": (
+                    f"invalid regex {query!r}: {exc}. "
+                    "Fix the pattern, or drop 'regex' to search for it literally."
+                )
+            }
+    elif multiline:
+        return {
+            "error": "'multiline' requires 'regex': true -- a literal search has no pattern to span lines with."
+        }
+
     output = get_output_or_ipc()
-    output.print(f"[weak]Searching for[/weak] [path]'{query}'[/path] [weak]in[/weak] [path]{contractuser(root)}[/path]",
-                 indent=2)
+    kind = "regex" if use_regex else "text"
+    output.print(
+        f"[weak]Searching for[/weak] [path]'{query}'[/path] "
+        f"[weak]({kind}) in[/weak] [path]{contractuser(root)}[/path]",
+        indent=2,
+    )
 
     root_path = Path(root)
-    matches = []  # list of {"file": str, "line": int, "line_content": str, "context": list[str]}
+    matches: list[dict[str, str | int | list[str]]] = []
+    dropped = 0
 
     # Common binary extensions/text extensions heuristic
     _text_extensions = {
@@ -852,6 +917,30 @@ def search_content_handler(args):
                 return True
         return False
 
+    def make_entry(file_rel: str, lineno: int, text: str, lines: list[str],
+                   span: int) -> dict[str, str | int | list[str]]:
+        """One result, with context lines around the match.
+
+        `lineno` is 1-based and `span` is how many lines the match covers, so a
+        multiline match is anchored at its first line rather than at whatever
+        line the scan happened to be on.
+        """
+        entry: dict[str, str | int | list[str]] = {
+            "file": file_rel,
+            "line": lineno,
+            "line_content": text.rstrip("\n"),
+            "context": [],
+        }
+        if context_lines > 0:
+            ctx: list[str] = []
+            start_ctx = max(0, lineno - 1 - context_lines)
+            end_ctx = min(len(lines), lineno + span - 1 + context_lines)
+            for ci in range(start_ctx, end_ctx):
+                prefix = ">" if lineno <= ci + 1 < lineno + span else " "
+                ctx.append(f"{prefix} {ci + 1}: {lines[ci].rstrip(chr(10))}")
+            entry["context"] = ctx
+        return entry
+
     for current_root, dirs, files in os.walk(root):
         rel_path = Path(current_root).relative_to(root_path)
         depth = 0 if rel_path == Path(".") else len(rel_path.parts)
@@ -860,7 +949,7 @@ def search_content_handler(args):
             dirs.clear()
             continue
 
-        for f in files:
+        for f in sorted(files):
             if not should_include(f):
                 continue
 
@@ -875,29 +964,47 @@ def search_content_handler(args):
             except Exception:
                 continue
 
+            file_rel = os.path.relpath(full_path, root)
+
+            if multiline:
+                # `multiline` is only reachable with `regex` (it is refused
+                # otherwise, above), so a compiled pattern is guaranteed here.
+                assert pattern is not None
+                # The whole file is already in memory (readlines above); a
+                # match may span lines, so its position has to be recovered
+                # from a character offset rather than tracked per line.
+                content = "".join(lines)
+                for m in pattern.finditer(content):
+                    lineno = content.count("\n", 0, m.start()) + 1
+                    # Cut the reported text at the first newline so the
+                    # rendered line stays one line, but keep the span so the
+                    # covered lines are marked and given context.
+                    first_line_end = content.find("\n", m.start())
+                    if first_line_end == -1 or first_line_end > m.end():
+                        text = content[m.start():m.end()]
+                    else:
+                        text = content[m.start():first_line_end] + " ..."
+                    span = content.count("\n", m.start(), m.end()) + 1
+                    if len(matches) < max_results:
+                        matches.append(make_entry(file_rel, lineno, text, lines, span))
+                    else:
+                        dropped += 1
+                continue
+
             for i, line in enumerate(lines, start=1):
-                check_line = line if case_sensitive else line.lower()
-                check_query = query if case_sensitive else query.lower()
-
-                if check_query in check_line:
-                    file_rel = os.path.relpath(full_path, root)
-                    entry: dict[str, str | int | list[str]] = {
-                        "file": file_rel,
-                        "line": i,
-                        "line_content": line.rstrip("\n"),
-                        "context": [],
-                    }
-
-                    if context_lines > 0:
-                        ctx: list[str] = []
-                        start_ctx = max(0, i - 1 - context_lines)
-                        end_ctx = min(len(lines), i + context_lines)
-                        for ci in range(start_ctx, end_ctx):
-                            prefix = ">" if ci == i - 1 else " "
-                            ctx.append(f"{prefix} {ci + 1}: {lines[ci].rstrip(chr(10))}")
-                        entry["context"] = ctx
-
-                    matches.append(entry)
+                if pattern is not None:
+                    found = pattern.search(line)
+                else:
+                    check_line = line if case_sensitive else line.lower()
+                    check_query = query if case_sensitive else query.lower()
+                    found = check_query in check_line
+                if found:
+                    if len(matches) < max_results:
+                        matches.append(
+                            make_entry(file_rel, i, line.rstrip("\n"), lines, 1)
+                        )
+                    else:
+                        dropped += 1
 
     # Build output
     if not matches:
@@ -906,6 +1013,13 @@ def search_content_handler(args):
         result_lines = [
             f"Found {len(matches)} match(es) for '{query}' in {contractuser(root)}:"
         ]
+        if dropped:
+            # The cap used to silently slice: a caller reading "Found 500"
+            # could not tell 500 from 5000, and would conclude the pattern
+            # only occurs 500 times.
+            result_lines.append(
+                f"  [{dropped} further match(es) omitted: raise 'max_results']"
+            )
         current_file = None
         for m in matches:
             if m["file"] != current_file:
@@ -921,7 +1035,9 @@ def search_content_handler(args):
     return {
         "root": root,
         "query": query,
+        "mode": kind,
         "count": len(matches),
-        "results": matches[:500],  # cap results
+        "omitted": dropped,
+        "results": matches,
         "content": "\n".join(result_lines),
     }

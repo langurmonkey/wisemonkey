@@ -182,6 +182,10 @@ Every result carries `start_line` and `end_line`. When the file was not returned
 
 In text mode `start_line`/`end_line` are a search *window*, not a replacement range; the two are different parameters for different jobs, and `end_line` is inclusive. A window that excludes the real match reports where the text actually is rather than claiming it is gone. Both modes write atomically and report the line numbers changed; `new_string: ""` deletes.
 
+`search_content` takes a literal substring by default and a **Python regex** with `regex: true`, so a pattern like `^def ` or `self\.\w+ = ` needs no shell quoting, and `^`/`$` are per-line anchors (`re.MULTILINE`). Metacharacters in a default literal query stay literal, so `config.yaml` matches itself. An invalid regex is an error, never a silent fallback to a literal search: a query that looks like a pattern and fails to compile is a mistake worth reporting, not something to quietly reinterpret. `multiline: true` matches across newlines and requires `regex`.
+
+`max_results` (default 500) is reported in `omitted`, and the rendered `content` says how many matches were dropped. The cap used to slice silently, so "Found 500" could not be told apart from "Found 5000" — a caller would conclude the pattern is rarer than it is.
+
 #### Chat memory accounting
 
 `ChatMemory` tracks `total_tokens` and triggers `/history-compact` when it exceeds `agent.max_chat_history`. `total_tokens` is computed by tokenizing the exact rendered history returned by `get_formatted(timestamps=False, width=0)`, including tool-result truncation and compact adjacent tool call/result blocks. Recount after changes to stored exchanges, loading, trimming, or clearing. Keep this accounting in sync with `get_formatted()` if its rendering changes.
@@ -282,7 +286,7 @@ tests/
 ├── test_core_turn.py    # run_turn: TurnResult, cancellation state, tool result callbacks
 ├── test_memory.py       # Memory, ChatMemory persistence and trimming
 ├── test_skills.py       # SkillLoader frontmatter parsing, load_all
-├── test_files.py        # read_file (full read, max_lines, offset window) + patch_file (text/line modes)
+├── test_files.py        # read_file (full read, max_lines, offset window), patch_file (text/line modes), search_content (literal/regex)
 ├── test_ipc.py          # IPC protocol: message factories, serialization, loopback transport
 ├── test_emitter.py      # TurnEmitter: core callbacks -> events, cancel state
 ├── test_keys.py         # Terminal key protocol: modified Enter, newline bindings

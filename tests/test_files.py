@@ -548,3 +548,182 @@ class TestPatchFile(BaseTest):
         )
         assert result["success"] is True
         assert path.read_text() == "a\nB"
+
+
+class TestSearchContentRegex(BaseTest):
+    """`search_content` takes a regex, so a pattern does not need shell quoting.
+
+    Literal search stays the default: a query that happens to contain regex
+    metacharacters (`config.yaml`, `a(b)c`) must keep matching itself, which is
+    what every existing caller relies on. Regex is opt-in, and an invalid one
+    is an error rather than a silent fallback to a literal search.
+    """
+
+    def setUp(self):
+        super().setUp()
+        discover_tools()
+        self.handler = get_registry()["search_content"]["handler"]
+        set_output(cast(OutputAdapter, _FakeOutput()))
+        self.addCleanup(set_output, None)
+        self.root = self._tmpdir / "src"
+        self.root.mkdir(parents=True, exist_ok=True)
+        self._write("a.py", "def one():\n    pass\n\ndef two():\n    return 2\n")
+        self._write("b.py", "    self.value = 1\n    self.other = 2\n")
+        self._write("notes.md", "# Notes\n\ndef one() is mentioned here too\n")
+
+    def _write(self, name, text):
+        path = self.root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return path
+
+    def _run(self, query, **kw):
+        return self.handler({"root": str(self.root), "query": query, **kw})
+
+    # --- literal is still the default ---
+
+    def test_literal_search_is_the_default(self):
+        result = self._run("self.value")
+        assert result["count"] == 1
+        assert result["mode"] == "text"
+        assert result["results"][0]["file"] == "b.py"
+
+    def test_metacharacters_are_literal_without_regex(self):
+        """`config.yaml` must not read as "config" + any char + "yaml"."""
+        self._write("config.yaml", "name: configXyaml\nother: config.yaml\n")
+        result = self._run("config.yaml")
+        assert result["count"] == 1
+        assert "other" in result["results"][0]["line_content"]
+
+    def test_literal_search_ignores_regex_syntax_entirely(self):
+        result = self._run("^def ")
+        assert result["count"] == 0
+
+    # --- regex ---
+
+    def test_regex_anchors_match_per_line(self):
+        """'^def ' is the whole reason regex mode exists.
+
+        Without MULTILINE, '^' would only ever match the start of the file, so
+        a pattern written the way it looks in grep would silently match
+        nothing -- the most damaging possible failure for a search tool. The
+        match on line 3 of a *different* file is the proof: it is neither the
+        first line nor the first match.
+        """
+        result = self._run("^def ", regex=True)
+        assert result["mode"] == "regex"
+        assert {(r["file"], r["line"]) for r in result["results"]} == {
+            ("a.py", 1),
+            ("a.py", 4),
+            ("notes.md", 3),
+        }
+
+    def test_regex_metacharacters(self):
+        result = self._run(r"self\.\w+ = ", regex=True)
+        assert result["count"] == 2
+        assert all(r["file"] == "b.py" for r in result["results"])
+
+    def test_regex_case_insensitivity_by_default(self):
+        self._write("c.py", "TOKEN = 1\n")
+        assert self._run("token", regex=True)["count"] == 1
+        assert self._run("token", regex=True, case_sensitive=True)["count"] == 0
+
+    def test_regex_respects_include_patterns(self):
+        result = self._run("^def ", regex=True, include_patterns=["*.py"])
+        assert {(r["file"], r["line"]) for r in result["results"]} == {
+            ("a.py", 1),
+            ("a.py", 4),
+        }
+        result = self._run("^def ", regex=True, include_patterns=["*.md"])
+        assert result["count"] == 1
+
+    def test_invalid_regex_is_an_error_not_a_fallback(self):
+        result = self._run("def (", regex=True)
+        assert "error" in result
+        assert "invalid regex" in result["error"]
+        assert "regex" in result["error"]
+
+    def test_multiline_requires_regex(self):
+        result = self._run("foo", multiline=True)
+        assert "error" in result
+        assert "requires 'regex'" in result["error"]
+
+    # --- multiline ---
+
+    def test_multiline_matches_across_newlines(self):
+        self._write("d.py", "alpha\nbeta\ngamma\n")
+        assert self._run("beta\\ngamma", regex=True, multiline=True)["count"] == 1
+        # Without multiline the pattern cannot match at all, since no single
+        # line contains it.
+        assert self._run("beta\\ngamma", regex=True)["count"] == 0
+
+    def test_multiline_reports_the_first_line_of_the_match(self):
+        self._write("d.py", "alpha\nbeta\ngamma\n")
+        result = self._run("beta\\ngamma", regex=True, multiline=True)
+        assert result["results"][0]["line"] == 2
+
+    def test_multiline_context_spans_the_covered_lines(self):
+        self._write("d.py", "one\ntwo\nthree\nfour\nfive\n")
+        result = self._run(
+            "two\\nthree", regex=True, multiline=True, context_lines=1
+        )
+        ctx = result["results"][0]["context"]
+        assert any(line.startswith("> 2:") for line in ctx)
+        assert any(line.startswith("> 3:") for line in ctx)
+        assert any(line.startswith("  4:") for line in ctx)
+
+    # --- context ---
+
+    def test_context_lines_work_in_regex_mode(self):
+        result = self._run("^def two", regex=True, context_lines=1)
+        ctx = result["results"][0]["context"]
+        # Only the matching line is marked with '>'; the context is unprefixed.
+        assert "> 4: def two():" in ctx
+        assert any(line.startswith("  3:") for line in ctx)
+        assert any(line.startswith("  5:") for line in ctx)
+        assert len(ctx) == 3
+
+    # --- cap is reported, not silent ---
+
+    def test_omitted_matches_are_counted(self):
+        for i in range(10):
+            self._write(f"many{i}.py", "needle\n")
+        result = self._run("needle", max_results=4)
+        assert result["count"] == 4
+        assert result["omitted"] == 6
+        assert len(result["results"]) == 4
+        # The rendered output has to say so: "Found 4" alone reads as "there
+        # are 4", and the caller would conclude the pattern is rarer than it is.
+        assert "6 further match(es) omitted" in result["content"]
+
+    def test_max_results_counts_every_match_not_just_reported(self):
+        for i in range(3):
+            self._write(f"many{i}.py", "needle\n")
+        result = self._run("needle", max_results=0)
+        assert result["count"] == 3
+
+    # --- existing parameters still honoured ---
+
+    def test_max_depth_still_applies(self):
+        nested = self.root / "deep" / "deeper"
+        nested.mkdir(parents=True)
+        (nested / "e.py").write_text("def deep():\n    pass\n")
+        assert self._run("def deep", regex=True, max_depth=0)["count"] == 0
+        assert self._run("def deep", regex=True, max_depth=2)["count"] == 1
+
+    def test_missing_directory_is_an_error(self):
+        result = self.handler(
+            {"root": str(self._tmpdir / "nope"), "query": "x", "regex": True}
+        )
+        assert "error" in result
+
+    def test_query_is_required(self):
+        result = self.handler({"root": str(self.root)})
+        assert "error" in result
+
+    def test_binary_files_are_still_skipped(self):
+        self._write("real.py", "needle\n")
+        (self.root / "blob.bin").write_bytes(b"\x00needle\x00")
+        result = self._run("needle")
+        assert result["count"] == 1
+        assert result["results"][0]["file"] == "real.py"
