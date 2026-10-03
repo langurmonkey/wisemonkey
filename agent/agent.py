@@ -587,8 +587,11 @@ class Agent:
         # Ask the terminal to stop sending a bare 0x0D for Shift/Ctrl+Enter.
         # Terminals that do not understand it ignore the sequence, so this is
         # safe to attempt unconditionally; the atexit hook registered inside
-        # pops it again if we are killed.
-        self._kitty_enabled = enable_kitty_keyboard()
+        # pops it again if we are killed. Guarded because this method is
+        # re-run whenever `prompt-update` fires (e.g. after `/resume`), and a
+        # second push would need a second pop to unwind.
+        if not getattr(self, "_kitty_enabled", False):
+            self._kitty_enabled = enable_kitty_keyboard()
 
         # Enter submits; a modified Enter inserts a newline. Installed from
         # agent/keys.py so the rule lives in one place.
@@ -696,6 +699,10 @@ class Agent:
         model = self.core.config.get("model.name")
         unsafe = self.core.config.get("agent.unsafe", False)
         unsafe_warn = "  <unsafe-warn> ⚠ UNSAFE </unsafe-warn>" if unsafe else ""
+        # `/resume` rebinds the memory singleton under us; keep the agent's own
+        # copy in step, since it names the session for the daemon lookup and
+        # for the TUI/REPL banners.
+        self.session = self.core.memory.session
         self._session = PromptSession(
             style=style,
             message=HTML(

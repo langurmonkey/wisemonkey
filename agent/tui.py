@@ -609,6 +609,10 @@ class WisemonkeyTui(App):
             if unsafe
             else ""
         )
+        # `/resume` rebinds the memory singleton under us; the subtitle was
+        # set once at startup, so it has to follow.
+        self.sub_title = f"Session: {sess}"
+        self.session = sess
         self.query_one("#status-bar", Static).update(
             f" Model: [bold]{model}[/bold]  |  Session: [bold]{sess}[/bold]"
             f"  |  [bold]![/bold]: shell command{unsafe_warn}"

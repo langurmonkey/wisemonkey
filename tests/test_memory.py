@@ -1,9 +1,17 @@
 """Tests for agent/memory.py — Memory singleton, ChatMemory persistence, trimming."""
 
+import datetime
 import json
+from pathlib import Path
 
 from tests.conftest import BaseTest
-from agent.memory import Memory, ChatMemory
+from agent.memory import (
+    ChatMemory,
+    Memory,
+    is_valid_session_name,
+    list_sessions,
+    session_info,
+)
 from agent.tokens import count_tokens
 
 
@@ -475,3 +483,244 @@ class TestChatMemoryDropLast(BaseTest):
     def test_last_user_prompt_on_empty(self):
         assert ChatMemory(
             self.session_dir, max_tokens=10**9).last_user_prompt() == ""
+
+
+class _SessionDirMixin(BaseTest):
+    """Point `agent.memory.SESSIONS_DIR` at a temp dir and bind by name.
+
+    Sessions are addressed by name in the product (`wmk <name>`, `/resume
+    <name>`); `session_dir` is only a test/injection override and does not set
+    the name. Patching the root keeps these tests on the same path as the real
+    code, including `switch_session`'s default `SESSIONS_DIR / name`.
+    """
+
+    def setUp(self):
+        super().setUp()
+        import agent.memory as memory_mod
+
+        self.sessions_dir = self._tmpdir / "sessions"
+        self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        memory_mod.SESSIONS_DIR = self.sessions_dir
+        self.addCleanup(setattr, memory_mod, "SESSIONS_DIR", memory_mod.SESSIONS_DIR)
+
+    def _fresh(self, name: str) -> Memory:
+        """A fresh process on *name*.
+
+        `Memory` is a singleton whose ``__init__`` returns early once it has
+        been initialized, so a second call in the same test cannot rebind it.
+        Reset it explicitly, the way a new `wmk <name>` process would.
+        """
+        from tests.conftest import reset_singletons
+
+        reset_singletons()
+        return Memory(session=name)
+
+    def _write(self, name: str, messages: int = 0, accessed=None) -> Path:
+        d = self.sessions_dir / name
+        d.mkdir(parents=True, exist_ok=True)
+        when = accessed or datetime.datetime.now()
+        (d / ".session-metadata").write_text(
+            f"created: {when.isoformat()}\naccessed: {when.isoformat()}\n"
+        )
+        (d / "chat_history.json").write_text(
+            json.dumps(
+                {"exchanges": [{"role": "user", "content": str(i)} for i in range(messages)]}
+            )
+        )
+        return d
+
+
+class TestSessionSwitching(_SessionDirMixin):
+    """`Memory` is a singleton, so switching a session must rebind it in place.
+
+    Everything downstream (Core, the footer status line, the prompt message)
+    holds the same object, so an in-place rebind is the only way a switch can
+    be seen by all of them at once.
+    """
+
+    def test_switch_reports_the_previous_name(self):
+        m = self._fresh("first")
+        assert m.session == "first"
+        assert m.switch_session("second") == "first"
+        assert m.session == "second"
+
+    def test_switch_loads_the_other_sessions_state(self):
+        other = self._fresh("second")
+        other.add_note("a note from the second session")
+        other.set_user_profile({"name": "Langur"})
+        # Notes are buffered; a different process only sees them once saved,
+        # which is exactly the state a previously used session is left in.
+        other.save()
+
+        m = self._fresh("first")
+        m.add_note("a note from the first session")
+        m.set_user_profile({"name": "Someone Else"})
+
+        m.switch_session("second")
+        assert m.session == "second"
+        assert [n["content"] for n in m.get_notes()] == ["a note from the second session"]
+        assert m.get_user_profile() == {"name": "Langur"}
+
+    def test_the_singleton_is_rebound_not_replaced(self):
+        """Everything holding a Memory reference must see the switch."""
+        m = self._fresh("first")
+        holder = {"memory": m}
+        m.switch_session("second")
+        assert holder["memory"] is m
+        assert holder["memory"].session == "second"
+
+    def test_switch_moves_the_paths_to_the_new_directory(self):
+        m = self._fresh("first")
+        m.switch_session("second")
+        assert m.session_dir == self.sessions_dir / "second"
+        assert m._user_profile_path == m.session_dir / "user_profile.json"
+        assert m._notes_path == m.session_dir / "notes.json"
+        assert m._chat_history._chat_path == m.session_dir / "chat_history.json"
+
+    def test_switch_loads_the_chat_history(self):
+        first = self._fresh("first")
+        first._chat_history.set_exchanges([{"role": "user", "content": "hello there"}])
+        first._chat_history.save()
+
+        m = self._fresh("second")
+        assert m.get_chat_history_unformatted() == []
+        m.switch_session("first")
+        assert m.get_chat_history_unformatted() == [
+            {"role": "user", "content": "hello there"}
+        ]
+
+    def test_switch_saves_the_previous_session_first(self):
+        m = self._fresh("first")
+        m.add_note("unsaved when the switch happens")
+        first_dir = m.session_dir
+        m.switch_session("second")
+
+        # The note must be on disk in the *old* directory, not lost.
+        saved = json.loads((first_dir / "notes.json").read_text())
+        assert [n["content"] for n in saved] == ["unsaved when the switch happens"]
+
+    def test_switching_to_the_same_session_is_a_noop(self):
+        m = self._fresh("first")
+        m.add_note("kept")
+        assert m.switch_session("first") == "first"
+        assert [n["content"] for n in m.get_notes()] == ["kept"]
+
+    def test_switch_keeps_the_token_budget(self):
+        m = Memory(session="budget", max_chat_history=1234)
+        m.switch_session("other")
+        assert m.get_chat_stats()[1] == 1234
+
+    def test_switch_keeps_the_turn_window(self):
+        m = Memory(session="win", max_chat_history=10**9, window_turns=3)
+        m.switch_session("other")
+        assert m._chat_history.window_turns == 3
+
+    def test_switch_drops_the_vector_store(self):
+        """The store is scoped to a session dir and must not be reused."""
+        m = self._fresh("first")
+        m.vectorstore = object()
+        m.switch_session("second")
+        assert m.vectorstore is None
+
+    def test_switch_creates_a_missing_session(self):
+        """`wmk <new>` creates sessions, so `/resume <new>` should too."""
+        m = self._fresh("first")
+        target = self.sessions_dir / "brand-new"
+        m.switch_session("brand-new")
+        assert target.is_dir()
+        assert (target / ".session-metadata").exists()
+
+    def test_switch_updates_the_accessed_timestamp(self):
+        m = self._fresh("first")
+        first = (self.sessions_dir / "first" / ".session-metadata").read_text()
+        m.switch_session("second")
+        second = (self.sessions_dir / "second" / ".session-metadata").read_text()
+        assert "created:" in first
+        assert "accessed:" in second
+
+    def test_switch_rejects_a_traversing_name(self):
+        m = self._fresh("first")
+        for bad in ("../escape", "a/b", "..", ".", "", "x\\y"):
+            try:
+                m.switch_session(bad)
+            except ValueError:
+                continue
+            self.fail(f"{bad!r} should not be accepted as a session name")
+        assert m.session == "first"
+
+    def test_invalid_names(self):
+        for good in ("default", "wisemonkey", "gaiasky", "my-session", "a b", "unicode"):
+            assert is_valid_session_name(good), good
+        for bad in ("", ".", "..", "../x", "a/b", "a\\b", "x\0y"):
+            assert not is_valid_session_name(bad), bad
+
+
+class TestSessionListing(BaseTest):
+    """`/sessions` must list without opening any session's memory."""
+
+    def setUp(self):
+        super().setUp()
+        import agent.memory as memory_mod
+
+        self.sessions_dir = self._tmpdir / "sessions"
+        self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        self._patched = memory_mod.SESSIONS_DIR
+        memory_mod.SESSIONS_DIR = self.sessions_dir
+        self.addCleanup(lambda: setattr(memory_mod, "SESSIONS_DIR", self._patched))
+
+    def _make(self, name: str, messages: int = 0, accessed=None):
+        d = self.sessions_dir / name
+        d.mkdir(parents=True, exist_ok=True)
+        when = accessed or datetime.datetime.now()
+        (d / ".session-metadata").write_text(
+            f"created: {when.isoformat()}\naccessed: {when.isoformat()}\n"
+        )
+        (d / "chat_history.json").write_text(
+            json.dumps({"exchanges": [{"role": "user", "content": str(i)} for i in range(messages)]})
+        )
+        return d
+
+    def test_lists_every_session_newest_first(self):
+        now = datetime.datetime.now()
+        self._make("old", accessed=now - datetime.timedelta(days=2))
+        self._make("newest", accessed=now)
+        self._make("middle", accessed=now - datetime.timedelta(hours=1))
+        names = [s["name"] for s in list_sessions()]
+        assert names == ["newest", "middle", "old"]
+
+    def test_reports_the_message_count(self):
+        self._make("a", messages=3)
+        self._make("b", messages=7)
+        counts = {s["name"]: s["messages"] for s in list_sessions()}
+        assert counts == {"a": 3, "b": 7}
+
+    def test_a_hand_made_session_still_lists(self):
+        """No metadata file: fall back to the directory mtime, do not crash."""
+        d = self.sessions_dir / "handmade"
+        d.mkdir()
+        infos = list_sessions()
+        assert [s["name"] for s in infos] == ["handmade"]
+        assert infos[0]["messages"] == 0
+        assert infos[0]["accessed"] is not None
+
+    def test_a_corrupt_chat_history_does_not_break_the_listing(self):
+        self._make("broken")
+        (self.sessions_dir / "broken" / "chat_history.json").write_text("{not json")
+        assert {s["name"]: s["messages"] for s in list_sessions()} == {"broken": 0}
+
+    def test_loose_files_are_not_sessions(self):
+        self._make("real")
+        (self.sessions_dir / "stray.txt").write_text("x")
+        assert [s["name"] for s in list_sessions()] == ["real"]
+
+    def test_empty_sessions_dir(self):
+        assert list_sessions() == []
+
+    def test_session_info_reads_only_the_directory(self):
+        """No Memory is constructed, so no profile/history is loaded."""
+        d = self._make("x", messages=2)
+        info = session_info(d)
+        assert info["name"] == "x"
+        assert info["dir"] == d
+        assert info["messages"] == 2
+        assert isinstance(info["accessed"], datetime.datetime)

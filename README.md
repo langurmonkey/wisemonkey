@@ -209,6 +209,26 @@ Sessions:
 - default - ~/.local/share/wisemonkey/sessions/default
 ```
 
+Or from inside a session, with `/sessions` (which also shows message counts and
+marks the current one):
+
+```
+/sessions
+```
+
+Sessions can be switched without restarting, with `/resume`:
+
+```
+/resume                    # resume the most recently used other session
+/resume my-project         # switch to 'my-project'
+```
+
+`/resume` rebinds the chat history, notes, user profile and vector store of the
+running process, and sends the previous session to disk first. An unknown name
+creates a new session, exactly like `wmk my-project`. It is not available in
+client/server mode: there the daemon owns the session, so start a server for the
+target session (`wmk --server my-project`) and attach to that instead.
+
 Sessions contain:
 
 - The input history

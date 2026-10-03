@@ -186,6 +186,22 @@ class Core:
                 delattr(self, cache_name)
         return True, None
 
+    def reset_session_state(self) -> None:
+        """Drop turn state so a session switch cannot leak into the next turn.
+
+        ``self.messages`` is rebuilt at the start of every turn from the
+        system prompt, so it is not strictly necessary -- but the response
+        and thinking buffers hold text from the *previous* session, and the
+        rolling-window/caches derived from them do not belong to the new
+        session's history either.
+        """
+        self.messages = []
+        self.response_buffer = ""
+        self.thinking_buffer = ""
+        self._pending_image = None
+        self.pending_prompt = None
+        self._turn_cancelled = False
+
     def shutdown(self):
         """Shutdown the agent core."""
         if self.mcp:

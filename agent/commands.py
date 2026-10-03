@@ -8,6 +8,7 @@ and execute them.
 from __future__ import annotations
 
 import ast
+import datetime
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -305,6 +306,141 @@ def _cmd_notes_add(
         return True, "note added successfully", None, None
 
     return False, "please, provide a note", None, None
+
+
+@cmd(
+    "/sessions",
+    "List all sessions with their size and last access",
+    examples=[
+        "/sessions     # List every session, most recently used first",
+    ],
+)
+def _cmd_sessions(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
+    if params:
+        return False, no_params_error, None, None
+
+    from agent.memory import list_sessions
+    from agent.utils import contractuser, pretty_timedelta
+
+    sessions = list_sessions()
+    if not sessions:
+        return False, "no sessions found", None, None
+
+    current = getattr(core.memory, "session", None)
+
+    # Fixed-width columns keep the list readable without a rich Table: the
+    # result is rendered inside a Panel as markup text, not as a renderable,
+    # and it travels over IPC as a string in both local and remote mode.
+    name_width = max(6, max(len(s["name"]) for s in sessions))
+    header = (
+        f"{'':2} {'Name':<{name_width}}  {'Messages':>8}  {'Last access':<14}  Location"
+    )
+    lines = [f"[dim]{header}[/dim]"]
+
+    for info in sessions:
+        marker = "[accent]▸[/accent]" if info["name"] == current else " "
+        if info["name"] == current:
+            name_cell = f"[accent-bold]{info['name']:<{name_width}}[/accent-bold]"
+        else:
+            name_cell = f"{info['name']:<{name_width}}"
+        accessed = info["accessed"]
+        when = "unknown"
+        if accessed is not None:
+            # `pretty_timedelta` subtracts a naive `datetime.now()`, so it
+            # cannot take an aware datetime. Compute the delta here instead:
+            # metadata timestamps are written naive, hence the normalize.
+            if accessed.tzinfo is None:
+                accessed = accessed.astimezone()
+            ago = pretty_timedelta(
+                datetime.datetime.now().astimezone() - accessed
+            )
+            # `pretty_timedelta` returns None for a zero delta (its final
+            # branch is a string literal, not a return), so "just now" has to
+            # be spelled out here rather than crash on the f-string.
+            when = f"{ago} ago" if ago else "just now"
+        lines.append(
+            f"{marker} {name_cell}  {info['messages']:>8}  {when:<14}  "
+            f"[dim]{contractuser(info['dir'])}[/dim]"
+        )
+
+    lines.append("")
+    lines.append(f"[dim]{len(sessions)} session(s). Switch with [/dim][accent]/resume <name>[/accent]")
+    return True, None, "\n".join(lines), None
+
+
+@cmd(
+    "/resume",
+    "Switch to another session, keeping this process running",
+    examples=[
+        "/resume              # Resume the most recently used other session",
+        "/resume gaiasky      # Switch to the session named 'gaiasky'",
+    ],
+)
+def _cmd_resume(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
+    from agent.memory import is_valid_session_name, list_sessions
+
+    mem = core.memory
+
+    # `registry.execute` intercepts `-h`/`help` before the handler, so this
+    # only triggers if the command is invoked another way. Guard anyway:
+    # the alternative is silently creating a session directory named "-h".
+    if params and params[0].lower() in ("-h", "help"):
+        return False, "unknown session name: -h (this is the help flag)", None, None
+
+    if len(params) > 1:
+        return False, "too many parameters: /resume takes at most one session name", None, None
+
+    sessions = list_sessions()
+    current = getattr(mem, "session", None)
+
+    if params:
+        name = params[0]
+    else:
+        # No argument: the most recently used session that is not this one.
+        # Falling back to the current session is right -- "resume" with
+        # nothing to switch to should be a no-op, not an error.
+        others = [s for s in sessions if s["name"] != current]
+        if not others:
+            return False, "no other session to resume", None, None
+        name = others[0]["name"]
+
+    if not is_valid_session_name(name):
+        return False, f"invalid session name: {name!r}", None, None
+
+    if name == current:
+        return True, f"already in session '{name}'", None, None
+
+    known = {s["name"] for s in sessions}
+    if name not in known:
+        # Not an error: `wmk <new-name>` creates sessions, so /resume should
+        # too. Say so explicitly, since it is a silent new directory.
+        previous = mem.switch_session(name)
+        result = (
+            f"Switched from session [accent-bold]{previous}[/accent-bold] to "
+            f"[accent-bold]{name}[/accent-bold] (new session).\n"
+            f"[dim]Switching rebinds chat history, notes and the user profile; "
+            f"the current session was saved first.[/dim]"
+        )
+        pub.sendMessage("prompt-update")
+        return True, None, result, None
+
+    previous = mem.switch_session(name)
+    if hasattr(core, "reset_session_state"):
+        core.reset_session_state()
+    result = (
+        f"Switched from session [accent-bold]{previous}[/accent-bold] to "
+        f"[accent-bold]{name}[/accent-bold].\n"
+        f"[dim]Loaded {len(mem.get_chat_history_unformatted())} message(s) from "
+        f"{len(mem.get_notes())} note(s).[/dim]"
+    )
+    # The prompt message, the footer status line and the history file all
+    # name the session, so the prompt has to be rebuilt.
+    pub.sendMessage("prompt-update")
+    return True, None, result, None
 
 
 @cmd(

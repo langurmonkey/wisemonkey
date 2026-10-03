@@ -7,6 +7,7 @@ the proper modules. It also creates the actual agent and runs it.
 """
 
 import argparse
+import datetime
 import sys
 import os
 import traceback
@@ -153,40 +154,26 @@ def main():
 
     # List sessions
     if args.ls:
-        import datetime
+        from agent.memory import list_sessions
         from agent.utils import pretty_timedelta
 
-        sessions = []
-        for f in os.listdir(SESSIONS_DIR):
-            sdir = os.path.join(SESSIONS_DIR, f)
-            if not os.path.isdir(sdir):
-                continue
-            mdf = os.path.join(sdir, ".session-metadata")
-            last_access = ""
-            accessed_dt = None
-            if os.path.isfile(mdf):
-                try:
-                    with open(mdf, "r") as fh:
-                        for line in fh:
-                            line = line.strip()
-                            if line.startswith("accessed:"):
-                                raw = line.partition(":")[2].strip()
-                                accessed_dt = datetime.datetime.fromisoformat(raw)
-                                break
-                except (OSError, ValueError):
-                    pass
-            if accessed_dt:
-                delta = datetime.datetime.now() - accessed_dt
-                last_access = pretty_timedelta(delta) + " ago"
-            sessions.append((accessed_dt or datetime.datetime.min, f, sdir, last_access))
+        sessions = list_sessions()
+        if not sessions:
+            print("No sessions found.")
+            return
 
-        sessions.sort(key=lambda x: x[0], reverse=True)
-
+        now = datetime.datetime.now().astimezone()
         print("Sessions:")
-        for _, name, sdir, last_access in sessions:
-            line = f"- [accent-bold]{name}[/accent-bold] - [dim]{contractuser(sdir)}[/dim]"
-            if last_access:
-                line += f" [time]({last_access})[/time]"
+        for info in sessions:
+            line = f"- [accent-bold]{info['name']}[/accent-bold] - [dim]{contractuser(info['dir'])}[/dim]"
+            accessed = info["accessed"]
+            if accessed is not None:
+                if accessed.tzinfo is None:
+                    accessed = accessed.astimezone()
+                # `pretty_timedelta` returns None for a zero delta, so a
+                # session touched this very second reads "None ago".
+                delta = pretty_timedelta(now - accessed)
+                line += f" [time]({delta + ' ago' if delta else 'just now'})[/time]"
             print(line)
         return
 

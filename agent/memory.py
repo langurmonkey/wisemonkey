@@ -34,6 +34,97 @@ def _load_vectorstore(session_dir):
 SESSIONS_DIR = xdg_data_home() / "wisemonkey" / "sessions"
 SESSION_METADATA_FILE = ".session-metadata"
 
+
+def is_valid_session_name(name: str) -> bool:
+    """Whether *name* is usable as a session directory name.
+
+    Session names become directory names under :data:`SESSIONS_DIR`, so
+    anything that could escape that directory (a separator, ``..``, a NUL)
+    is rejected rather than sanitised -- a surprising session name is better
+    than a surprising directory.
+    """
+    if not name or name in (".", ".."):
+        return False
+    if any(c in name for c in ("/", "\\", "\0")):
+        return False
+    return name == Path(name).name
+
+
+def session_info(session_dir: Path) -> dict:
+    """Summarize one session directory without opening its memory.
+
+    Reads only ``.session-metadata`` and counts the entries in
+    ``chat_history.json``, so listing sessions never loads a profile or a
+    vector store. A session created by hand (no metadata) still reports,
+    using the directory mtime as a fallback for both timestamps.
+    """
+    name = Path(session_dir).name
+    info = {
+        "name": name,
+        "dir": session_dir,
+        "created": None,
+        "accessed": None,
+        "messages": 0,
+    }
+
+    metadata_file = session_dir / SESSION_METADATA_FILE
+    raw = {}
+    if metadata_file.is_file():
+        try:
+            for line in metadata_file.read_text(encoding="utf-8").splitlines():
+                key, sep, value = line.partition(":")
+                if sep:
+                    raw[key.strip()] = value.strip()
+        except OSError:
+            raw = {}
+    for key in ("created", "accessed"):
+        try:
+            info[key] = datetime.datetime.fromisoformat(raw[key])
+        except (KeyError, TypeError, ValueError):
+            info[key] = None
+
+    if info["accessed"] is None:
+        try:
+            info["accessed"] = datetime.datetime.fromtimestamp(
+                session_dir.stat().st_mtime
+            ).astimezone()
+        except OSError:
+            info["accessed"] = None
+
+    history = session_dir / "chat_history.json"
+    if history.is_file():
+        try:
+            data = json.loads(history.read_text(encoding="utf-8"))
+            info["messages"] = len(data.get("exchanges", []))
+        except (OSError, json.JSONDecodeError, AttributeError):
+            info["messages"] = 0
+
+    return info
+
+
+def list_sessions() -> list[dict]:
+    """Return :func:`session_info` for every session, newest first.
+
+    The current session sorts to the top, then everything else by last
+    access, falling back to creation time and then to name so the order is
+    always stable.
+    """
+    sessions = []
+    if SESSIONS_DIR.is_dir():
+        for entry in sorted(SESSIONS_DIR.iterdir()):
+            if not entry.is_dir():
+                continue
+            sessions.append(session_info(entry))
+
+    sessions.sort(
+        key=lambda s: (
+            s["accessed"] or s["created"] or datetime.datetime.min,
+            s["name"],
+        ),
+        reverse=True,
+    )
+    return sessions
+
 # Default maximum number of characters kept per tool result when formatting
 # chat history for the system prompt. 0 means "no truncation".
 DEFAULT_TOOL_RESULT_MAX_CHARS = 500
@@ -96,6 +187,15 @@ class Memory:
         if hasattr(self, "_initialized"):
             return
 
+        self._bind(session, session_dir, max_chat_history, window_turns)
+        self._initialized = True
+
+    def _bind(self, session, session_dir, max_chat_history, window_turns):
+        """Point this instance at *session* and load its state from disk.
+
+        Called once from ``__init__`` and again from :meth:`switch_session`,
+        so switching a session and starting one run exactly the same code.
+        """
         # Session name
         self.session = session
 
@@ -152,13 +252,53 @@ class Memory:
         self._chat_history = ChatMemory(
             self.session_dir, max_tokens=max_chat_history, window_turns=window_turns
         )
-        # Document vector store (lazy, optional)
+        # Document vector store (lazy, optional). Dropped rather than carried
+        # over: it is scoped to a session directory, and the new session may
+        # not have one yet. `_load_vectorstore` rebuilds it on next use.
         self.vectorstore = None
 
         # Load from disk into memory buffers
         self._user_profile = self._load_json(self._user_profile_path, {})
         self._notes = self._load_json(self._notes_path, [])
-        self._initialized = True
+
+    def switch_session(
+        self,
+        session,
+        session_dir=None,
+        max_chat_history=None,
+        window_turns=None,
+    ) -> str:
+        """Rebind this singleton to *session* and return the previous name.
+
+        The old session's buffered state is flushed to disk first, so
+        switching never silently discards unsaved notes or chat history.
+        Everything else is replaced by :meth:`_bind`, which reloads the
+        target's profile, notes, chat history and metadata; the vector store
+        is dropped and rebuilt lazily on next use.
+
+        This mutates the singleton in place. Callers that cached session state
+        (the prompt message, the footer status line, the TUI status bar) must
+        refresh, and callers that hold a session name of their own -- the
+        remote client's, the daemon's -- are unaffected, because they never
+        go through this path: the daemon owns its session.
+        """
+        if not is_valid_session_name(session):
+            raise ValueError(f"invalid session name: {session!r}")
+
+        previous = self.session
+        if previous == session and session_dir is None:
+            return previous
+
+        if hasattr(self, "_initialized"):
+            self.save()
+
+        self._bind(
+            session,
+            session_dir,
+            self._chat_history.max_tokens if max_chat_history is None else max_chat_history,
+            self._chat_history.window_turns if window_turns is None else window_turns,
+        )
+        return previous
 
     def _read_metadata(self):
         """Read a .session-metadata file as a dict, or return empty dict."""

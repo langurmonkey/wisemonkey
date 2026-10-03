@@ -56,6 +56,36 @@ from agent.ipc import (
 )
 
 
+def remote_session_switch_refusal() -> CommandResultPayload:
+    """The reply sent when a client asks the daemon to change session.
+
+    The daemon owns its session: the client was matched to this session name
+    at handshake time, and rebinding the memory here would silently change a
+    session that client still believes it is talking to. So the request is
+    refused, with the two ways out -- start a server for the target session
+    and attach to that, or detach and run locally.
+
+    Still an ordinary :class:`CommandResultPayload`, so the client renders it
+    like any other failed command and the protocol is unchanged.
+    """
+    return CommandResultPayload(
+        command="/resume",
+        ok=False,
+        msg=(
+            "cannot switch sessions in remote mode: the daemon server owns this "
+            "session. Start a server for the target session "
+            "(`wmk --server <name>`) and attach to it with `wmk <name>`, "
+            "or detach and run locally."
+        ),
+    )
+
+
+# Commands the daemon must never run on a client's behalf, mapped to the reply
+# to send instead. A client asking for one of these cannot get what it asked
+# for out of this process, so it is answered rather than executed.
+UNSUPPORTED_IN_REMOTE = {"/resume": remote_session_switch_refusal}
+
+
 class WisemonkeyServer:
     """Single-client server owning the agent core."""
 
@@ -382,6 +412,12 @@ class WisemonkeyServer:
         )
         try:
             command, params = registry.lookup(payload.raw.split())
+            refusal = (
+                UNSUPPORTED_IN_REMOTE.get(command.name) if command else None
+            )
+            if refusal is not None:
+                self._send(Message.response(message.id, refusal()))
+                return
             ok_flag, msg, content, markdown, should_exit = registry.run_command(
                 self.core, payload.raw, output
             )
