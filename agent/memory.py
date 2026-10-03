@@ -424,12 +424,12 @@ class Memory:
         return self._chat_history.get_unformatted()
 
     def conversational_count(self, num_exchanges: int = 0) -> int:
-        """How many entries a role-filtered recap of *num_exchanges* would show.
+        """How many turns a recap of *num_exchanges* would cover.
 
         Lets the caller put the real number in a heading without rendering the
         history twice or reaching into ``_chat_history``.
         """
-        return len(self._chat_history.conversational_entries(num_exchanges))
+        return self._chat_history.conversational_count(num_exchanges)
 
     def get_chat_history_formatted(
         self,
@@ -743,23 +743,70 @@ class ChatMemory:
     def get_unformatted(self):
         return self._exchanges
 
-    def conversational_entries(self, num_exchanges: int = 0) -> list[dict]:
-        """Most recent *non-tool* entries, oldest first.
+    def conversational_turns(
+        self, roles: tuple[str, ...] = CONVERSATIONAL_ROLES, num_turns: int = 0
+    ) -> list[dict]:
+        """The last *num_turns* conversational turns, oldest first.
 
-        The stored history interleaves ``user``, ``assistant``, ``tool_call``
-        and ``tool_result`` entries, so slicing it directly does not give you
-        the last *n* exchanges -- it gives you the last *n entries*, which for
-        a tool-heavy turn can be two tool results and no conversation at all.
-        Filtering by role first makes ``num_exchanges`` mean what a caller
-        reading the name expects.
+        A turn is a ``user`` message plus everything up to the next one, and
+        each is reduced to three entries: the question, an optional ``summary``,
+        and the *final* assistant message.
 
-        Used by the startup recap, and by :meth:`get_formatted` when ``roles``
-        is given.
+        Both reductions matter. Without the role filter a tool-heavy turn
+        contributes nothing but tool output, so a recap can show no question at
+        all. Without the "last assistant message only" rule a turn that ran
+        several tools contributes one message per narration step, and a recap
+        asked for one exchange shows two ``Assistant:`` blocks and no ``User:``
+        -- the same machinery noise as the tool results, one level up.
+
+        Entries before the first ``user`` message are dropped: there is no
+        question to attach them to.
         """
-        entries = [
-            e for e in self._exchanges if e.get("role") in CONVERSATIONAL_ROLES
-        ]
-        return entries[-num_exchanges:] if num_exchanges > 0 else entries
+        if "user" not in roles or "assistant" not in roles:
+            # Grouping is defined by the user/assistant alternation; without
+            # both, fall back to a plain filter (see conversational_entries).
+            return []
+
+        turns: list[dict] = []
+        current: dict | None = None
+        for entry in self._exchanges:
+            role = entry.get("role")
+            if role == "user":
+                if current is not None:
+                    turns.append(current)
+                current = {"user": entry, "summary": None, "assistant": None}
+                continue
+            if current is None or role not in roles:
+                continue
+            # Narration emitted before a tool call is stored as its own
+            # assistant message. Only the last one is the answer.
+            current["summary" if role == "summary" else "assistant"] = entry
+        if current is not None:
+            turns.append(current)
+
+        return turns[-num_turns:] if num_turns > 0 else turns
+
+    @staticmethod
+    def _flatten_turns(turns: list[dict]) -> list[dict]:
+        """Turn dicts back to a flat entry list, in reading order."""
+        flat: list[dict] = []
+        for turn in turns:
+            for key in ("user", "summary", "assistant"):
+                if turn.get(key) is not None:
+                    flat.append(turn[key])
+        return flat
+
+    def conversational_entries(self, num_exchanges: int = 0) -> list[dict]:
+        """The entries of the last *num_exchanges* conversational turns.
+
+        See :meth:`conversational_turns`: counting turns, not stored entries,
+        is what makes ``num_exchanges`` mean what the name says.
+        """
+        return self._flatten_turns(self.conversational_turns(num_turns=num_exchanges))
+
+    def conversational_count(self, num_exchanges: int = 0) -> int:
+        """How many turns a recap of *num_exchanges* would cover."""
+        return len(self.conversational_turns(num_turns=num_exchanges))
 
     def get_formatted(
         self,
@@ -804,6 +851,15 @@ class ChatMemory:
                 self._exchanges[-num_exchanges:]
                 if num_exchanges > 0
                 else self._exchanges
+            )
+        elif "user" in roles and "assistant" in roles:
+            # A human-facing recap: count *turns*, so `num_exchanges` is a
+            # number of question/answer pairs. Slicing the filtered list
+            # instead would let one turn's narration fill the whole panel --
+            # two Assistant blocks and no User, which is what the recap showed
+            # before this.
+            history = self._flatten_turns(
+                self.conversational_turns(roles=roles, num_turns=num_exchanges)
             )
         else:
             filtered = [e for e in self._exchanges if e.get("role") in roles]

@@ -11,8 +11,10 @@ from agent.memory import CONVERSATIONAL_ROLES
 from agent.output import OutputAdapter
 from agent.utils import contractuser, pretty_timedelta
 
-# How much of the previous conversation to recap at startup.
-RECAP_EXCHANGES = 2
+# How much of the previous conversation to recap at startup. One turn is the
+# last question and its final answer, which is enough to pick up where we left
+# off; more turns fills the panel faster than it helps.
+RECAP_EXCHANGES = 1
 # Truncation widths for the recap. Assistant answers get the wider one: a
 # question is usually one line, so capping it tightly only throws away the
 # context that made the answer make sense.
@@ -143,9 +145,13 @@ def startup_info(core, output: OutputAdapter):
     # This is a recap for the *human*, not a prompt for the model, so it drops
     # tool calls and results: tool output is the least readable thing in the
     # panel and it crowds out the conversation, which is the point of a recap.
-    # `roles` filters before slicing, so `num_exchanges` counts conversational
-    # turns rather than raw entries -- otherwise a tool-heavy turn fills the
-    # whole panel with two tool results and no question.
+    #
+    # It also keeps one answer per turn. A turn that ran several tools emitted
+    # an assistant message per narration step, so counting entries rather than
+    # turns filled the panel with Assistant blocks and pushed the user's
+    # question off the end -- the same noise as the tool results, one level
+    # up. `conversational_turns` groups by turn and keeps the question plus the
+    # final answer, so RECAP_EXCHANGES is a number of Q/A pairs.
     #
     # Assistant answers get a wider budget than user questions: a question is
     # usually one line, so a shared width only throws away the context that

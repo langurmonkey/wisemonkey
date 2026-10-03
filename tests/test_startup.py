@@ -160,9 +160,37 @@ class TestStartupRecap(unittest.TestCase):
         self.assertIsNotNone(panel)
         body = _recap_body(panel)
         self.assertIn("now run it again", body)
-        self.assertIn("Fixed it", body)
         self.assertNotIn("AssertionError", body)
         self.assertNotIn("Ran 594", body)
+
+    def test_one_exchange_is_one_question_and_one_answer(self):
+        """A turn with several tool steps recaps as a single Q/A pair.
+
+        Narration before each tool call is stored as its own assistant
+        message, so a turn that ran three tools has three of them. Counting
+        entries instead of turns filled the panel with Assistant blocks and
+        pushed the question off the end.
+        """
+        panel, _ = self._run(
+            [
+                ("user", "the question"),
+                ("assistant", "Let me look at that."),
+                ("tool_call", "", {"name": "search_content", "arguments": "{}"}),
+                ("tool_result", "matches", {"name": "search_content"}),
+                ("assistant", "Now let me read it."),
+                ("tool_call", "", {"name": "read_file", "arguments": "{}"}),
+                ("tool_result", "the file", {"name": "read_file"}),
+                ("assistant", "The final answer."),
+            ]
+        )
+        self.assertIsNotNone(panel)
+        body = _recap_body(panel)
+        self.assertIn("the question", body)
+        self.assertIn("The final answer.", body)
+        self.assertNotIn("Let me look at that.", body)
+        self.assertNotIn("Now let me read it.", body)
+        self.assertNotIn("matches", body)
+        self.assertIn("last 1 exchange", str(panel.title))
 
     def test_the_title_counts_what_is_actually_shown(self):
         panel, _ = self._run(
@@ -175,29 +203,36 @@ class TestStartupRecap(unittest.TestCase):
             ]
         )
         self.assertIsNotNone(panel)
-        # Two conversational turns: the last two entries, not the last two
-        # raw history entries.
-        self.assertIn("last 2", str(panel.title))
+        # The default is one turn. With a pending question and no answer yet,
+        # that is just the question -- a recap is a "where were we" note, not
+        # a transcript.
+        self.assertIn("last 1 exchange", str(panel.title))
         body = _recap_body(panel)
         self.assertIn("q3", body)
+        self.assertNotIn("q2", body)
         self.assertNotIn("q1", body)
 
-    def test_a_single_turn_is_not_called_exchanges(self):
-        panel, _ = self._run([("user", "the only question")])
-        self.assertIn("last 1 exchange", str(panel.title))
+    def test_the_whole_turn_keeps_only_its_last_answer(self):
+        panel, _ = self._run(
+            [
+                ("user", "q1"),
+                ("assistant", "intermediate narration"),
+                ("tool_call", "", {"name": "run_command", "arguments": "{}"}),
+                ("tool_result", "output", {"name": "run_command"}),
+                ("assistant", "the real answer to q1."),
+                ("user", "q2"),
+                ("assistant", "the real answer to q2."),
+            ]
+        )
+        body = _recap_body(panel)
+        self.assertIn("q2", body)
+        self.assertIn("the real answer to q2.", body)
+        self.assertNotIn("q1", body)
+        self.assertNotIn("intermediate narration", body)
 
     def test_no_history_means_no_panel(self):
         panel, _ = self._run([])
         self.assertIsNone(panel)
-
-    def test_a_cut_off_answer_is_flagged(self):
-        panel, _ = self._run(
-            [
-                ("user", "tell me about the river survey"),
-                ("assistant", "The river was dry when we arrived, and the water"),
-            ]
-        )
-        self.assertIn("(continued)", _recap_body(panel))
 
 
 if __name__ == "__main__":

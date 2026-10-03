@@ -821,15 +821,20 @@ class TestConversationalRecap(BaseTest):
         assert "q1" not in out and "a1" not in out
         assert "noise" not in out
 
-    def test_conversational_entries_is_the_filtered_slice(self):
+    def test_conversational_entries_is_the_flattened_turns(self):
         cm = self._cm(
             ("user", "q1", {}),
             ("tool_result", "n", {"name": "x"}),
             ("user", "q2", {}),
             ("assistant", "a2", {}),
         )
-        entries = cm.conversational_entries(2)
-        assert [e["content"] for e in entries] == ["q2", "a2"]
+        # Two turns in the history, so the last 2 are both of them. The tool
+        # result contributes nothing.
+        assert [e["content"] for e in cm.conversational_entries(2)] == [
+            "q1",
+            "q2",
+            "a2",
+        ]
         assert len(cm.conversational_entries(0)) == 3
 
     def test_the_title_count_matches_what_is_shown(self):
@@ -862,7 +867,7 @@ class TestConversationalRecap(BaseTest):
     # --- mark_incomplete ---
 
     def test_a_truncated_answer_is_marked_continued(self):
-        cm = self._cm(("assistant", "a" * 900, {}))
+        cm = self._cm(("user", "q", {}), ("assistant", "a" * 900, {}))
         assert "(continued)" in self._recap(cm, 1)
 
     def test_a_session_that_ended_mid_sentence_is_marked(self):
