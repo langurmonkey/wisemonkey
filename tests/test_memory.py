@@ -724,3 +724,190 @@ class TestSessionListing(BaseTest):
         assert info["dir"] == d
         assert info["messages"] == 2
         assert isinstance(info["accessed"], datetime.datetime)
+
+
+class TestConversationalRecap(BaseTest):
+    """The startup recap is for the human; the system prompt is for the model.
+
+    The two want opposite things from the same stored history: a recap needs
+    the conversation, the prompt needs the machinery. `roles` is what lets one
+    renderer serve both.
+    """
+
+    ROLES = ("user", "assistant", "summary")
+
+    def _cm(self, *entries, max_tokens=10**6):
+        cm = ChatMemory(self._tmpdir / self._testMethodName, max_tokens=max_tokens)
+        for role, content, extra in entries:
+            cm.add_exchange(None, role, content, **extra)
+        return cm
+
+    def _recap(self, cm, n=2, **kw):
+        opts = {
+            "timestamps": False,
+            "width": 320,
+            "roles": self.ROLES,
+            "assistant_width": 400,
+            "mark_incomplete": True,
+        }
+        opts.update(kw)
+        return cm.get_formatted(n, **opts)
+
+    # --- roles filtering ---
+
+    def test_tool_entries_are_dropped(self):
+        cm = self._cm(
+            ("user", "what changed?", {}),
+            ("tool_call", "", {"name": "run_command", "arguments": "{}"}),
+            ("tool_result", "tick 1 tick 2", {"name": "run_command"}),
+            ("assistant", "Only the answer.", {}),
+            ("user", "next question", {}),
+            ("tool_result", "more noise", {"name": "grep"}),
+        )
+        out = self._recap(cm)
+        assert "run_command" not in out
+        assert "tick 1" not in out
+        assert "next question" in out
+        assert "Only the answer." in out
+
+    def test_the_user_question_survives_a_tool_heavy_tail(self):
+        """The reported bug: the recap showed tool output and no question."""
+        cm = self._cm(
+            ("user", "fix the failing test", {}),
+            ("tool_call", "", {"name": "run_command", "arguments": "{}"}),
+            ("tool_result", "AssertionError", {"name": "run_command"}),
+            ("assistant", "Fixed.", {}),
+            ("user", "run it again", {}),
+            ("tool_result", "all 594 tests pass", {"name": "run_command"}),
+        )
+        out = self._recap(cm, 2)
+        assert "run it again" in out
+        assert "all 594 tests pass" not in out
+
+    def test_summaries_are_kept(self):
+        cm = self._cm(
+            ("user", "q", {}),
+            ("summary", "earlier: we discussed rivers", {}),
+            ("assistant", "a", {}),
+        )
+        assert "earlier: we discussed rivers" in self._recap(cm)
+
+    def test_the_prompt_path_still_keeps_tool_entries(self):
+        """The default is no filter: the model must see its own tool results."""
+        cm = self._cm(
+            ("user", "q", {}),
+            ("tool_call", "", {"name": "read_file", "arguments": "{}"}),
+            ("tool_result", "file body", {"name": "read_file"}),
+            ("assistant", "a", {}),
+        )
+        out = cm.get_formatted(0, timestamps=False, width=0)
+        assert "read_file" in out
+        assert "file body" in out
+
+    # --- slicing happens after filtering ---
+
+    def test_num_exchanges_counts_conversational_turns(self):
+        """Two entries means two entries of *conversation*, not of history."""
+        cm = self._cm(
+            ("user", "q1", {}),
+            ("assistant", "a1", {}),
+            ("user", "q2", {}),
+            ("tool_result", "noise", {"name": "x"}),
+            ("assistant", "a2", {}),
+            ("user", "q3", {}),
+        )
+        out = self._recap(cm, 2)
+        assert "q3" in out and "a2" in out
+        assert "q1" not in out and "a1" not in out
+        assert "noise" not in out
+
+    def test_conversational_entries_is_the_filtered_slice(self):
+        cm = self._cm(
+            ("user", "q1", {}),
+            ("tool_result", "n", {"name": "x"}),
+            ("user", "q2", {}),
+            ("assistant", "a2", {}),
+        )
+        entries = cm.conversational_entries(2)
+        assert [e["content"] for e in entries] == ["q2", "a2"]
+        assert len(cm.conversational_entries(0)) == 3
+
+    def test_the_title_count_matches_what_is_shown(self):
+        cm = self._cm(("user", "q", {}), ("assistant", "a", {}))
+        assert cm.conversational_entries(2) == cm.conversational_entries(0)
+
+    # --- assistant_width ---
+
+    def test_assistant_entries_get_more_room(self):
+        cm = self._cm(
+            ("user", "qword " * 200, {}), ("assistant", "aword " * 200, {})
+        )
+        out = self._recap(cm, 2, width=320)
+        body = out.split("## ")
+        user_line = next(b for b in body if b.startswith("User:"))
+        assistant_line = next(b for b in body if b.startswith("Assistant:"))
+        # The assistant gets 400 and the question 320, so the answer may be
+        # longer -- but both are bounded, and by different amounts. A shared
+        # width would make them equal.
+        assert len(assistant_line) > len(user_line)
+        # 400 plus the heading, the "[...]" marker and the "(continued)"
+        # flag the recap adds to a truncated tail.
+        assert len(assistant_line) <= 440
+
+    def test_no_width_means_no_truncation(self):
+        cm = self._cm(("user", "q" * 500, {}))
+        out = self._recap(cm, 1, width=0, assistant_width=0)
+        assert "q" * 500 in out
+
+    # --- mark_incomplete ---
+
+    def test_a_truncated_answer_is_marked_continued(self):
+        cm = self._cm(("assistant", "a" * 900, {}))
+        assert "(continued)" in self._recap(cm, 1)
+
+    def test_a_session_that_ended_mid_sentence_is_marked(self):
+        cm = self._cm(
+            ("user", "q", {}), ("assistant", "The river was dry when we", {})
+        )
+        assert "(continued)" in self._recap(cm, 2)
+
+    def test_a_complete_answer_is_not_marked(self):
+        cm = self._cm(("user", "q", {}), ("assistant", "All done.", {}))
+        assert "(continued)" not in self._recap(cm, 2)
+
+    def test_a_complete_answer_ending_in_a_quote_is_not_marked(self):
+        cm = self._cm(("user", "q", {}), ("assistant", 'He said "no."', {}))
+        assert "(continued)" not in self._recap(cm, 2)
+
+    def test_only_the_last_assistant_is_marked(self):
+        cm = self._cm(
+            ("user", "q1", {}),
+            ("assistant", "The first answer is complete.", {}),
+            ("user", "q2", {}),
+            ("assistant", "The second answer is complete.", {}),
+        )
+        assert self._recap(cm, 4).count("(continued)") == 0
+
+    def test_a_trailing_user_turn_does_not_hide_the_marker(self):
+        """The last entry is the question, but the answer is still the tail.
+
+        Marking by `len(history) - 1` would skip the answer entirely here,
+        which is exactly the turn you most want flagged.
+        """
+        cm = self._cm(
+            ("user", "q1", {}),
+            ("assistant", "Here is what I found so far and it cuts off", {}),
+            ("user", "what about the rest?", {}),
+        )
+        out = self._recap(cm, 3)
+        assert "(continued)" in out
+        assert "what about the rest?" in out
+
+    def test_the_marker_is_off_by_default(self):
+        cm = self._cm(("assistant", "The river was dry when we", {}))
+        out = cm.get_formatted(1, timestamps=False, width=0)
+        assert "(continued)" not in out
+
+    def test_marker_costs_nothing_on_an_empty_history(self):
+        cm = self._cm(("user", "q", {}))
+        assert self._recap(cm, 5).strip() != ""

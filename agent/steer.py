@@ -45,9 +45,18 @@ from agent.keys import is_ctrl_c_sequence
 
 # Bytes that terminate a CSI/SS3 escape sequence (we swallow them whole so
 # arrow keys and friends do not leak into the line buffer).
-_CSI_FINAL = frozenset(
-    b"@ABCDEFGHJKSTfmnsu\x7e"
-)
+#
+# By the ECMA-48 grammar a final byte is 0x40-0x7E, which is every one of
+# ``@A-Z[\]^_`a-z{|}~``. The previous hand-written set (``@ABCDEFGHJKSTfmnsu``
+# plus ``~``) was missing ``P``, ``Q`` and ``R``, so an SS3 function key
+# (F1-F4 send ``ESC O P``-``S``) never closed its sequence and left the reader
+# mid-escape, silently eating every keystroke after it.
+#
+# Digits and ``;`` are deliberately *not* here: they are parameter bytes, and
+# the ``CSI u`` sequences for the keypad and F13+ run to five digits
+# (``CSI 57414;129u``). Treating ``5`` as a final would cut that sequence in
+# half and leave the tail to leak into the line as text.
+_CSI_FINAL = frozenset(range(0x40, 0x7F))
 
 
 class SteerInput:

@@ -206,12 +206,77 @@ class TestSteerCtrlCFromKittyProtocol(unittest.TestCase):
         """Arrows and friends must not be mistaken for a cancel."""
         interrupts: list[str] = []
         steer = self._steer(interrupts)
-        for keys in (b"\x1b[D", b"\x1b[A", b"\x1b[13;130u", b"\x1bOP", b"\x1b[99;99u"):
-            steer._buffer.clear()
-            for byte in keys:
-                steer._handle_byte(byte)
+        for keys in (
+            b"\x1b[D",
+            b"\x1b[A",
+            b"\x1b[13;130u",
+            b"\x1bOP",
+            # The whole re-encoded set: lock modifier and shifted variants of
+            # every functional key, which the kitty protocol sends instead of
+            # the legacy encodings once disambiguate is on.
+            b"\x1b[1;129A",
+            b"\x1b[1;129B",
+            b"\x1b[1;129C",
+            b"\x1b[1;129D",
+            b"\x1b[1;129H",
+            b"\x1b[1;129F",
+            b"\x1b[3;129~",
+            b"\x1b[127;130u",
+            b"\x1b[9;130u",
+            b"\x1b[57419;129u",
+            b"\x1b[57414;129u",
+            b"\x1b[57376;129u",
+            b"\x1b[27;130;13~",
+            # SS3 function keys, whose single final byte is not a CSI one.
+            b"\x1bOQ",
+            b"\x1bOR",
+            b"\x1bOS",
+        ):
+            self._assert_swallowed(steer, keys)
         self.assertEqual(interrupts, [])
-        self.assertEqual(steer.line(), "")
+
+    @staticmethod
+    def _assert_swallowed(steer, keys: bytes) -> None:
+        """A sequence is consumed whole and leaves the reader ready again."""
+        steer._buffer.clear()
+        for byte in keys:
+            steer._handle_byte(byte)
+        assert steer._esc_mode == 0, f"{keys!r} left the reader mid-escape"
+        assert steer._esc_buf == b"", keys
+        assert steer.line() == "", keys
+
+    def test_hyper_ctrl_c_is_still_a_cancel(self):
+        """``CSI 99 ; 99 u`` is Ctrl+Hyper+C, and hyper is a real modifier.
+
+        It looks nothing like Ctrl+C, so it is easy to assume the control
+        characters it *looks* like -- the ``99`` -- make it safe to ignore.
+        They do not: it is the same Ctrl+C with hyper held, and the point of
+        registering the whole modifier range is that no combination of held
+        keys silently stops cancelling.
+        """
+        interrupts: list[str] = []
+        steer = self._steer(interrupts)
+        for byte in b"\x1b[99;99u":
+            steer._handle_byte(byte)
+        self.assertEqual(interrupts, ["sigint"])
+
+    def test_typing_resumes_after_a_function_key(self):
+        """A swallowed sequence must not swallow the next keystroke too.
+
+        The SS3 form (``ESC O P``) is a single final byte. If the reader
+        does not recognise it as terminal, the escape never closes and every
+        subsequent character is eaten as part of a sequence that will never
+        end -- silent, and only visible as a line editor that has stopped
+        accepting input.
+        """
+        interrupts: list[str] = []
+        steer = self._steer(interrupts)
+        for byte in b"\x1bOP":
+            steer._handle_byte(byte)
+        for byte in b"hello":
+            steer._handle_byte(byte)
+        self.assertEqual(steer.line(), "hello")
+        self.assertEqual(interrupts, [])
 
     def test_ctrl_c_does_not_disturb_the_queue(self):
         interrupts: list[str] = []

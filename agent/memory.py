@@ -21,6 +21,30 @@ from pathlib import Path
 from xdg_base_dirs import xdg_data_home
 
 
+# Roles that represent the human-readable conversation, as opposed to the
+# machinery around it. A recap of "what did we discuss" wants these; the
+# system prompt wants everything.
+CONVERSATIONAL_ROLES = ("user", "assistant", "summary")
+
+# Sentence-final punctuation, for the (continued) heuristic.
+_SENTENCE_END = ".!?\"')]}`*_"
+
+
+def _ends_mid_sentence(text: str) -> bool:
+    """Whether *text* looks like it was cut off rather than finished.
+
+    Used only to decide whether to append ``(continued)`` to the last entry of
+    the startup recap, so it is deliberately cheap and conservative: anything
+    that is not clearly finished counts as unfinished. A false positive costs
+    eight characters; a false negative shows a half-sentence as if it were the
+    whole answer.
+    """
+    stripped = (text or "").rstrip()
+    if not stripped:
+        return False
+    return stripped[-1] not in _SENTENCE_END
+
+
 def _load_vectorstore(session_dir):
     """Lazily initialize the vector store. Returns None if dependencies are missing."""
     try:
@@ -399,12 +423,23 @@ class Memory:
     def get_chat_history_unformatted(self):
         return self._chat_history.get_unformatted()
 
+    def conversational_count(self, num_exchanges: int = 0) -> int:
+        """How many entries a role-filtered recap of *num_exchanges* would show.
+
+        Lets the caller put the real number in a heading without rendering the
+        history twice or reaching into ``_chat_history``.
+        """
+        return len(self._chat_history.conversational_entries(num_exchanges))
+
     def get_chat_history_formatted(
         self,
         num_exchanges: int = 0,
         timestamps: bool = False,
         collapse_tools: bool = False,
         width: int = 0,
+        roles: tuple[str, ...] | None = None,
+        assistant_width: int = 0,
+        mark_incomplete: bool = False,
     ):
         """
         Returns the chat history as a formatted string.
@@ -414,9 +449,18 @@ class Memory:
         - timestamps: bool      - Add timestamps to the output
         - collapse_tools: bool  - Collapse tool calls
         - width: int            - Maximum width of each entry's content (0 to not truncate)
+        - roles: tuple[str,...] - Keep only these roles, slicing after filtering
+        - assistant_width: int  - Wider truncation for assistant entries (0 = use width)
+        - mark_incomplete: bool - Mark the last assistant entry if it looks cut off
         """
         return self._chat_history.get_formatted(
-            num_exchanges, timestamps, collapse_tools, width
+            num_exchanges,
+            timestamps,
+            collapse_tools,
+            width,
+            roles=roles,
+            assistant_width=assistant_width,
+            mark_incomplete=mark_incomplete,
         )
 
     def add_chat_exchange(self, core, role, content, **extra):
@@ -699,18 +743,51 @@ class ChatMemory:
     def get_unformatted(self):
         return self._exchanges
 
+    def conversational_entries(self, num_exchanges: int = 0) -> list[dict]:
+        """Most recent *non-tool* entries, oldest first.
+
+        The stored history interleaves ``user``, ``assistant``, ``tool_call``
+        and ``tool_result`` entries, so slicing it directly does not give you
+        the last *n* exchanges -- it gives you the last *n entries*, which for
+        a tool-heavy turn can be two tool results and no conversation at all.
+        Filtering by role first makes ``num_exchanges`` mean what a caller
+        reading the name expects.
+
+        Used by the startup recap, and by :meth:`get_formatted` when ``roles``
+        is given.
+        """
+        entries = [
+            e for e in self._exchanges if e.get("role") in CONVERSATIONAL_ROLES
+        ]
+        return entries[-num_exchanges:] if num_exchanges > 0 else entries
+
     def get_formatted(
         self,
         num_exchanges: int,
         timestamps: bool = False,
         collapse_tools: bool = False,
         width: int = 0,
+        roles: tuple[str, ...] | None = None,
+        assistant_width: int = 0,
+        mark_incomplete: bool = False,
     ):
         """Return chat history formatted for the system prompt.
 
         Handles all exchange roles: user, assistant, summary, tool_call,
         and tool_result. Tool results are truncated (see
         ``_tool_result_limit``) unless full tool results are enabled.
+
+        Parameters beyond the prompt's own use:
+
+        - roles: keep only these roles, and slice *after* filtering. The
+          default ``None`` keeps every role, which is what the system prompt
+          needs -- tool results are part of the conversation the model
+          continues. A human-facing recap is the opposite case.
+        - assistant_width: a wider truncation for assistant entries, which are
+          typically longer than the question that prompted them. 0 means "use
+          ``width``".
+        - mark_incomplete: append ``(continued)`` to the final assistant entry
+          when it looks cut off mid-sentence.
 
         Returns:
             Formatted string of recent exchanges, or None if empty
@@ -722,8 +799,25 @@ class ChatMemory:
 
         lines = []
         # Show most recent exchanges (num_exchanges == 0 -> all)
-        history = (
-            self._exchanges[-num_exchanges:] if num_exchanges > 0 else self._exchanges
+        if roles is None:
+            history = (
+                self._exchanges[-num_exchanges:]
+                if num_exchanges > 0
+                else self._exchanges
+            )
+        else:
+            filtered = [e for e in self._exchanges if e.get("role") in roles]
+            history = (
+                filtered[-num_exchanges:] if num_exchanges > 0 else filtered
+            )
+
+        # The (continued) marker belongs on the *last assistant* entry, which
+        # is not necessarily the last entry: a recap that ends with the user's
+        # pending question must not mark the question, and must not skip the
+        # marker because a user turn happens to follow the answer.
+        last_assistant = max(
+            (i for i, e in enumerate(history) if e.get("role") == "assistant"),
+            default=-1,
         )
 
         def is_tool(turn) -> bool:
@@ -769,8 +863,23 @@ class ChatMemory:
                 args = turn.get("arguments", "")
                 lines.append(f"## Tool Call ({name}):\n{t}\n{escape(str(args))}\n\n")
             else:
-                if width > 0:
-                    content = shorten(content, width=width)
+                # An assistant answer is usually several times longer than the
+                # question that prompted it, so `assistant_width` lets a recap
+                # give it more room than `width` allows for a question.
+                limit = width
+                if role == "assistant" and assistant_width > 0:
+                    limit = assistant_width
+                truncated = False
+                if limit > 0 and len(content) > limit:
+                    content = shorten(content, width=limit)
+                    truncated = True
+                # Mark the tail when the last answer was cut off -- either by
+                # this truncation or because the session ended mid-sentence.
+                # A recap that ends in a full stop is honest about being
+                # complete; one that does not needs saying so.
+                if mark_incomplete and role == "assistant" and i == last_assistant:
+                    if truncated or _ends_mid_sentence(content):
+                        content += " (continued)"
                 lines.append(f"## {role.capitalize()}:\n{t}\n{content}\n\n")
             i += 1
 

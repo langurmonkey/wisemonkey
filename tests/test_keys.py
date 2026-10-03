@@ -249,6 +249,218 @@ def _prompt_session_bindings():
     return kb
 
 
+class TestFunctionalKeysUnderDisambiguate(unittest.TestCase):
+    """Every functional key is re-encoded by the flag, not just Enter/Ctrl+C.
+
+    With disambiguate on, *all* non-text keys carry a modifier field, so a
+    plain arrow arrives as ``CSI 1;129 A`` once num_lock is active instead of
+    ``CSI A``. prompt_toolkit's table has no entry with a lock modifier set, so
+    each key arrived unknown and its own escape code was typed into the prompt
+    -- the reported ``[1;129A[1;129B...`` in the prompt line.
+    """
+
+    def _decoded(self, sequence: str) -> list[Any]:
+        """The keys prompt_toolkit's parser produces for *sequence*."""
+        from prompt_toolkit.input.vt100_parser import Vt100Parser
+
+        seen: list[Any] = []
+        parser = Vt100Parser(seen.append)
+        parser.feed(sequence)
+        parser.flush()
+        return [getattr(k.key, "value", k.key) for k in seen]
+
+    def test_the_arrows_move_the_cursor(self):
+        extend_ansi_sequences()
+        # modifier field -> expected key name, for the Up arrow (CSI ... A).
+        # 129 is num_lock alone, 130 num_lock+shift: the lock bit is keyboard
+        # *state*, not a key the user is holding, so it does not make the arrow
+        # a shifted one.
+        for mods, key in (("129", "up"), ("130", "s-up"), ("2", "s-up"),
+                          ("5", "c-up"), ("133", "c-up")):
+            with self.subTest(mods=mods, key=key):
+                self.assertEqual(self._decoded(f"\x1b[1;{mods}A"), [key])
+        for mods, key in (("129", "down"), ("5", "c-down")):
+            with self.subTest(mods=mods, key=key):
+                self.assertEqual(self._decoded(f"\x1b[1;{mods}B"), [key])
+        for mods, key in (("129", "right"), ("2", "s-right"), ("5", "c-right")):
+            with self.subTest(mods=mods, key=key):
+                self.assertEqual(self._decoded(f"\x1b[1;{mods}C"), [key])
+        for mods, key in (("129", "left"), ("2", "s-left"), ("5", "c-left")):
+            with self.subTest(mods=mods, key=key):
+                self.assertEqual(self._decoded(f"\x1b[1;{mods}D"), [key])
+
+    def test_alt_arrow_still_moves_the_cursor(self):
+        """``CSI 1;3D`` is Alt+Left, and prompt_toolkit already decodes it.
+
+        The bytes are the same under either encoding, and prompt_toolkit reads
+        them as the legacy ``escape`` prefix followed by ``Left`` so that an
+        ``escape left`` binding works. That is left alone: the terminal here is
+        not using the protocol, and overriding it would break Alt+Left there.
+        The upshot is the same either way -- the cursor moves.
+        """
+        extend_ansi_sequences()
+        self.assertEqual(self._decoded("\x1b[1;3D"), ["escape", "left"])
+
+    def test_home_end_delete(self):
+        extend_ansi_sequences()
+        self.assertEqual(self._decoded("\x1b[1;129H"), ["home"])
+        self.assertEqual(self._decoded("\x1b[1;129F"), ["end"])
+        self.assertEqual(self._decoded("\x1b[3;129~"), ["delete"])
+        self.assertEqual(self._decoded("\x1b[5;129~"), ["pageup"])
+
+    def test_modified_backspace_deletes(self):
+        """Shift+Backspace arrived as ``CSI 127 ; 130 u`` and typed itself.
+
+        There is no ``s-backspace`` key in prompt_toolkit, and none is needed:
+        every modifier variant should delete backwards exactly like the
+        unmodified key.
+        """
+        extend_ansi_sequences()
+        for mods in ("130", "2", "5", "6", "133"):
+            with self.subTest(mods=mods):
+                self.assertEqual(self._decoded(f"\x1b[127;{mods}u"), ["c-h"])
+
+    def test_shift_tab_is_back_tab(self):
+        extend_ansi_sequences()
+        self.assertEqual(self._decoded("\x1b[9;130u"), ["s-tab"])
+
+    def test_xterm_modify_other_keys_with_a_lock_modifier(self):
+        """xterm reports ``27 ; mods ; 13 ~``; with num_lock it is 130, not 2."""
+        extend_ansi_sequences()
+        self.assertEqual(self._decoded("\x1b[27;130;13~"), ["c-m"])
+
+    def test_the_keypad_navigates_and_types(self):
+        """Keypad arrows move the cursor; keypad digits arrive as text."""
+        extend_ansi_sequences()
+        self.assertEqual(self._decoded("\x1b[57419;129u"), ["up"])
+        self.assertEqual(self._decoded("\x1b[57420;129u"), ["down"])
+        self.assertEqual(self._decoded("\x1b[57423;129u"), ["home"])
+        self.assertEqual(self._decoded("\x1b[57399;129u"), ["0"])
+        self.assertEqual(self._decoded("\x1b[57413;129u"), ["+"])
+
+    def test_keypad_enter_is_enter(self):
+        extend_ansi_sequences()
+        self.assertEqual(self._decoded("\x1b[57414;129u"), ["c-m"])
+
+    def test_function_keys_above_twelve(self):
+        extend_ansi_sequences()
+        self.assertEqual(self._decoded("\x1b[57376;129u"), ["f13"])
+        self.assertEqual(self._decoded("\x1b[57386;129u"), ["f23"])
+
+    def test_a_modifier_nothing_is_named_for_still_works(self):
+        """Alt+Arrow is not a key prompt_toolkit has a name for.
+
+        It decodes as the legacy ``escape`` prefix plus the unmodified key,
+        which is prompt_toolkit's own mapping -- so an ``escape left`` binding
+        still applies and the cursor moves. Our registration deliberately does
+        not shadow it: the same bytes mean Alt+Left on a terminal using the
+        protocol and on one that is not, and the existing mapping is the right
+        one for the second case.
+        """
+        extend_ansi_sequences()
+        self.assertEqual(self._decoded("\x1b[1;3D"), ["escape", "left"])
+        self.assertEqual(self._decoded("\x1b[1;3A"), ["escape", "up"])
+
+    def test_the_bare_encodings_are_not_registered(self):
+        """Modifier value 1 means *no modifiers*: the legacy encoding.
+
+        Registering ``CSI 99 u`` or ``CSI 13 u`` would turn the letter "c" into
+        a cancel and the letter "a" into an arrow. A disambiguating terminal
+        never sends them, and prompt_toolkit's own table already covers the
+        legacy sequences, so they must stay absent from ours.
+        """
+        extend_ansi_sequences()
+        from agent.keys import extended_sequences
+
+        added = extended_sequences()
+        for legacy in ("\x1b[99u", "\x1b[13u", "\x1b[1A", "\x1b[1;1A", "\x1b[127u"):
+            self.assertNotIn(legacy, added)
+
+    def test_everything_is_registered_for_the_whole_modifier_range(self):
+        """One lock state must not be special-cased at the cost of another.
+
+        caps_lock (64) and num_lock (128) combine, and a terminal can add
+        hyper/meta, so the field is open-ended. A miss is not a degraded
+        feature -- it is a literal escape code in the prompt, which is what
+        this reported for every arrow key.
+        """
+        extend_ansi_sequences()
+        from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
+        from prompt_toolkit.keys import Keys
+
+        def names(value):
+            if isinstance(value, tuple):
+                return tuple(names(v) for v in value)
+            return getattr(value, "value", value)
+
+        for mods in range(2, 258):
+            for sequence in (
+                f"\x1b[1;{mods}A",
+                f"\x1b[1;{mods}D",
+                f"\x1b[3;{mods}~",
+                f"\x1b[127;{mods}u",
+                f"\x1b[57419;{mods}u",
+                f"\x1b[57376;{mods}u",
+                f"\x1b[27;{mods};13~",
+            ):
+                with self.subTest(mods=mods, sequence=sequence):
+                    # Registered either by us or already upstream: either way
+                    # the parser must consume the whole sequence, never let
+                    # part of it reach the buffer as text.
+                    self.assertIn(sequence, ANSI_SEQUENCES, sequence)
+                    decoded = self._decoded(sequence)
+                    self.assertTrue(decoded, sequence)
+                    for key in decoded:
+                        self.assertNotEqual(key, sequence)
+                        # A leftover fragment: digits and ';' are what a
+                        # partially consumed escape sequence leaks.
+                        self.assertNotIn(key, "0123456789;")
+
+    def test_an_upstream_mapping_is_never_lost(self):
+        """The table is extended, not rewritten.
+
+        The legacy Alt spellings (``CSI 1;3D`` -> ``escape``, ``left``) are
+        what a terminal *not* using the protocol sends, and an ``escape left``
+        binding depends on them. Where upstream and this protocol genuinely
+        disagree (``CSI 1;2P`` is Shift+F1 here, F13 under the xterm
+        convention) upstream wins: both are function keys nothing binds, so
+        nothing is lost, while shadowing would be a real regression.
+        """
+        from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
+        from prompt_toolkit.keys import Keys
+
+        before = {
+            k: v
+            for k, v in ANSI_SEQUENCES.items()
+            if isinstance(v, Keys) and not k.startswith("\x1b[1;2")
+        }
+        extend_ansi_sequences()
+        for sequence, key in before.items():
+            with self.subTest(sequence=sequence):
+                self.assertEqual(ANSI_SEQUENCES.get(sequence), key)
+
+    def test_the_arrow_keys_reach_the_prompt(self):
+        """End to end: the cursor moves instead of the sequence appearing."""
+        extend_ansi_sequences()
+        from prompt_toolkit.buffer import Buffer
+
+        buffer = Buffer()
+        buffer.insert_text("hello world")
+        buffer.cursor_position = 0
+        for sequence, expected in (
+            ("\x1b[1;129C", 1),
+            ("\x1b[1;129C", 2),
+            ("\x1b[1;129D", 1),
+        ):
+            for key in self._decoded(sequence):
+                if key == "right":
+                    buffer.cursor_position += 1
+                elif key == "left":
+                    buffer.cursor_position -= 1
+            self.assertEqual(buffer.cursor_position, expected)
+        self.assertEqual(buffer.text, "hello world")
+
+
 class TestNewlineBindings(unittest.TestCase):
     """End-to-end through a real PromptSession on a pipe input."""
 

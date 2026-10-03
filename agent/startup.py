@@ -7,8 +7,17 @@ from rich.align import Align
 from rich.markdown import Markdown
 from rich.panel import Panel
 
+from agent.memory import CONVERSATIONAL_ROLES
 from agent.output import OutputAdapter
 from agent.utils import contractuser, pretty_timedelta
+
+# How much of the previous conversation to recap at startup.
+RECAP_EXCHANGES = 2
+# Truncation widths for the recap. Assistant answers get the wider one: a
+# question is usually one line, so capping it tightly only throws away the
+# context that made the answer make sense.
+RECAP_WIDTH = 320
+RECAP_ASSISTANT_WIDTH = 400
 
 
 def check_updates(repo_dir):
@@ -99,8 +108,12 @@ def startup_info(core, output: OutputAdapter):
 
     # Session info
     new_session = core.memory.session_is_new
+    # Both timestamps are written naive by `Memory` and parsed straight back
+    # from `.session-metadata`, so they are normalized here: `now` is
+    # timezone-aware, and subtracting a naive datetime from it raises. The
+    # two lines used to disagree, which crashed on every restored session.
     d_created = pretty_timedelta(now - created.astimezone()) if created else "?"
-    d_accessed = pretty_timedelta(now - accessed) if accessed else "?"
+    d_accessed = pretty_timedelta(now - accessed.astimezone()) if accessed else "?"
     # Context usage: total tokens of the full prompt (same as /context)
     # as a percentage of the configured budget.
     sections = core.get_context_breakdown()
@@ -126,15 +139,35 @@ def startup_info(core, output: OutputAdapter):
     output.rule()
 
     # Chat history
+    #
+    # This is a recap for the *human*, not a prompt for the model, so it drops
+    # tool calls and results: tool output is the least readable thing in the
+    # panel and it crowds out the conversation, which is the point of a recap.
+    # `roles` filters before slicing, so `num_exchanges` counts conversational
+    # turns rather than raw entries -- otherwise a tool-heavy turn fills the
+    # whole panel with two tool results and no question.
+    #
+    # Assistant answers get a wider budget than user questions: a question is
+    # usually one line, so a shared width only throws away the context that
+    # made the answer make sense. `mark_incomplete` appends "(continued)" when
+    # the final answer was cut off.
+    recap_roles = CONVERSATIONAL_ROLES
+    shown = core.memory.conversational_count(RECAP_EXCHANGES)
     chat_history = core.memory.get_chat_history_formatted(
-        num_exchanges=2, timestamps=False, width=250
+        num_exchanges=RECAP_EXCHANGES,
+        timestamps=False,
+        width=RECAP_WIDTH,
+        roles=recap_roles,
+        assistant_width=RECAP_ASSISTANT_WIDTH,
+        mark_incomplete=True,
     )
     if chat_history:
+        noun = "exchange" if shown == 1 else "exchanges"
         output.print_rich(
             Panel(
                 Markdown(chat_history),
                 border_style="output-frame",
-                title="Previous conversation (last 3 exchanges, truncated)",
+                title=f"Previous conversation (last {shown} {noun}, truncated)",
                 subtitle=f"Previous conversation stats: {ctx_total} tks - {ctx_rate:.2f}% of {ctx_max} budget",
             )
         )
