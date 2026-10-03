@@ -21,6 +21,14 @@ mapped to ``c-m`` like every other Enter; what distinguishes them is the raw
 data on the event, which is why the bindings must test it rather than relying
 on distinct key names.
 
+The same flag changes **Ctrl+C**, which is the one key that must not change:
+the terminal reports it as ``CSI 99 ; mods u`` instead of ``0x03``, so the
+kernel never raises SIGINT and the terminal would print its own escape code
+into the prompt. :func:`extend_ansi_sequences` maps those sequences to ``c-c``
+for prompt_toolkit, and :func:`ctrl_c_sequence` lets :mod:`agent.steer` --
+which reads the tty raw, with no prompt_toolkit involved -- recognise the same
+bytes and raise SIGINT itself.
+
 Both the enable and the disable sequence must be sent. A terminal left in
 disambiguate mode after the process dies keeps sending key codes in the
 ``CSI u`` form, which breaks whatever the user runs next -- so the disable is
@@ -81,10 +89,31 @@ SUPPORTED_TERM_PROGRAMS = frozenset({
 # hand-picked few: a miss is not a degraded feature, it is a literal
 # "ESC[13;130u" typed into the prompt.
 CSI_U_ENTER = "\x1b[13u"
+CSI_U_CTRL_C = "\x1b[99u"  # unicode-key-code 99 == 'c'
 _CSI_U_MODIFIER_VALUES = range(1, 258)
 
 CSI_U_ENTER_SEQUENCES = {CSI_U_ENTER} | {
     f"\x1b[13;{mods}u" for mods in _CSI_U_MODIFIER_VALUES
+}
+
+# Ctrl+C is the other key the disambiguate flag changes. With it on, the
+# terminal no longer sends 0x03 for Ctrl+C -- it reports the *key* as
+# ``CSI 99 ; mods u``, which the kernel never sees, so no SIGINT is ever
+# raised. Both consumers of Ctrl+C therefore need the sequence:
+#
+# - the prompt (``@kb.add("c-c")`` in agent/agent.py) sees an unknown key and
+#   types the raw escape code into the buffer;
+# - mid-turn there is no prompt at all -- agent/steer.py reads the tty raw,
+#   so it has to recognise the sequence itself and raise SIGINT itself.
+#
+# Same reasoning as Enter: the modifier field is open-ended, so cover it all.
+#
+# The bare ``CSI 99 u`` is deliberately *not* included: a modifier value of 1
+# means "no modifiers", which a disambiguating terminal never reports (it
+# keeps sending unmodified keys as plain bytes). Mapping it would turn the
+# letter "c" into Ctrl+C.
+CSI_U_CTRL_C_SEQUENCES = {
+    f"\x1b[99;{mods}u" for mods in _CSI_U_MODIFIER_VALUES if mods != 1
 }
 
 # Modifier bit names, in bit order. Index 0 is unused (the encoded value is
@@ -146,12 +175,25 @@ def extend_ansi_sequences() -> None:
 
     from prompt_toolkit.input import ansi_escape_sequences
 
-    for sequence in CSI_U_ENTER_SEQUENCES:
+    for sequence in sorted(CSI_U_ENTER_SEQUENCES | CSI_U_CTRL_C_SEQUENCES):
         # Do not clobber a mapping a newer prompt_toolkit already provides.
-        if sequence not in ansi_escape_sequences.ANSI_SEQUENCES:
-            ansi_escape_sequences.ANSI_SEQUENCES[sequence] = Keys.ControlM
+        if sequence in ansi_escape_sequences.ANSI_SEQUENCES:
+            continue
+        key = Keys.ControlC if sequence in CSI_U_CTRL_C_SEQUENCES else Keys.ControlM
+        ansi_escape_sequences.ANSI_SEQUENCES[sequence] = key
 
     _extended = True
+
+
+def is_ctrl_c_sequence(sequence: str) -> bool:
+    """True when *sequence* is a kitty-protocol encoding of Ctrl+C.
+
+    For readers that do not go through prompt_toolkit -- :mod:`agent.steer`
+    reads the tty byte by byte -- so they can recognise Ctrl+C themselves and
+    raise SIGINT, which is what the kernel would have done had the terminal
+    not intercepted the key.
+    """
+    return sequence in CSI_U_CTRL_C_SEQUENCES
 
 
 def is_modified_enter(event) -> bool:

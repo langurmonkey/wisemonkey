@@ -17,9 +17,17 @@ from agent.keys import (
     SUPPORTED_TERMS,
     describe_enter_sequence,
     extend_ansi_sequences,
+    is_ctrl_c_sequence,
     is_modified_enter,
     terminal_supports_kitty_protocol,
 )
+
+# Kitty-protocol Ctrl+C, as a real terminal sends it: key code 99 ('c') with
+# the modifier field encoding ctrl (4) plus the num_lock bit (128), i.e. 1 +
+# 4 + 128 = 133. The kernel never sees these bytes, so nothing raises SIGINT
+# unless the application handles the sequence itself.
+CTRL_C_CSI_U = "\x1b[99;133u"
+CTRL_C_CSI_U_NO_LOCK = "\x1b[99;5u"
 
 # The sequences a real kitty sends for a modified Enter, captured from an
 # actual terminal session. They are *not* the bare 2/3/5 the protocol's
@@ -55,6 +63,55 @@ class TestIsModifiedEnter(unittest.TestCase):
 
     def test_missing_data_is_treated_as_plain(self):
         self.assertFalse(is_modified_enter(_Event(None)))
+
+
+class TestCtrlCSequences(unittest.TestCase):
+    """Ctrl+C must survive the kitty keyboard protocol.
+
+    The disambiguate flag makes the terminal report *every* key in the
+    ``CSI u`` form, so Ctrl+C no longer arrives as ``0x03``. If the sequence
+    is unknown the terminal prints its own escape code into the prompt, and
+    SIGINT is never raised at all -- which is what broke cancel.
+    """
+
+    def test_the_sequence_is_recognised(self):
+        self.assertTrue(is_ctrl_c_sequence(CTRL_C_CSI_U))
+        self.assertTrue(is_ctrl_c_sequence(CTRL_C_CSI_U_NO_LOCK))
+
+    def test_a_plain_byte_is_not_a_ctrl_c_sequence(self):
+        self.assertFalse(is_ctrl_c_sequence("\x03"))
+        self.assertFalse(is_ctrl_c_sequence("c"))
+
+    def test_it_is_mapped_to_c_c(self):
+        extend_ansi_sequences()
+        from prompt_toolkit.input import ansi_escape_sequences as A
+        from prompt_toolkit.keys import Keys
+
+        for sequence in (CTRL_C_CSI_U, CTRL_C_CSI_U_NO_LOCK, "\x1b[99;6u"):
+            self.assertEqual(A.ANSI_SEQUENCES.get(sequence), Keys.ControlC)
+
+    def test_the_whole_modifier_range_is_covered(self):
+        extend_ansi_sequences()
+        from prompt_toolkit.input import ansi_escape_sequences as A
+        from prompt_toolkit.keys import Keys
+
+        for mods in range(2, 258):
+            sequence = f"\x1b[99;{mods}u"
+            self.assertTrue(is_ctrl_c_sequence(sequence), sequence)
+            self.assertEqual(A.ANSI_SEQUENCES.get(sequence), Keys.ControlC, sequence)
+
+    def test_unmodified_c_is_not_mapped(self):
+        """A modifier value of 1 means "no modifiers" -- plain 'c' stays text.
+
+        A terminal with disambiguation on sends unmodified keys as plain
+        bytes, so ``CSI 99 u`` never occurs. Registering it would turn every
+        "c" typed in a steering line into a cancel.
+        """
+        extend_ansi_sequences()
+        from prompt_toolkit.input import ansi_escape_sequences as A
+
+        self.assertNotIn("\x1b[99u", A.ANSI_SEQUENCES)
+        self.assertFalse(is_ctrl_c_sequence("\x1b[99u"))
 
 
 class TestDescribeEnterSequence(unittest.TestCase):
@@ -119,6 +176,18 @@ class TestExtendAnsiSequences(unittest.TestCase):
         # distinguishes them, which is why the bindings test event.data.
         self.assertEqual(seen[0].key.value, "c-m")
         self.assertEqual(seen[0].data, SHIFT_ENTER)
+
+    def test_the_parser_also_decodes_ctrl_c(self):
+        extend_ansi_sequences()
+        from prompt_toolkit.input.vt100_parser import Vt100Parser
+
+        seen = []
+        parser = Vt100Parser(seen.append)
+        parser.feed(CTRL_C_CSI_U)
+        parser.flush()
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0].key.value, "c-c")
+        self.assertEqual(seen[0].data, CTRL_C_CSI_U)
 
 
 class TestTerminalSupport(unittest.TestCase):
@@ -230,6 +299,43 @@ class TestNewlineBindings(unittest.TestCase):
     def test_ctrl_j_inserts_a_newline(self):
         """Ctrl+J used to submit, because the enter binding also matched it."""
         self.assertEqual(self._run("a\nb\r"), "a\nb")
+
+    def test_ctrl_c_csi_u_reaches_the_c_c_binding(self):
+        """The prompt's clear/double-tap-quit binding must still fire.
+
+        With the disambiguate flag on, Ctrl+C is ``CSI 99 ; mods u``. Before
+        this was mapped, the sequence was unknown, so the binding never ran
+        and the escape code itself was typed into the buffer.
+        """
+        fired: list[str] = []
+
+        def _run_with_c_c(keys: str) -> list[str]:
+            from prompt_toolkit.input import create_pipe_input
+            from prompt_toolkit.key_binding import KeyBindings
+            from prompt_toolkit.output import DummyOutput
+            from prompt_toolkit.shortcuts import PromptSession
+
+            kb = _prompt_session_bindings()
+
+            @kb.add("c-c")
+            def _(event):
+                fired.append(event.data or "")
+                event.app.exit()
+
+            with create_pipe_input() as pipe:
+                pipe.send_text(keys)
+                session = PromptSession(
+                    input=pipe, output=DummyOutput(), key_bindings=kb, multiline=True
+                )
+                try:
+                    session.prompt()
+                except EOFError:
+                    pass
+            return fired
+
+        fired.clear()
+        _run_with_c_c(f"abc{CTRL_C_CSI_U}")
+        self.assertEqual(fired, [CTRL_C_CSI_U])
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ import os
 import sys
 import unittest
 from typing import TYPE_CHECKING, Any, cast
+from unittest import mock
 
 from agent.steer import SteerInput
 
@@ -142,6 +143,90 @@ def _cooked_attrs(attrs):
     cc[termios.VMIN] = 1
     cc[termios.VTIME] = 0
     return [iflag, oflag, cflag, lflag, ispeed, ospeed, cc]
+
+
+class TestSteerCtrlCFromKittyProtocol(unittest.TestCase):
+    """Ctrl+C as the kitty keyboard protocol reports it.
+
+    With disambiguation on, the terminal sends ``CSI 99 ; mods u`` instead of
+    ``0x03``. The kernel never sees the byte, so ``ISIG`` has nothing to act
+    on and no SIGINT is raised -- the reader thread has to re-raise it, or
+    Ctrl+C does nothing for the whole duration of a turn.
+    """
+
+    CTRL_C = b"\x1b[99;133u"  # key 'c', ctrl + num_lock
+
+    def _steer(self, interrupts: list[str]) -> SteerInput:
+        steer = SteerInput()
+        # _interrupt is what raises SIGINT for real; here we only want to
+        # observe that it was reached, since there is no tty (and no turn)
+        # to interrupt.
+        patcher = mock.patch.object(
+            SteerInput, "_interrupt", lambda _self: interrupts.append("sigint")
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return steer
+
+    def test_it_raises_an_interrupt(self):
+        interrupts: list[str] = []
+        steer = self._steer(interrupts)
+        for byte in self.CTRL_C:
+            steer._handle_byte(byte)
+        self.assertEqual(interrupts, ["sigint"])
+
+    def test_the_sequence_does_not_leak_into_the_line(self):
+        interrupts: list[str] = []
+        steer = self._steer(interrupts)
+        for byte in b"ab" + self.CTRL_C + b"cd":
+            steer._handle_byte(byte)
+        self.assertEqual(steer.line(), "abcd")
+
+    def test_ordinary_control_c_still_goes_through_isig(self):
+        """The bare 0x03 is the kernel's business, not the reader's."""
+        interrupts: list[str] = []
+        steer = self._steer(interrupts)
+        for byte in b"ab\x03cd":
+            steer._handle_byte(byte)
+        self.assertEqual(interrupts, [])
+        self.assertEqual(steer.line(), "abcd")
+
+    def test_escape_state_is_left_clean(self):
+        interrupts: list[str] = []
+        steer = self._steer(interrupts)
+        for byte in self.CTRL_C:
+            steer._handle_byte(byte)
+        self.assertEqual(steer._esc_mode, 0)
+        # And typing still works afterwards.
+        for byte in b"x":
+            steer._handle_byte(byte)
+        self.assertEqual(steer.line(), "x")
+
+    def test_other_escape_sequences_do_not_interrupt(self):
+        """Arrows and friends must not be mistaken for a cancel."""
+        interrupts: list[str] = []
+        steer = self._steer(interrupts)
+        for keys in (b"\x1b[D", b"\x1b[A", b"\x1b[13;130u", b"\x1bOP", b"\x1b[99;99u"):
+            steer._buffer.clear()
+            for byte in keys:
+                steer._handle_byte(byte)
+        self.assertEqual(interrupts, [])
+        self.assertEqual(steer.line(), "")
+
+    def test_ctrl_c_does_not_disturb_the_queue(self):
+        interrupts: list[str] = []
+        steer = self._steer(interrupts)
+        steer._handle_byte(ord("q"))
+        for byte in self.CTRL_C:
+            steer._handle_byte(byte)
+        self.assertEqual(steer.line(), "q")
+        self.assertIsNone(steer.pending())
+
+    def test_it_matches_the_sequence_the_keys_module_declares(self):
+        """Keep steer.py and agent/keys.py from drifting apart."""
+        from agent.keys import is_ctrl_c_sequence
+
+        self.assertTrue(is_ctrl_c_sequence(self.CTRL_C.decode()))
 
 
 class TestSteerCbreakMode(unittest.TestCase):
@@ -486,7 +571,11 @@ def _pty_state_after_run_subprocess() -> str:
         if not chunk:
             break
         out += chunk
-        if b"ARMED" in out:
+        # Wait for the *last* field, not the first: the child prints one
+        # line in several write() calls, so b"ARMED" can arrive while the
+        # rest of the line is still in flight. Breaking there truncated the
+        # report and made the assertion below fail intermittently.
+        if b"ECHO" in out and out.rstrip().endswith(b"True"):
             break
     os.close(fd)
     try:

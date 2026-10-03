@@ -12,9 +12,12 @@ rows, so a queued follow-up can be collected with very little machinery:
   buffer and is surfaced in the footer status line, so there is no second
   writer on stdout and no cursor management to get wrong.
 * Printable bytes append to the line; ``Backspace``/``Ctrl+H`` delete,
-  ``Ctrl+U`` clears, ``Enter`` submits. Ctrl+C is *not* handled here: with
-  ``ISIG`` enabled the kernel raises ``KeyboardInterrupt`` in the main
-  thread, which is what the turn already knows how to unwind.
+  ``Ctrl+U`` clears, ``Enter`` submits. Ctrl+C is not a line-editing key:
+  normally ``ISIG`` makes the kernel raise ``KeyboardInterrupt`` in the main
+  thread, which is what the turn already knows how to unwind. When the kitty
+  keyboard protocol is enabled (see :mod:`agent.keys`) the terminal reports
+  Ctrl+C as an escape sequence instead of ``0x03``, so the kernel is bypassed
+  entirely and the reader re-raises SIGINT itself.
 * Submitted lines are queued. The REPL main loop drains them right after the
   turn ends, so they go through the exact same ``@``-expansion, command
   dispatch and turn path as a typed prompt.
@@ -32,10 +35,13 @@ from __future__ import annotations
 
 import os
 import select
+import signal
 import sys
 import termios
 import threading
 from collections.abc import Callable
+
+from agent.keys import is_ctrl_c_sequence
 
 # Bytes that terminate a CSI/SS3 escape sequence (we swallow them whole so
 # arrow keys and friends do not leak into the line buffer).
@@ -75,6 +81,10 @@ class SteerInput:
         self._queue: list[str] = []
 
         self._esc_mode = 0
+        # Raw bytes of the escape sequence currently being consumed. Needed
+        # because a kitty-protocol Ctrl+C arrives as an escape sequence
+        # rather than as 0x03, and cannot be recognised one byte at a time.
+        self._esc_buf: bytes = b""
         self._fd: int | None = None
         self._saved_attrs: list | None = None
         self._stop = False
@@ -211,6 +221,11 @@ class SteerInput:
         for the prompt, a tool running). Keeping ``ISIG`` on preserves the
         original behaviour, where Ctrl+C raises ``KeyboardInterrupt`` in the
         main thread. Ctrl+U (or Backspace) clears the steering line instead.
+
+        ``ISIG`` on its own is not enough once the kitty keyboard protocol is
+        enabled: the terminal then reports Ctrl+C as ``CSI 99 ; mods u``
+        instead of ``0x03``, so the kernel never sees it at all.
+        :meth:`_interrupt` covers that case.
         """
         if not hasattr(termios, "TCSANOW"):  # not a POSIX tty
             return False
@@ -276,9 +291,22 @@ class SteerInput:
         if self._esc_mode:
             # Swallow the remainder of an escape sequence.
             if self._esc_mode == 1:
-                self._esc_mode = 0 if byte not in (ord("["), ord("O")) else 2
+                if byte not in (ord("["), ord("O")):
+                    self._esc_mode = 0
+                    self._esc_buf = b""
+                else:
+                    self._esc_mode = 2
+                    self._esc_buf = bytes([byte])
             else:
-                self._esc_mode = 0 if byte in _CSI_FINAL else 2
+                self._esc_buf += bytes([byte])
+                if byte not in _CSI_FINAL:
+                    self._esc_mode = 2
+                    return
+                self._esc_mode = 0
+                sequence = b"\x1b" + self._esc_buf
+                self._esc_buf = b""
+                if is_ctrl_c_sequence(sequence.decode("ascii", "replace")):
+                    self._interrupt()
             return
         if byte == 0x1B:
             self._esc_mode = 1
@@ -332,6 +360,26 @@ class SteerInput:
                 changed = False
         if changed:
             self._changed()
+
+    def _interrupt(self) -> None:
+        """Raise SIGINT in the main thread, on behalf of Ctrl+C.
+
+        With the kitty keyboard protocol enabled the terminal reports Ctrl+C
+        as ``CSI 99 ; mods u`` rather than ``0x03``, so the kernel never
+        generates the signal and ``ISIG`` has nothing to act on. Nothing is
+        listening on this thread for it either, so we re-raise it ourselves:
+        the turn already unwinds on ``KeyboardInterrupt`` in the main thread,
+        which is exactly the behaviour Ctrl+C had before the protocol was
+        enabled.
+
+        Called from the reader thread; :func:`signal.raise_signal` is safe
+        from any thread because Python defers signal handling to the main
+        thread.
+        """
+        try:
+            signal.raise_signal(signal.SIGINT)
+        except (OSError, ValueError):
+            pass
 
     def _changed(self) -> None:
         """Notify the caller that the buffered line changed."""
