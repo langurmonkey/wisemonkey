@@ -30,6 +30,7 @@ wisemonkey/
 │   ├── core.py             # Core agent functions, like API connection and tool calls.
 │   ├── mcp.py              # MCP server support.
 │   ├── mdstream.py         # Streaming markdown renderer for the REPL.
+│   ├── palette.py         # The one source of truth for every colour drawn.
 │   ├── memory.py           # Session memory, paste file creation.
 │   ├── router.py           # API router implementation for OpenAI, Ollama, and Anthropic.
 │   ├── skills.py           # Skill loading and management.
@@ -199,6 +200,34 @@ The child gets its own **process group**, so `kill_job` signals the whole group:
 
 `ChatMemory` tracks `total_tokens` and triggers `/history-compact` when it exceeds `agent.max_chat_history`. `total_tokens` is computed by tokenizing the exact rendered history returned by `get_formatted(timestamps=False, width=0)`, including tool-result truncation and compact adjacent tool call/result blocks. Recount after changes to stored exchanges, loading, trimming, or clearing. Keep this accounting in sync with `get_formatted()` if its rendering changes.
 
+### Colour (`agent/palette.py`)
+
+`agent/palette.py` is the single source of truth for every colour the agent draws. Four frontends consume it, and **each is generated from the same fields**, so they cannot disagree:
+
+| consumer | method | why it is not shared directly |
+|---|---|---|
+| Rich output | `rich_theme_dict()` | style *tags* (`[weak]`, `[patch-add]`, ...), not values |
+| REPL prompt | `prompt_toolkit_dict()` | prompt_toolkit needs literal hex, not Rich style names |
+| Sticky footer | `footer_sgr()` | the footer writes raw escape sequences and never goes through Rich |
+| Textual TUI | `textual_theme()` | Textual resolves `$primary` etc. from its own theme object |
+
+The rules the palette encodes, each of which fixed a real defect:
+
+- **One identity hue, stepped by weight, not by hue.** `blue` / `blue_mid` / `blue_dim` are what distinguish `user` from `accent` from `tool`. They used to be three near-identical blues (`deep_sky_blue3` for both `user` and `accent`), so your prompt and the model name were visually equivalent for no reason.
+- **Orange means warning and nothing else.** `agent` used to be `orange3` while `warn` was `orange_red1`, so a warning read as though the agent itself were complaining. `agent` is now dim blue: it is chrome, not a speaker.
+- **`patch-add`/`patch-remove` are the same green/red as `ok`/`error`.** They were `green` and `red` against `chartreuse4` and `bold red` — two greens and two reds doing one job each.
+- **`path` is foreground-only.** It was `#999999 on #252525`, which drew a dark rectangle around every path and every `$ command` in a light terminal.
+- **Yellow is keycaps only.** Keycaps are the one place a hue that means nothing semantic is worth the contrast.
+
+Roles (`agent`, `user`, `tool`, `path`, ...) are **properties**, not fields, so they cannot be assigned independently and drift apart.
+
+Two failure modes this structure prevents, both of which were live:
+
+1. **An undefined style tag renders silently.** `[server]` is used in `agent.py`, `tui.py` and `server.py` but was never in the theme; Rich drops unknown tags, so those lines rendered unstyled. `tests/test_palette.py` pins that every referenced tag resolves.
+2. **A hard-coded colour outside the palette.** A repo-wide test rejects any stray `steel_blue3` / `grey39` / `deep_sky_blue3` in `agent/`. It found four real ones in `tui.py`, `output.py` and `commands.py` that the theme did not control.
+
+Colours are truecolor hex throughout; Rich, Textual and the footer all downsample to the terminal's actual palette when it is not a truecolor terminal, so a hex value means the same thing in all three.
+
 ### Slash Commands (`agent/commands.py`)
 
 Commands use the `@cmd(name, description, aliases)` decorator and are auto-registered. Each returns `(ok: bool, msg: str, content: str, markdown: str)`.
@@ -297,6 +326,7 @@ tests/
 ├── test_skills.py       # SkillLoader frontmatter parsing, load_all
 ├── test_files.py        # read_file (full read, max_lines, offset window), patch_file (text/line modes), search_content (literal/regex)
 ├── test_jobs.py         # spawn / poll_job / kill_job: incremental output, process-group kill, reaping
+├── test_palette.py      # The shared colour source: tag coverage, frontend agreement, no stray colours
 ├── test_ipc.py          # IPC protocol: message factories, serialization, loopback transport
 ├── test_emitter.py      # TurnEmitter: core callbacks -> events, cancel state
 ├── test_keys.py         # Terminal key protocol: modified Enter, newline bindings

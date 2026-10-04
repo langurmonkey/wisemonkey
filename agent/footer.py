@@ -52,6 +52,7 @@ import shutil
 import sys
 import threading
 import time
+from agent.palette import PALETTE
 
 # Number of lines reserved for the footer:
 # separator + status + steering input + key hints.
@@ -70,14 +71,18 @@ SPINNER_INTERVAL = 0.08
 # difference to decide whether a tick actually changes anything.
 _UNSET = "\x00unset\x00"
 
-# ANSI SGR sequences for the footer styling.
-_DIM = "\x1b[2m"
-_RESET = "\x1b[0m"
-_ACCENT = "\x1b[36m"  # cyan
-_LABEL = "\x1b[90m"  # bright black (gray)
-_WHITE = "\x1b[37m"
-_KEY = "\x1b[1;38;5;228m"  # bold, light yellow (key caps)
-_BAR_BG = "\x1b[48;5;236m"  # dark gray background (hint bar)
+# ANSI SGR sequences for the footer styling, generated from the shared
+# palette so the footer cannot drift from the Rich theme above it. It writes
+# straight to the terminal and never goes through Rich, which is exactly why
+# it used to need its own hand-written colours.
+_SGR = PALETTE.footer_sgr()
+_DIM = _SGR["dim"]
+_RESET = _SGR["reset"]
+_ACCENT = _SGR["accent"]
+_LABEL = _SGR["label"]
+_WHITE = _SGR["text"]
+_KEY = _SGR["key"]
+_BAR_BG = _SGR["bar_bg"]
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 

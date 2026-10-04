@@ -176,10 +176,10 @@ class CommandRegistry:
         result += f"• {names} → {cmd.description}\n"
 
         if cmd.examples:
-            result += f"[grey50]  Examples:[/]\n"
+            result += f"[output-frame]  Examples:[/output-frame]\n"
 
         for example in cmd.examples:
-            result += f"[grey30]    {example}[/]\n"
+            result += f"[time]    {example}[/time]\n"
 
         return result
 
@@ -285,7 +285,7 @@ def _cmd_notes(
     if notes:
         for note in notes:
             buff += f"📋️  [blue]{note['id']}[/blue] ({note['category']}):\n"
-            buff += f"[grey39]{note['content']}[/]\n\n"
+            buff += f"[weak]{note['content']}[/weak]\n\n"
         return True, None, buff, None
     else:
         return False, "no notes found", None, None
@@ -1397,7 +1397,7 @@ def _cmd_context(
         pct = (tokens / total * 100) if total else 0.0
         bar_len = int(pct / 2.5)  # 40-char bar max
         bar = "█" * bar_len + "·" * (40 - bar_len)
-        result += f"{name:<28} {tokens:>7}  {pct:5.1f}%  [grey39]{bar}[/grey39]\n"
+        result += f"{name:<28} {tokens:>7}  {pct:5.1f}%  [weak]{bar}[/weak]\n"
     result += f"\n{'Total':<28} [accent-bold]{total:>7}[/accent-bold]  {100.0:5.1f}%  of budget: {rate:.2f}%"
 
     return True, None, result, None

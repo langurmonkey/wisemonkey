@@ -301,10 +301,18 @@ class TestSteerCbreakMode(unittest.TestCase):
         """The cbreak flag mask must clear ICANON/ECHO but not ISIG."""
         import termios
 
-        fd = os.open("/dev/tty", os.O_RDWR) if os.path.exists("/dev/tty") else None
-        if fd is None or not os.isatty(fd):
-            if fd is not None:
-                os.close(fd)
+        # `os.path.exists` is not enough: `/dev/tty` exists on every Linux
+        # box, but opening it raises ENXIO when the process has no
+        # controlling terminal. A test runner started with
+        # `start_new_session=True` -- which is how `spawn`/`poll_job` runs a
+        # background job -- is exactly such a process, so this is a
+        # reachable state and not a hypothetical one.
+        try:
+            fd = os.open("/dev/tty", os.O_RDWR)
+        except OSError:
+            self.skipTest("no controlling tty")
+        if not os.isatty(fd):
+            os.close(fd)
             self.skipTest("no controlling tty")
         # Start from a known cooked state, whatever the test runner is in.
         # EIO here means this sandbox has a /dev/tty that can be opened and

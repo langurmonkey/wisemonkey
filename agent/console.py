@@ -2,47 +2,14 @@ from rich.console import Console
 from rich.theme import Theme
 from rich.traceback import install
 
+from agent.palette import PALETTE
+
 # Replace default error tracebacks with better version
 install()
 
-theme_dict: dict[str, str] = {
-    "title": "bold deep_sky_blue3",
-
-    # Global
-    "accent": "deep_sky_blue3",
-    "accent-bold": "bold deep_sky_blue3",
-    "output-frame": "gray39",
-    "time": "grey30 i",
-
-    # Turns
-    "agent": "orange3",
-    "user": "deep_sky_blue3",
-
-    # Features
-    "tool": "steel_blue3",
-    "status": "white on grey15",
-    "path": "#999999 on #252525",
-    "cmd": "indian_red",
-    "code": "light_pink3",
-    "prompt": "dark_olive_green3 bold",
-    "weak": "grey39",
-    "kbd": "grey69 bold on grey15", 
-    "link": "deep_sky_blue1 underline",
-
-    # Patching
-    "patch-add": "green",
-    "patch-remove": "red",
-
-    "list-item": "cyan",
-    "list-desc": "grey39",
-
-    # Logging
-    "ok": "chartreuse4",
-    "info": "dim cyan",
-    "warn": "orange_red1",
-    "error": "bold red",
-    "err": "bold red"
-}
+# Style tags are named for their role in the output, not for a colour: the
+# same names are resolved by every frontend (see agent/palette.py).
+theme_dict: dict[str, str] = PALETTE.rich_theme_dict()
 
 # Theme
 monkee_theme = Theme(theme_dict)

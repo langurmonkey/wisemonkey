@@ -50,6 +50,7 @@ from agent.ipc import (
 from agent.output import TuiOutputAdapter, set_output
 from agent.startup import startup_info
 from agent.utils import format_tool_args
+from agent.palette import PALETTE
 
 # Number of characters above which the paste action creates a file
 PASTE_THRESHOLD = 1000
@@ -283,6 +284,13 @@ class WisemonkeyTui(App):
 
     def __init__(self, config_path: str | None = None, session: str = "default"):
         super().__init__()
+        # Register before the CSS in wm.tcss is parsed, or the design tokens
+        # resolve against Textual's built-in theme -- which is purple, and was
+        # the source of the TUI not matching the REPL. Setting the reactive
+        # here (rather than in on_mount) means one theme application, and
+        # `_watch_theme` invalidates the CSS for us.
+        self.register_theme(PALETTE.textual_theme())
+        self.theme = "wisemonkey"
         self.config_path = config_path
         self.session = session
         self.core: Core | None = None
@@ -930,10 +938,10 @@ class WisemonkeyTui(App):
 
         args_str = format_tool_args(tool_args)
         if args_str:
-            text = f"[dim]🛠️ Activating tool: [steel_blue3]{tool_name}[/steel_blue3] [grey39]({escape(args_str)})[/grey39][/dim]"
+            text = f"[dim]🛠️ Activating tool: [tool]{tool_name}[/tool] [weak]({escape(args_str)})[/weak][/dim]"
         else:
             text = (
-                f"[dim]🛠️ Activating tool: [steel_blue3]{tool_name}[/steel_blue3][/dim]"
+                f"[dim]🛠️ Activating tool: [tool]{tool_name}[/tool][/dim]"
             )
         if captured_output:
             text += "\n" + captured_output

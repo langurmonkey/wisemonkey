@@ -32,7 +32,13 @@ from agent.console import theme_dict
 
 
 def _style(name: str, fallback: str = "") -> str:
-    """Look up a theme style, falling back to *fallback*."""
+    """Look up a theme style, falling back to *fallback*.
+
+    *fallback* is a Rich style spec, not a theme tag. Every caller passes a
+    tag that the palette always defines, so in practice it is never used --
+    it exists so a missing tag degrades to something rather than to an
+    unstyled span.
+    """
     return theme_dict.get(name, fallback)
 
 
@@ -76,7 +82,7 @@ def _render_inline(text: str, base: str = "") -> Text:
             result.append(m.group(6), style="strike")
         else:  # link
             result.append(m.group(7), style=_style("link"))
-            result.append(f" ({m.group(8)})", style=_style("weak", "grey39"))
+            result.append(f" ({m.group(8)})", style=_style("weak"))
         pos = m.end()
     if pos < len(text):
         result.append(text[pos:])
@@ -92,7 +98,7 @@ def render_line(line: str) -> Text:
     if line.lstrip().startswith("```"):
         lang = line.lstrip()[3:].strip()
         label = f" ({lang})" if lang else ""
-        return Text(f"{'─' * 3}{label}", style=_style("weak", "grey39"))
+        return Text(f"{'─' * 3}{label}", style=_style("weak"))
 
     m = _HEADING_RE.match(line)
     if m:
@@ -108,7 +114,7 @@ def render_line(line: str) -> Text:
         return _render_inline(m.group(2), base=style)
 
     if _HR_RE.match(line):
-        return Text("─" * 40, style=_style("weak", "grey39"))
+        return Text("─" * 40, style=_style("weak"))
 
     m = _UL_RE.match(line)
     if m:
@@ -132,7 +138,7 @@ def render_line(line: str) -> Text:
     if m:
         indent, text = m.group(1), m.group(2)
         result = Text(indent)
-        result.append("│", style=_style("weak", "grey39"))
+        result.append("│", style=_style("weak"))
         result.append(" ")
         result.append(_render_inline(text))
         return result

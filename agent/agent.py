@@ -46,6 +46,7 @@ from agent.keys import (
     install_enter_bindings,
 )
 from agent.output import RichOutputAdapter, set_output
+from agent.palette import PALETTE
 from agent.startup import startup_info
 from agent.utils import add_command, collapse_none_dicts, format_tool_args, term_width
 
@@ -633,17 +634,7 @@ class Agent:
             event.current_buffer.insert_text(_handle_paste(text))
 
         # Create prompt session now
-        style = Style.from_dict(
-            {
-                "prompt": "#0087d7",
-                "frame.border": "#0087d7",
-                "bottom-toolbar": "#ffffff bg:#262626 noreverse",
-                "kbd": "#ffd787 bold",
-                "model": "#005faf",
-                "weak": "#393939",
-                "unsafe-warn": "bold bg:#8b0000 #ffffff",
-            }
-        )
+        style = Style.from_dict(PALETTE.prompt_toolkit_dict())
 
         # Vi mode
         vi_mode = self.core.config.get("agent.vi_mode", False)

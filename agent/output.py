@@ -521,7 +521,7 @@ class TuiOutputAdapter(OutputAdapter):
             self._app.call_from_thread(self._write_rich, rule)
 
     def info(self, text: str, indent: int = 0) -> None:
-        self.print(f"{' ' * indent}[bold deep_sky_blue3]⇨[/bold deep_sky_blue3] {text}")
+        self.print(f"{' ' * indent}[info]⇨[/info] {text}")
 
     def err(self, text:str, indent: int = 0):
         self.print(f"{' ' * indent}[err]⨯[/err] {text}")
