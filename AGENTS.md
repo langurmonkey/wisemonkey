@@ -40,6 +40,7 @@ wisemonkey/
 ├── tools/                  # Tool implementations available to the model.
 │   ├── basic.py            # Basic and example tools.
 │   ├── files.py            # File read/write tools.
+│   ├── jobs.py              # Background commands: spawn / poll_job / kill_job.
 │   ├── memory.py            # search_knowledge tool.
 │   ├── network.py          # URL fetching.
 │   ├── screenshot.py       # Screen capture tool (base64 JPEG, user-confirmed).
@@ -186,6 +187,14 @@ In text mode `start_line`/`end_line` are a search *window*, not a replacement ra
 
 `max_results` (default 500) is reported in `omitted`, and the rendered `content` says how many matches were dropped. The cap used to slice silently, so "Found 500" could not be told apart from "Found 5000" — a caller would conclude the pattern is rarer than it is.
 
+`spawn` / `poll_job` / `kill_job` (`tools/jobs.py`) run a command in the background. Use them for work that outlasts the turn — a test suite, a build — and `run_command` for anything short, since its `timeout` is all-or-nothing: either the command finishes inside it or you get nothing and have to guess how long to sleep.
+
+Output goes to a **temp file, not a pipe**. A pipe is a fixed buffer that blocks the child when nobody is reading it, so a job meant to outlive the call that started it would deadlock against its own output. `poll_job` returns only what appeared since the previous poll, and a finished job stays pollable afterwards — the common shape is "is it done? yes — what did it say?", and a registry that forgets the job on exit answers the second half with "no such job". `all_output: true` re-reads from the start.
+
+`output_bytes` is what the job has written **in total**, not what this poll returned; `omitted_bytes` is what is still unread and waiting for the next poll. A per-poll cap of 20k characters is what makes polling a chatty job affordable, and the two fields keep a truncated tail from reading like a complete one.
+
+The child gets its own **process group**, so `kill_job` signals the whole group: a shell pipeline does not leave its second half running after the first half is dead. `kill_job` returns the output produced before dying (a killed test run still says which test failed) and, with `force: true`, uses `SIGKILL` for a command that traps `SIGTERM`. A process that ignores `SIGTERM` is reported as still running rather than claimed as killed. Jobs live in the agent's process and are killed by an `atexit` hook, so a job cannot outlive the session; the last 8 finished jobs are kept (logs included) and older ones reaped.
+
 #### Chat memory accounting
 
 `ChatMemory` tracks `total_tokens` and triggers `/history-compact` when it exceeds `agent.max_chat_history`. `total_tokens` is computed by tokenizing the exact rendered history returned by `get_formatted(timestamps=False, width=0)`, including tool-result truncation and compact adjacent tool call/result blocks. Recount after changes to stored exchanges, loading, trimming, or clearing. Keep this accounting in sync with `get_formatted()` if its rendering changes.
@@ -287,6 +296,7 @@ tests/
 ├── test_memory.py       # Memory, ChatMemory persistence and trimming
 ├── test_skills.py       # SkillLoader frontmatter parsing, load_all
 ├── test_files.py        # read_file (full read, max_lines, offset window), patch_file (text/line modes), search_content (literal/regex)
+├── test_jobs.py         # spawn / poll_job / kill_job: incremental output, process-group kill, reaping
 ├── test_ipc.py          # IPC protocol: message factories, serialization, loopback transport
 ├── test_emitter.py      # TurnEmitter: core callbacks -> events, cancel state
 ├── test_keys.py         # Terminal key protocol: modified Enter, newline bindings

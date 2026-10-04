@@ -404,6 +404,7 @@ In addition to persistent memory, the agent maintains a **chat history** of rece
 - Large file reads can be limited with the `read_file` tool's `max_lines` parameter (like `head`), or read as a window with `offset` (a 1-based start line, like `tail -n +N`)
 - Targeted edits use `patch_file`, which can match text (whitespace-tolerant, exact-match required) or patch by line range with `start_line`/`end_line`
 - `search_content` searches file contents by literal substring (default) or by Python regular expression (`regex: true`), with context lines, glob filters, depth limits and a reported result cap
+- Long-running commands can be backgrounded with `spawn`, watched incrementally with `poll_job`, and stopped with `kill_job` (which signals the whole process group and returns the output printed before death)
 
 **Persistence:**
 - Chat history is persisted to `~/.local/share/wisemonkey/session/$SESSION_NAME/chat_history.json`
