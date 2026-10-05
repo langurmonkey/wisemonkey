@@ -6,7 +6,7 @@ only appear for the *first* round of a turn.
 """
 
 import unittest
-from typing import Any, Callable
+from typing import Any, Callable, cast
 from unittest import mock
 
 from agent.agent import Agent
@@ -160,12 +160,28 @@ class _RecordingOutput:
     def __init__(self) -> None:
         self.errors: list[str] = []
         self.oks: list[str] = []
+        self.rules: list[str] = []
 
     def err(self, msg: str) -> None:
         self.errors.append(msg)
 
     def ok(self, msg: str) -> None:
         self.oks.append(msg)
+
+    def rule(self, title: str = "", style: str = "", **kwargs: object) -> None:
+        self.rules.append(title)
+
+    def footer_active(self) -> bool:
+        return False
+
+    def footer_update(self, status_line: str, input_line: str = "") -> None:
+        pass
+
+    def steer_line(self) -> str:
+        return ""
+
+    def steer_pending(self) -> str | None:
+        return None
 
 
 class _ToolResultAgent(Agent):
@@ -296,6 +312,137 @@ class TestToolResultLine(unittest.TestCase):
 
     def test_negative_threshold_is_clamped(self):
         self.assertEqual(self._run(threshold=-5)._tool_slow_threshold(), 0.0)
+
+
+class _StatsMemory:
+    """Memory stand-in whose chat stats the test can set."""
+
+    session = "test"
+
+    def __init__(self, used: int, max_tokens: int) -> None:
+        self.stats = (used, max_tokens, used * 100.0 / max_tokens)
+
+    def get_chat_stats(self) -> tuple[int, int, float]:
+        return self.stats
+
+
+class _PricingConfig:
+    """Config stand-in; `pricing` is what `model.pricing` returns."""
+
+    def __init__(self, pricing: dict[str, float] | None = None) -> None:
+        self.pricing = pricing
+
+    def get(self, _key: str, default: object = None) -> object:
+        return self.pricing if self.pricing is not None else default
+
+
+class _LiveTokenAgent(Agent):
+    """An Agent stubbed for the live token counter and the status line."""
+
+    def __init__(
+        self,
+        used: int = 1000,
+        max_tokens: int = 200000,
+        pricing: dict[str, float] | None = None,
+    ) -> None:
+        self.output = _RecordingOutput()
+        self.remote = None
+        self._md_stream = None
+        self._turn_in_progress = False
+        self._turn_start_mem = used
+        self._live_chars = 0
+        self._last_footer_tick = 0.0
+
+        class _Core:
+            config = _PricingConfig(pricing)
+            memory = _StatsMemory(used, max_tokens)
+
+        self.core = _Core()
+
+
+class TestLiveTokenCounter(unittest.TestCase):
+    """The token count should move *while* the model streams.
+
+    A cumulative figure updated at turn end looks identical whether the turn
+    was trivial or enormous. The delta -- what this turn added -- is the
+    number that climbs, so it is shown live in the footer (estimated from
+    streamed characters) and exactly in the status line at turn end.
+    """
+
+    def _agent(self, used: int = 1000, pricing: dict[str, float] | None = None):
+        return _LiveTokenAgent(used=used, pricing=pricing)
+
+    def test_statusline_shows_the_turn_delta(self):
+        agent = self._agent(used=1000)
+        cast(_StatsMemory, agent.core.memory).stats = (4200, 200000, 2.1)
+        agent._statusline(3200, 0, 1.0)
+        rule = cast(_RecordingOutput, agent.output).rules[-1]
+        self.assertIn("Δ+3200", rule)
+
+    def test_statusline_omits_the_delta_when_nothing_was_added(self):
+        agent = self._agent(used=1000)
+        cast(_StatsMemory, agent.core.memory).stats = (1000, 200000, 0.5)
+        agent._statusline(0, 0, 1.0)
+        self.assertNotIn("Δ", cast(_RecordingOutput, agent.output).rules[-1])
+
+    def test_statusline_shows_provider_prompt_tokens(self):
+        agent = self._agent()
+        agent._statusline(500, 0, 1.0, prompt_tokens=12000)
+        self.assertIn("p:12.0k", agent.output.rules[-1])
+
+    def test_statusline_omits_prompt_tokens_when_unreported(self):
+        """A backend that reports no usage must not show a fake number."""
+        agent = self._agent()
+        agent._statusline(500, 0, 1.0, prompt_tokens=0)
+        self.assertNotIn("p:", agent.output.rules[-1])
+
+    def test_cost_is_shown_only_when_pricing_is_configured(self):
+        agent = _LiveTokenAgent(pricing={"input": 3.0, "output": 15.0})
+        # 12k prompt at $3/Mtok + 500 completion at $15/Mtok = $0.0435
+        agent._statusline(500, 0, 1.0, prompt_tokens=12000)
+        output = cast(_RecordingOutput, agent.output)
+        self.assertIn("$0.0435", output.rules[-1])
+
+    def test_no_pricing_means_no_cost(self):
+        """A made-up price would be worse than no price."""
+        agent = self._agent()
+        agent._statusline(500, 0, 1.0, prompt_tokens=12000)
+        self.assertNotIn("$", agent.output.rules[-1])
+
+    def test_live_tick_accumulates_streamed_characters(self):
+        agent = self._agent()
+        agent._turn_in_progress = True
+        agent.content_callback("hello world ")
+        agent.content_callback("more text")
+        self.assertEqual(agent._live_chars, len("hello world more text"))
+
+    def test_live_tick_throttles_footer_refreshes(self):
+        """Per-chunk redraws would fight the spinner thread for the lock."""
+        agent = self._agent()
+        agent._turn_in_progress = True
+        agent.output.footer_active = lambda: True
+        agent.output.footer_update = lambda *a, **k: setattr(
+            agent.output, "n", getattr(agent.output, "n", 0) + 1
+        )
+        agent._last_footer_tick = __import__("time").time() - 1.0
+        for _ in range(50):
+            agent.content_callback("x")
+        # 50 chunks inside the 0.25 s window must produce at most one redraw.
+        self.assertLessEqual(getattr(agent.output, "n", 0), 1)
+
+    def test_live_tick_is_silent_outside_a_turn(self):
+        agent = self._agent()
+        agent._turn_in_progress = False
+        agent.output.footer_active = lambda: True
+        agent.output.footer_update = lambda *a, **k: setattr(
+            agent.output, "n", getattr(agent.output, "n", 0) + 1
+        )
+        agent.content_callback("hello")
+        self.assertEqual(getattr(agent.output, "n", 0), 0)
+
+    def test_fmt_k(self):
+        self.assertEqual(Agent._fmt_k(823), "823")
+        self.assertEqual(Agent._fmt_k(12400), "12.4k")
 
 
 if __name__ == "__main__":

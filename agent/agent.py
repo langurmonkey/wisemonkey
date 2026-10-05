@@ -95,6 +95,17 @@ class Agent:
         set_output(self.output)
         self._turn_in_progress = False
         self._md_stream = None
+        # Live token accounting for the footer. `_turn_start_mem` is the
+        # chat-memory size when the turn began, so the footer can show how
+        # much *this turn* added (the delta is the number that climbs while
+        # the model streams; the cumulative figure alone does not move).
+        # `_live_chars` accumulates streamed response text and is converted
+        # with the chars/token estimate -- exact per-chunk tiktoken counts
+        # would cost more than they are worth for a progress readout. The
+        # real number replaces the estimate at turn end.
+        self._turn_start_mem = 0
+        self._live_chars = 0
+        self._last_footer_tick = 0.0
         self._prompt_reported = False
         # Whether we pushed the kitty keyboard protocol in _create_prompt_session
         # and still owe the terminal a pop. See agent/keys.py.
@@ -325,6 +336,9 @@ class Agent:
 
     def content_callback(self, content: str = ""):
         """Called when new chunks arrive in streaming mode."""
+        if content:
+            self._live_chars += len(content)
+            self._footer_live_tick()
         if self._md_stream is not None:
             # Live streaming markdown rendering: complete lines are rendered
             # incrementally with theme styles; the trailing partial line is
@@ -400,12 +414,57 @@ class Agent:
             return 1.0
         return max(0.0, threshold)
 
-    def _statusline(self, total_tokens, ntools, total_gen_time):
+    @staticmethod
+    def _fmt_k(n: int) -> str:
+        """823 -> '823', 12400 -> '12.4k'. Footer/statusline token counts."""
+        return f"{n / 1000:.1f}k" if n >= 10000 else str(n)
+
+    def _turn_cost(self, prompt_tokens: int, completion_tokens: int) -> str:
+        """Cost string for the turn, or '' when it cannot be known.
+
+        Token prices are provider- and model-specific and change without
+        notice, so they are never hard-coded: the figure is shown only when
+        the user configured `model.pricing` (per million tokens, in
+        currency units)::
+
+            model:
+              pricing:
+                input: 3.0
+                output: 15.0
+
+        A made-up price would be worse than no price.
+        """
+        pricing = self.core.config.get("model.pricing", None)
+        if not pricing or not prompt_tokens:
+            return ""
+        try:
+            in_price = float(pricing.get("input", 0) or 0)
+            out_price = float(pricing.get("output", 0) or 0)
+        except (AttributeError, TypeError, ValueError):
+            return ""
+        if in_price <= 0 and out_price <= 0:
+            return ""
+        cost = (prompt_tokens * in_price + completion_tokens * out_price) / 1e6
+        return f"${cost:.4f}"
+
+    def _statusline(self, total_tokens, ntools, total_gen_time, prompt_tokens=0):
         if self.remote is not None:
             length, max, rate = self.remote.memory_stats()
         else:
             length, max, rate = self.core.memory.get_chat_stats()
-        title = f"  {total_gen_time:.1f}s   |   {total_tokens} tokens   |   {ntools} tools   |   Mem: {length}/{max} tks ({rate:.2f}%)  "
+        # The delta is what this turn added to chat memory. It is the
+        # number the user watches climb; without it the cumulative figure
+        # looks identical whether the turn was trivial or enormous.
+        delta = length - self._turn_start_mem
+        delta_s = f"   Δ+{self._fmt_k(delta)}" if delta > 0 else ""
+        cost = self._turn_cost(prompt_tokens, total_tokens)
+        cost_s = f"   {cost}" if cost else ""
+        prompt_s = f"   p:{self._fmt_k(prompt_tokens)}" if prompt_tokens else ""
+        title = (
+            f"  {total_gen_time:.1f}s   |   {total_tokens} tokens{prompt_s}"
+            f"{delta_s}   |   {ntools} tools{cost_s}"
+            f"   |   Mem: {length}/{max} tks ({rate:.2f}%)  "
+        )
         self.output.rule(title=title, style="status")
         # Refresh the sticky footer with the final memory stats.
         self._footer_refresh()
@@ -422,11 +481,20 @@ class Agent:
             used, limit, rate = self.remote.memory_stats()
         else:
             used, limit, rate = self.core.memory.get_chat_stats()
-        return (
+        line = (
             f" {_ACCENT}⇒{_RESET} {_LABEL}{model}{_RESET}  {_DIM}|{_RESET}  "
             f"{_LABEL}session:{_RESET} {_ACCENT}{session}{_RESET}  {_DIM}|{_RESET}  "
             f"{_LABEL}Mem:{_RESET} {used}/{limit} tks ({rate:.1f}%)"
         )
+        # Live delta while the turn is running: what this turn has added so
+        # far, estimated from the streamed text. The exact figure arrives
+        # with the turn-end status line; this one exists so the number moves
+        # *while* the model streams, which is the point of a live counter.
+        if self._turn_in_progress:
+            est = max(0, used - self._turn_start_mem) + self._live_chars // 4
+            if est:
+                line += f"  {_DIM}Δ+{_RESET}{self._fmt_k(est)}"
+        return line
 
     def _footer_input(self) -> str:
         """Build the steering input row shown under the status line.
@@ -573,6 +641,22 @@ class Agent:
     def _footer_refresh(self) -> None:
         """Redraw the footer (status line + steering input row)."""
         self.output.footer_update(self._footer_status(), self._footer_input())
+
+    def _footer_live_tick(self) -> None:
+        """Refresh the footer's live token counter, throttled.
+
+        Called from the content callback on every streamed chunk. Redrawing
+        per chunk would fight the footer's own spinner thread for the lock
+        and burn CPU on a fast stream; ~4 Hz is fast enough for a number
+        that is read by eye. The throttle is what makes "live" affordable,
+        not a second render path.
+        """
+        now = time.time()
+        if now - self._last_footer_tick < 0.25:
+            return
+        self._last_footer_tick = now
+        if self._turn_in_progress and self.output.footer_active():
+            self._footer_refresh()
 
     def _cancel_all_spinners(self):
         self._footer_spinner = None
@@ -856,6 +940,8 @@ class Agent:
                 # printed first is erased whenever the screen was already
                 # full and it landed on one of those rows.
                 self.output.footer_start()
+                self._turn_start_mem = self.core.memory.get_chat_stats()[0]
+                self._live_chars = 0
                 self._footer_refresh()
                 self.output.newline()
                 try:
@@ -906,7 +992,10 @@ class Agent:
                             "The model kept requesting tools without a final answer."
                         )
 
-                    self._statusline(total_tokens, ntools, total_gen_time)
+                    self._statusline(
+                        total_tokens, ntools, total_gen_time,
+                        prompt_tokens=result.prompt_tokens,
+                    )
                     self.output.newline()
 
                     if (
@@ -926,7 +1015,10 @@ class Agent:
                             highlight=True,
                         )
                         self.output.print_rich(md)
-                        self._statusline(total_tokens, ntools, total_gen_time)
+                        self._statusline(
+                            total_tokens, ntools, total_gen_time,
+                            prompt_tokens=result.prompt_tokens,
+                        )
                 except Exception as e:
                     self._cancel_all_spinners()
                     self.emitter.cancel("error")
@@ -1035,7 +1127,10 @@ class Agent:
                 )
 
             if not result.cancelled:
-                self._statusline(result.total_tokens, result.n_tools, result.gen_time)
+                self._statusline(
+                    result.total_tokens, result.n_tools, result.gen_time,
+                    prompt_tokens=result.prompt_tokens,
+                )
                 self.output.newline()
 
             if (
@@ -1105,7 +1200,10 @@ class Agent:
                         f"{self.core.config.get('agent.max_turns', 50)}). "
                         "The model kept requesting tools without a final answer."
                     )
-                self._statusline(end.total_tokens, end.n_tools, end.gen_time)
+                self._statusline(
+                    end.total_tokens, end.n_tools, end.gen_time,
+                    prompt_tokens=end.prompt_tokens,
+                )
                 self.output.newline()
         except Exception as e:
             self._cancel_all_spinners()
@@ -1250,6 +1348,8 @@ class Agent:
                 # printed first is erased whenever the screen was already
                 # full and it landed on one of those rows.
                 self.output.footer_start()
+                self._turn_start_mem = remote.memory_stats()[0]
+                self._live_chars = 0
                 self._footer_refresh()
                 self.output.newline()
                 self._turn_in_progress = True
@@ -1270,7 +1370,10 @@ class Agent:
                                 f"{self.core.config.get('agent.max_turns', 50)}). "
                                 "The model kept requesting tools without a final answer."
                             )
-                        self._statusline(end.total_tokens, end.n_tools, end.gen_time)
+                        self._statusline(
+                            end.total_tokens, end.n_tools, end.gen_time,
+                            prompt_tokens=end.prompt_tokens,
+                        )
                         self.output.newline()
 
                         # Markdown summary (same as local mode), using the
@@ -1289,7 +1392,8 @@ class Agent:
                             )
                             self.output.print_rich(md)
                             self._statusline(
-                                end.total_tokens, end.n_tools, end.gen_time
+                                end.total_tokens, end.n_tools, end.gen_time,
+                                prompt_tokens=end.prompt_tokens,
                             )
                             self.output.newline()
                 except Exception as e:

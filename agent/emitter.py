@@ -120,6 +120,7 @@ class TurnEmitter:
         cancelled: bool = False,
         error: str = "",
         max_turns_reached: bool = False,
+        prompt_tokens: int = 0,
     ) -> None:
         """Announce that a turn has finished, whatever the outcome."""
         self.emit(
@@ -133,6 +134,7 @@ class TurnEmitter:
                 cancelled=cancelled,
                 error=error,
                 max_turns_reached=max_turns_reached,
+                prompt_tokens=prompt_tokens,
             ),
         )
 

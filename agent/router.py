@@ -119,6 +119,12 @@ class _StreamChunk:
     def __init__(self, data: dict):
         self.choices = [_StreamChoice(c) for c in data.get("choices", [])]
         self.model = data.get("model", "")
+        # Token usage, when the provider reports it. Only the final chunk of
+        # a stream carries it (Anthropic's message_delta, Ollama's done
+        # part); OpenAI delivers it as a choices-less chunk when
+        # `stream_options.include_usage` is set. None means the provider
+        # did not report usage and the caller falls back to estimating.
+        self.usage = data.get("usage")
 
 
 class _ToolCallFunction:
@@ -362,6 +368,13 @@ class ModelRouter:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
+        # Ask for token usage on streamed responses. Without this the
+        # OpenAI-compatible API reports no usage at all and the agent can
+        # only estimate from the response text. Servers that predate the
+        # option ignore it, so sending it is safe.
+        if stream:
+            kwargs["stream_options"] = {"include_usage": True}
+
         # Extra body params (reasoning_effort, etc.)
         kwargs["extra_body"] = {
             "reasoning_effort": thinking
@@ -563,8 +576,18 @@ class ModelRouter:
                         }
                         yield _StreamChunk(chunk_data)
 
-        # Final chunk with finish_reason
+        # Final chunk with finish_reason. The message_delta event carries the
+        # cumulative output tokens and the message_start event the input
+        # count; both are surfaced here so the footer can show real usage
+        # instead of an estimate.
         final_msg = stream.get_final_message()
+        usage = getattr(final_msg, "usage", None)
+        usage_data = None
+        if usage is not None:
+            usage_data = {
+                "prompt_tokens": getattr(usage, "input_tokens", 0) or 0,
+                "completion_tokens": getattr(usage, "output_tokens", 0) or 0,
+            }
         chunk_data = {
             "choices": [{
                 "delta": {},
@@ -572,6 +595,7 @@ class ModelRouter:
                 "index": 0,
             }],
             "model": final_msg.model or kwargs.get("model", ""),
+            "usage": usage_data,
         }
         yield _StreamChunk(chunk_data)
 
@@ -698,6 +722,12 @@ class ModelRouter:
                         "index": 0,
                     }],
                     "model": part.get("model", ""),
+                    # Ollama reports usage on the final part. Absent on
+                    # some backends, in which case the caller estimates.
+                    "usage": {
+                        "prompt_tokens": part.get("prompt_eval_count", 0) or 0,
+                        "completion_tokens": part.get("eval_count", 0) or 0,
+                    },
                 }
                 yield _StreamChunk(chunk_data)
 

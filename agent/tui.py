@@ -878,6 +878,7 @@ class WisemonkeyTui(App):
                     end.n_tools,
                     end.gen_time,
                     end.cancelled,
+                    end.prompt_tokens,
                 )
             else:
                 result = self.core.run_turn(
@@ -898,6 +899,7 @@ class WisemonkeyTui(App):
                     result.n_tools,
                     result.gen_time,
                     result.cancelled,
+                    result.prompt_tokens,
                 )
         except Exception as e:
             self.output.err(f"Error: {e}")
@@ -962,6 +964,7 @@ class WisemonkeyTui(App):
         ntools: int,
         gen_time: float,
         result_cancelled: bool = False,
+        prompt_tokens: int = 0,
     ) -> None:
         """Called on the main thread after a turn completes."""
         if result_cancelled:
@@ -985,7 +988,11 @@ class WisemonkeyTui(App):
                 length, max_sz, rate = self.remote.memory_stats()
             else:
                 length, max_sz, rate = self.core.memory.get_chat_stats()
-            label = f"{gen_time:.1f}s  |  {tokens} tokens  |  {ntools} tools  |  Mem: {length}/{max_sz} tks ({rate:.2f}%)"
+            prompt_s = f"  |  p:{prompt_tokens}" if prompt_tokens else ""
+            label = (
+                f"{gen_time:.1f}s  |  {tokens} tokens{prompt_s}"
+                f"  |  {ntools} tools  |  Mem: {length}/{max_sz} tks ({rate:.2f}%)"
+            )
             self.output.newline()
             self.output.rule(style="agent", title=label)
 

@@ -63,6 +63,10 @@ class TurnResult:
     # Set when the turn ended because agent.max_turns was exhausted, so the
     # UI can tell the user why the response stopped (like max_tool_calls).
     max_turns_reached: bool = False
+    # Prompt tokens reported by the provider, summed over the turn's LLM
+    # rounds. 0 when the provider reports no usage (the UI then omits the
+    # cost figure rather than showing a wrong one).
+    prompt_tokens: int = 0
 
     def __iter__(self) -> Iterator[Any]:
         return iter((self.response, self.total_tokens, self.n_tools, self.gen_time))
@@ -392,6 +396,9 @@ class Core:
         thinking_end = False
         prompt_stopped = False
         stream_error: Exception | None = None
+        # Token usage reported by the provider, when it reports any. Only
+        # the final chunk carries it; None means the caller must estimate.
+        usage: dict | None = None
 
         thinking_display = self.config.get("model.thinking.display", False)
 
@@ -412,6 +419,18 @@ class Core:
 
                 delta = chunk.choices[0].delta
                 now = time.time()
+
+                # Provider-reported token usage, when the final chunk
+                # carries it. A choices-less usage chunk (OpenAI with
+                # `include_usage`) has no delta to read, so it is checked
+                # before the delta access.
+                chunk_usage = getattr(chunk, "usage", None)
+                if chunk_usage:
+                    usage = {
+                        "prompt_tokens": chunk_usage.get("prompt_tokens", 0) or 0,
+                        "completion_tokens": chunk_usage.get("completion_tokens", 0) or 0,
+                    }
+                    continue
 
                 # Track when first chunk arrives (excludes request send time)
                 if first_chunk_time is None:
@@ -476,7 +495,7 @@ class Core:
             # Store the error so we can still return whatever we collected.
             stream_error = e
 
-        return (first_chunk_time, tool_calls, stream_error)
+        return (first_chunk_time, tool_calls, stream_error, usage)
 
     def llm_chat_raw(self,
                     messages,
@@ -552,7 +571,8 @@ class Core:
 
         if response:
             try:
-                (first_chunk_time, tool_calls, stream_error) = self._stream_handler(response,
+                (first_chunk_time, tool_calls, stream_error, usage) = self._stream_handler(
+                                                                                    response,
                                                                                     prompt_callback,
                                                                                     reasoning_callback,
                                                                                     content_callback,
@@ -573,16 +593,25 @@ class Core:
                 # unwinding to run_turn(), which owns the cancellation state.
                 self._cancel_prompts(prompt_callback, reasoning_callback)
 
-        return self._finish_inference(start, first_chunk_time, tool_calls, stream_error)
+        return self._finish_inference(start, first_chunk_time, tool_calls, stream_error, usage)
 
-    def _finish_inference(self, start, first_chunk_time, tool_calls, stream_error=None):
+    def _finish_inference(self, start, first_chunk_time, tool_calls, stream_error=None, usage=None):
         self.thinking = False
         self.generating = False
         now = time.time()
 
-        # Count tokens using tiktoken (LM Studio streaming doesn't include usage)
-        tokens = 0
-        if self.encoding and self.response_buffer:
+        # Token count. Provider-reported usage is the truth; the tiktoken
+        # estimate is the fallback for backends that report nothing (LM
+        # Studio streaming, older Ollama). The estimate covers only the
+        # response text, so it undercounts by the prompt and the tool
+        # plumbing -- which is exactly why a real number is preferred.
+        prompt_tokens = 0
+        completion_tokens = 0
+        if usage:
+            prompt_tokens = usage.get("prompt_tokens", 0) or 0
+            completion_tokens = usage.get("completion_tokens", 0) or 0
+        tokens = completion_tokens
+        if not tokens and self.encoding and self.response_buffer:
             tokens = len(self.encoding.encode(self.response_buffer))
 
         # Elapsed time: from first chunk to last chunk (generation time only)
@@ -599,7 +628,7 @@ class Core:
         if self._turn_cancelled:
             tc_list = None
 
-        return ({"text": self.response_buffer, "tool_calls": tc_list}, tokens, gen_elapsed, stream_error)
+        return ({"text": self.response_buffer, "tool_calls": tc_list}, tokens, gen_elapsed, stream_error, prompt_tokens)
 
 
     def run_turn(self,
@@ -675,6 +704,11 @@ class Core:
 
         # Total token count
         total_tokens = 0
+        # Prompt tokens reported by the provider, summed over the turn's
+        # LLM rounds. Each round re-sends the whole conversation, so this
+        # grows superlinearly with tool use -- which is the number that
+        # makes "why did this turn cost so much" answerable.
+        total_prompt_tokens = 0
         # Total generation time (excludes network latency, prompt building, etc.)
         total_gen_time = 0
         # Number of tool calls
@@ -683,7 +717,8 @@ class Core:
             for _ in range(self.config.get("agent.max_turns", 50)):
                 # Send to LLM
                 try:
-                    (result, tokens, gen_elapsed, stream_error) = self._send_to_llm(prompt_callback,
+                    (result, tokens, gen_elapsed, stream_error, prompt_tokens) = self._send_to_llm(
+                                                                                    prompt_callback,
                                                                                     reasoning_callback,
                                                                                     content_callback,
                                                                                     cancel_callback,
@@ -694,6 +729,7 @@ class Core:
                     return TurnResult(response="[Cancelled]", cancelled=True)
 
                 total_tokens += tokens
+                total_prompt_tokens += prompt_tokens
                 total_gen_time += gen_elapsed
 
                 # Poll-driven cancellation: the stream was cut short. Do not
@@ -711,6 +747,7 @@ class Core:
                         total_tokens=total_tokens,
                         n_tools=n_tools,
                         gen_time=total_gen_time,
+                        prompt_tokens=total_prompt_tokens,
                         cancelled=True,
                     )
 
@@ -828,6 +865,7 @@ class Core:
                     total_tokens=total_tokens,
                     n_tools=n_tools,
                     gen_time=total_gen_time,
+                    prompt_tokens=total_prompt_tokens,
                 )
 
             # Max turns reached!
@@ -838,6 +876,7 @@ class Core:
                 total_tokens=total_tokens,
                 n_tools=n_tools,
                 gen_time=total_gen_time,
+                prompt_tokens=total_prompt_tokens,
                 max_turns_reached=True,
             )
 
@@ -850,6 +889,7 @@ class Core:
                     total_tokens=total_tokens,
                     n_tools=n_tools,
                     gen_time=total_gen_time,
+                    prompt_tokens=total_prompt_tokens,
                     cancelled=True,
                 )
             # An error occurred mid-turn (e.g. SSE/JSON parse error from provider).
@@ -877,6 +917,7 @@ class Core:
                 total_tokens=total_tokens,
                 n_tools=n_tools,
                 gen_time=total_gen_time,
+                prompt_tokens=total_prompt_tokens,
                 cancelled=True,
             )
 

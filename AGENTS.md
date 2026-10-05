@@ -132,6 +132,19 @@ Set `agent.footer_debug_bytes: true` to append every byte written to the footer 
 
 **Never blank the reserved rows with `\x1b[2K\r\n`.** That is the obvious spelling — go to the first footer row, erase, CR, LF, repeat — but the final `\n` puts the cursor *below the last screen row*, and leaving the bottom margin scrolls the viewport up by one. In `stop()` the scroll region has just been reset to the full screen, so the whole visible screen shifts and the REPL's turn header is the line that gets eaten (it looks like "Prompt processed" overwriting the banner; the two are unrelated). `_blank_footer_rows()` addresses each row explicitly (`CUP` + `EL`) so no write ever lands past the last row. `tests/test_footer.py` pins the invariant: no newline in the blanking output, and no row addressed beyond the screen height.
 
+### Live token counter (`agent/agent.py`)
+
+The token count is shown twice, on purpose:
+
+- **Live in the footer, during the turn.** `_footer_status()` appends a `Δ+…` segment while `_turn_in_progress` is set. The number is `used - _turn_start_mem` plus `_live_chars // 4` — the streamed response text converted with the chars/token estimate. It is refreshed by `_footer_live_tick()`, called from `content_callback` on every chunk but **throttled to ~4 Hz** (`_last_footer_tick`): a redraw per chunk would fight the footer's spinner thread for `WRITE_LOCK` and burn CPU on a fast stream. The estimate is deliberately cheap; the exact figure replaces it at turn end.
+- **Exactly in the status line, at turn end.** `_statusline()` shows `Δ+…` (chat memory now minus `_turn_start_mem`, snapshotted at `footer_start()` time in both the local and remote turn loops) and `p:…` — provider-reported prompt tokens, summed over the turn's LLM rounds in `Core.run_turn` (`total_prompt_tokens`). Each round re-sends the whole conversation, so this grows superlinearly with tool use; it is the number that answers "why did this turn cost so much".
+
+**Provider usage plumbing.** `_StreamChunk` carries a `usage` field. The OpenAI adapter sends `stream_options: {include_usage: true}` (servers that predate the option ignore it); the Anthropic adapter surfaces `final_msg.usage` on the final chunk; Ollama surfaces `prompt_eval_count`/`eval_count` on the `done` part. `_stream_handler()` picks the usage chunk up (a choices-less chunk is `continue`d before the delta access) and `_finish_inference()` prefers it over the tiktoken estimate, which covers only the response text and undercounts by the prompt. `TurnResult.prompt_tokens` is 0 when the provider reports nothing, and the UI **omits** `p:` and cost rather than showing a wrong number.
+
+**Cost is opt-in.** `_turn_cost()` reads `model.pricing` (`input`/`output` per million tokens) from config. Prices change without notice, so they are never hard-coded: no config, no cost figure. `config.yaml` documents the key, commented out.
+
+`tests/test_agent_stages.py::TestLiveTokenCounter` pins the delta, the prompt-token and cost gating, the char accumulation and the throttle.
+
 ### Mid-turn steering (`agent/steer.py`)
 
 While a turn is running, `agent/steer.py` puts the tty in **cbreak** mode and reads keystrokes on a daemon thread. Enter queues the line; the REPL main loop drains the queue *before* showing the prompt again (`Agent._steer_drain`), so a queued line goes through the exact same `@`-expansion, command dispatch and turn path as a typed prompt.

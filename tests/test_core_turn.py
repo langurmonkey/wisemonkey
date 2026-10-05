@@ -63,12 +63,13 @@ def make_core(llm_replies, config=None, memory=None):
             core._turn_cancelled = True
             if cancel_callback:
                 cancel_callback(KeyboardInterrupt())
-            return ({"text": "", "tool_calls": None}, 0, 0.0, None)
+            return ({"text": "", "tool_calls": None}, 0, 0.0, None, 0)
         reply = replies.pop(0)
         core.response_buffer = reply.get("text", "")
         if content_callback:
             content_callback(reply.get("text", ""))
-        return (reply, reply.get("tokens", 1), 0.1, reply.get("stream_error"))
+        return (reply, reply.get("tokens", 1), 0.1, reply.get("stream_error"),
+                reply.get("prompt_tokens", 0))
 
     core._send_to_llm = _send_to_llm
     return core

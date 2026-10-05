@@ -324,6 +324,9 @@ class TurnEndPayload:
     error: str = ""
     # True when the turn ended because agent.max_turns was exhausted.
     max_turns_reached: bool = False
+    # Provider-reported prompt tokens for the turn (0 when the provider
+    # reports no usage; clients then omit the cost figure).
+    prompt_tokens: int = 0
 
 
 @dataclass

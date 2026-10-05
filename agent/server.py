@@ -376,6 +376,7 @@ class WisemonkeyServer:
                 cancelled=result.cancelled,
                 error=result.error,
                 max_turns_reached=result.max_turns_reached,
+                prompt_tokens=result.prompt_tokens,
             )
             self._send(
                 Message.response(
@@ -389,6 +390,7 @@ class WisemonkeyServer:
                         cancelled=result.cancelled,
                         error=result.error,
                         max_turns_reached=result.max_turns_reached,
+                        prompt_tokens=result.prompt_tokens,
                     ),
                 )
             )
