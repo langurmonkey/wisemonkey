@@ -970,8 +970,39 @@ class Core:
                 tool_callback(tool_name, tool_args)
 
             started = time.time()
+
+            # Tool arguments arrive as a JSON string from the API. A model can
+            # also emit a truncated or malformed call (e.g. just `{`), which
+            # used to raise here and abort the whole turn with a misleading
+            # "Error sending prompt". Feed the failure back to the model as a
+            # tool error instead, so it can re-issue the call.
             try:
-                result = execute_tool(tool_name, json.loads(tool_args) if isinstance(tool_args, str) else tool_args)
+                tool_args_parsed = (
+                    json.loads(tool_args) if isinstance(tool_args, str) else tool_args
+                )
+            except json.JSONDecodeError as e:
+                err = (
+                    f"Tool call aborted: arguments are not valid JSON "
+                    f"({e}). Received arguments: {tool_args!r}. "
+                    "Re-issue this tool call with a complete JSON object."
+                )
+                result_str = json.dumps({"error": err})
+                self.messages.append(
+                    {"role": "tool", "tool_call_id": tc["id"], "content": result_str}
+                )
+                self.memory.add_chat_exchange(
+                    self,
+                    "tool_result",
+                    result_str,
+                    name=tool_name,
+                    tool_call_id=tc["id"],
+                )
+                if tool_result_callback:
+                    tool_result_callback(tc["id"], tool_name, err, True, 0.0)
+                continue
+
+            try:
+                result = execute_tool(tool_name, tool_args_parsed)
             except KeyboardInterrupt:
                 # Ctrl+C while a tool is running. Mark the turn cancelled so
                 # run_turn() unwinds cleanly instead of persisting a partial

@@ -171,6 +171,8 @@ Trimmed entries are **never destroyed**: both `_trim_to_window()` and `_trim()` 
 
 Tools are defined using the `@tool(name, description, parameters)` decorator. They are auto-discovered on startup. Each tool file in `tools/` contains one or more decorated handler functions.
 
+**Malformed tool arguments are a tool error, never a crashed turn.** A model can emit a truncated or invalid `arguments` string (a bare `{` is common). `Core._tool_calls()` parses the arguments *before* calling the handler; a `JSONDecodeError` becomes a `tool` message carrying the error plus the raw text, recorded in chat history like any other result, and the loop continues so the model can re-issue the call. The router's Ollama adapter uses the same tolerance when re-serializing past calls. Without this, the parse error propagated to the turn handler and printed a misleading `Error sending prompt: Expecting property name enclosed in double quotes...` — the prompt was never the problem, the model's output was. `tests/test_core_turn.py::TestMalformedToolArguments` pins that the turn completes, the handler is never called, and the error reaches both history and the result callback.
+
 `read_file` reads a *window* of a file. Three optional parameters:
 
 - `max_lines` — at most N lines, like `head`. Keeps the tool result small and avoids flooding the chat history.
@@ -325,7 +327,7 @@ tests/
 ├── conftest.py          # Shared fixtures (mock config, temp dirs, singleton resets)
 ├── test_config.py       # Config singleton, load/save, dot-notation get/set
 ├── test_core.py         # Workspace root finding, context file loading, prompt building
-├── test_core_turn.py    # run_turn: TurnResult, cancellation state, tool result callbacks
+├── test_core_turn.py    # run_turn: TurnResult, cancellation state, tool result callbacks, malformed tool arguments
 ├── test_memory.py       # Memory, ChatMemory persistence and trimming
 ├── test_skills.py       # SkillLoader frontmatter parsing, load_all
 ├── test_files.py        # read_file (full read, max_lines, offset window), patch_file (text/line modes), search_content (literal/regex)

@@ -343,6 +343,67 @@ class TestToolCallbacks(unittest.TestCase):
         assert result.response == "done"
 
 
+class TestMalformedToolArguments(unittest.TestCase):
+    """A model can emit a truncated/invalid tool-call argument string (e.g. a
+    bare ``{``). That must not abort the turn with "Error sending prompt": the
+    failure is fed back to the model as a tool error instead."""
+
+    def _core_with_bad_args(self):
+        reply = {
+            "text": "",
+            "tool_calls": [{"id": "c1", "type": "function",
+                            "function": {"name": "run_command", "arguments": "{"}}],
+        }
+        return make_core([reply, {"text": "done"}])
+
+    def test_malformed_args_do_not_abort_the_turn(self):
+        core = self._core_with_bad_args()
+        result = core.run_turn("go")
+        assert result.response == "done"
+        assert result.error == ""
+        assert result.cancelled is False
+
+    def test_malformed_args_reach_the_model_as_a_tool_error(self):
+        core = self._core_with_bad_args()
+        with patch("agent.core.execute_tool", return_value="ok"):
+            core.run_turn("go")
+        results = [e for e in core.memory.exchanges if e["role"] == "tool_result"]
+        assert len(results) == 1
+        assert "not valid JSON" in results[0]["content"]
+        assert results[0]["tool_call_id"] == "c1"
+        # The call itself is still recorded, so history stays well-formed.
+        calls = [e for e in core.memory.exchanges if e["role"] == "tool_call"]
+        assert len(calls) == 1
+
+    def test_malformed_args_never_reach_the_tool_handler(self):
+        core = self._core_with_bad_args()
+        calls = []
+        with patch("agent.core.execute_tool", side_effect=lambda name, args: calls.append(args) or "ok"):
+            core.run_turn("go")
+        assert calls == []
+
+    def test_malformed_args_are_reported_to_the_result_callback(self):
+        core = self._core_with_bad_args()
+        seen = []
+        core.run_turn("go", tool_result_callback=lambda *a: seen.append(a))
+        assert len(seen) == 1
+        assert seen[0][0] == "c1"
+        assert seen[0][1] == "run_command"
+        assert seen[0][3] is True
+
+    def test_valid_args_still_execute(self):
+        core = self._core_with_bad_args()
+        core._send_to_llm = lambda *a, **k: ({"text": "done", "tool_calls": None}, 1, 0.1, None)
+        good = make_core([
+            {"text": "", "tool_calls": [{"id": "c2", "type": "function",
+             "function": {"name": "read_file", "arguments": '{"path": "x"}'}}]},
+            {"text": "done"},
+        ])
+        calls = []
+        with patch("agent.core.execute_tool", side_effect=lambda name, args: calls.append(args) or "ok"):
+            good.run_turn("go")
+        assert calls == [{"path": "x"}]
+
 class TestEmitterIntegration(unittest.TestCase):
     """The emitter can drive a whole turn through a loopback transport."""
 

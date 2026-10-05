@@ -27,6 +27,20 @@ from typing import Any, Optional
 from agent.config import get_config
 
 
+def _parse_args(args: str) -> dict:
+    """Parse a tool-call ``arguments`` string, tolerating malformed JSON.
+
+    A truncated or invalid call (e.g. a bare ``{``) would otherwise raise
+    here and abort the whole request. Fall back to the raw string wrapped
+    in a dict so the model still sees what it emitted.
+    """
+    try:
+        return json.loads(args)
+    except json.JSONDecodeError:
+        return {"__raw__": args}
+
+
+
 class Provider(Enum):
     """Supported LLM providers."""
     OPENAI = "openai"
@@ -612,7 +626,9 @@ class ModelRouter:
                         **tc,
                         "function": {
                             **tc["function"],
-                            "arguments": json.loads(args) if isinstance(args, str) else args,
+                            # A malformed call from a previous turn would
+                            # otherwise raise here and abort the whole request.
+                            "arguments": _parse_args(args) if isinstance(args, str) else args,
                         },
                     })
                 adapted.append({**msg, "tool_calls": fixed_tcs})
