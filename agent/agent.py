@@ -851,18 +851,13 @@ class Agent:
                     continue
 
             else:
-                # Arm the sticky footer *before* the turn header.
-                # start() blanks the bottom FOOTER_LINES rows, so a
-                # header printed first is erased whenever the screen
-                # was already full and it landed on one of those rows.
+                # Arm the sticky footer before the turn starts.
+                # start() blanks the bottom FOOTER_LINES rows, so anything
+                # printed first is erased whenever the screen was already
+                # full and it landed on one of those rows.
                 self.output.footer_start()
                 self._footer_refresh()
                 self.output.newline()
-                self.output.rule(style="agent")
-                self.output.print(
-                    f"[agent]⩥ [bold]Wisemonkey[/bold] ⩤ [/agent]  [accent]⇒ {self.core.config.get('model.name')}[/accent]"
-                )
-                self.output.print("  [kbd]Ctrl[/kbd]+[kbd]C[/kbd]: Cancel turn\n")
                 try:
                     self._turn_in_progress = True
                     # Reset the emitter so a previously cancelled turn does
@@ -1250,19 +1245,13 @@ class Agent:
                             self.output.err(result.msg)
                     continue
 
-                # Arm the sticky footer *before* the turn header.
-                # start() blanks the bottom FOOTER_LINES rows, so a
-                # header printed first is erased whenever the screen
-                # was already full and it landed on one of those rows.
+                # Arm the sticky footer before the turn starts.
+                # start() blanks the bottom FOOTER_LINES rows, so anything
+                # printed first is erased whenever the screen was already
+                # full and it landed on one of those rows.
                 self.output.footer_start()
                 self._footer_refresh()
                 self.output.newline()
-                self.output.rule(style="agent")
-                self.output.print(
-                    f"[agent]⨯ [bold]Wisemonkey[/bold] ⨯ [/agent]  "
-                    f"[accent]⇒ {handshake.model}[/accent]"
-                )
-                self.output.print("  [kbd]Ctrl[/kbd]+[kbd]C[/kbd]: Cancel turn\n")
                 self._turn_in_progress = True
                 self._md_stream_start()
                 # Capture mid-turn keystrokes so the user can steer.

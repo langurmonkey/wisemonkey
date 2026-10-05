@@ -303,12 +303,16 @@ if __name__ == "__main__":
 
 
 class TestTurnHeaderOrdering(unittest.TestCase):
-    """The footer must be armed *before* the turn header is printed.
+    """The footer must be armed *before* anything is printed for the turn.
 
     ``Footer.start()`` blanks the bottom ``FOOTER_LINES`` rows and sets the
-    scroll region. If the header is printed first, a screen that is already
-    full puts the header on one of those rows and ``start()`` erases it --
-    which is how the "Wisemonkey <model>" line intermittently disappears.
+    scroll region. If output is printed first, a screen that is already
+    full puts it on one of those rows and ``start()`` erases it -- which is
+    how the "Wisemonkey <model>" line intermittently disappeared. The turn
+    header is gone now (the model lives in the footer), but the invariant
+    is not: the blank line that separates the turn from the prompt above it
+    is still printed after ``footer_start()``, and it would vanish the same
+    way.
 
     These tests pin the *ordering* in the source, since the failure only
     shows up on a full screen and cannot be reproduced in a StringIO.
@@ -330,21 +334,19 @@ class TestTurnHeaderOrdering(unittest.TestCase):
             if isinstance(n.func, ast.Attribute)
         ]
 
-    def _header_index(self, order: list[str]) -> int:
-        """Index of the ``print`` that renders the turn header.
-
-        It is the first ``print`` after the last ``newline`` in the turn
-        block, i.e. the one that follows the blank line under the prompt.
-        """
-        return len(order) - 1 - order[::-1].index("print")
-
-    def test_local_turn_arms_footer_before_printing_header(self):
+    def test_local_turn_arms_footer_before_printing_anything(self):
         order = self._call_order(Agent.run_interactive)
-        self.assertLess(order.index("footer_start"), self._header_index(order))
+        self.assertLess(
+            order.index("footer_start"),
+            len(order) - 1 - order[::-1].index("newline"),
+        )
 
-    def test_remote_turn_arms_footer_before_printing_header(self):
+    def test_remote_turn_arms_footer_before_printing_anything(self):
         order = self._call_order(Agent._run_interactive_remote)
-        self.assertLess(order.index("footer_start"), self._header_index(order))
+        self.assertLess(
+            order.index("footer_start"),
+            len(order) - 1 - order[::-1].index("newline"),
+        )
 
     def test_footer_stops_after_the_turn(self):
         """The footer is disarmed in the finally block, after the header."""
