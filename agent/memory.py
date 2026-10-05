@@ -535,6 +535,10 @@ class ChatMemory:
 
         # Set up persistence
         self._chat_path = Path(session_dir) / "chat_history.json"
+        # Append-only log of exchanges that fell out of the rolling window
+        # or out of the token budget. Never read back into the context --
+        # it exists purely so no user data is lost.
+        self._archive_path = Path(session_dir) / "chat_archive.jsonl"
 
         # Load from disk
         self._load()
@@ -629,13 +633,32 @@ class ChatMemory:
         # Persist immediately
         self.save()
 
+    def _archive(self, entries: list[dict]) -> None:
+        """Append trimmed exchanges to the never-read archive log.
+
+        Failures are swallowed: an unwritable archive must never take the
+        session down, and the archive is a convenience, not state the agent
+        depends on.
+        """
+        if not entries:
+            return
+        try:
+            self._archive_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._archive_path, "a", encoding="utf-8") as f:
+                for e in entries:
+                    f.write(json.dumps(e, ensure_ascii=False) + "\n")
+        except (OSError, TypeError, ValueError):
+            pass
+
     def _trim(self):
         """Remove oldest exchanges until under the token limit."""
 
         self._recount_tokens()
+        dropped = []
         while self.total_tokens > self.max_tokens and self._exchanges:
-            self._exchanges.pop(0)
+            dropped.append(self._exchanges.pop(0))
             self._recount_tokens()
+        self._archive(dropped)
 
         # Save after trimming
         self.save()
@@ -651,10 +674,11 @@ class ChatMemory:
         return starts
 
     def _trim_to_window(self) -> int:
-        """Destructively trim to the last `window_turns` exchanges.
+        """Trim to the last `window_turns` exchanges, archiving the rest.
 
         A no-op when `window_turns` is 0 (disabled). Returns the number of
-        exchanges removed.
+        entries removed from the live window. The removed entries are appended
+        to `chat_archive.jsonl` before being dropped, so nothing is lost.
         """
         if self.window_turns <= 0 or not self._exchanges:
             return 0
@@ -668,8 +692,10 @@ class ChatMemory:
         # stray tool results) before that point.
         cutoff = starts[-self.window_turns]
         removed = cutoff
+        dropped = self._exchanges[:cutoff]
         self._exchanges = self._exchanges[cutoff:]
         self._recount_tokens()
+        self._archive(dropped)
         self.save()
         return removed
 

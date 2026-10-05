@@ -161,7 +161,9 @@ In both modes the line stays in the client FIFO until delivery is confirmed, so 
 
 ### Chat memory rolling window (`agent/memory.py`)
 
-`ChatMemory` supports a turn-based rolling window via `agent.memory_rolling_window_turns` (default `0` = disabled). When > 0, only the last n exchanges (a user message plus everything after it until the next user message) are kept; older exchanges are destructively removed. Trimming happens after each `add_exchange()` and at load time (reconciling a lowered setting), before the token-cap compaction, which remains as a backstop.
+`ChatMemory` supports a turn-based rolling window via `agent.memory_rolling_window_turns` (default `0` = disabled). When > 0, only the last n exchanges (a user message plus everything after it until the next user message) are kept; older exchanges leave the live history. Trimming happens after each `add_exchange()` and at load time (reconciling a lowered setting), before the token-cap compaction, which remains as a backstop.
+
+Trimmed entries are **never destroyed**: both `_trim_to_window()` and `_trim()` append what they drop to `chat_archive.jsonl` in the session directory (`ChatMemory._archive`). That file is append-only, is never read back into the prompt, and never affects token accounting or window state — it exists purely so the user can recover anything that aged out. Archive write failures are swallowed: the archive is a convenience, not state the agent depends on. Note that `_clear()` / `/history-clear` and `drop_last()` (used by `/edit`, `/retry`, `/undo`) are deliberate user actions and still remove entries without archiving.
 
 ### Tool System (`agent/tools.py` + `tools/`)
 

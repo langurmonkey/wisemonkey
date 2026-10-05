@@ -375,6 +375,59 @@ class TestChatMemoryWindow(BaseTest):
         assert len(cm2._exchanges) == 4
         assert cm2._exchanges[0]["content"] == "msg 2"
 
+    def test_window_archives_dropped_entries(self):
+        """Entries dropped by the rolling window are kept on disk."""
+        cm = ChatMemory(self.session_dir, max_tokens=10**9, window_turns=2)
+        self._fill(cm, 4)
+        lines = [
+            json.loads(line)
+            for line in (self.session_dir / "chat_archive.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        # The two evicted exchanges (msg 0/reply 0, msg 1/reply 1) survive.
+        assert [e["content"] for e in lines] == [
+            "msg 0",
+            "reply 0",
+            "msg 1",
+            "reply 1",
+        ]
+        # The live window is unaffected and the archive is never loaded back.
+        assert [e["content"] for e in cm._exchanges] == ["msg 2", "reply 2",
+                                                         "msg 3", "reply 3"]
+        reopened = ChatMemory(self.session_dir, max_tokens=10**9, window_turns=2)
+        assert [e["content"] for e in reopened._exchanges] == ["msg 2", "reply 2",
+                                                               "msg 3", "reply 3"]
+
+    def test_token_trim_archives_dropped_entries(self):
+        """The token-cap backstop also archives rather than discards."""
+        cm = ChatMemory(self.session_dir, max_tokens=10**9, window_turns=0)
+        self._fill(cm, 3)
+        cm.max_tokens = 1
+        cm._trim()
+        assert cm._exchanges == []
+        lines = [
+            json.loads(line)
+            for line in (self.session_dir / "chat_archive.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        assert [e["content"] for e in lines] == [
+            "msg 0", "reply 0", "msg 1", "reply 1", "msg 2", "reply 2",
+        ]
+
+    def test_archive_is_append_only_across_trims(self):
+        cm = ChatMemory(self.session_dir, max_tokens=10**9, window_turns=2)
+        self._fill(cm, 3)
+        self._fill(cm, 2)
+        lines = (self.session_dir / "chat_archive.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+        # msg 0..2 are evicted, each exactly once.
+        assert [json.loads(x)["content"] for x in lines] == [
+            "msg 0", "reply 0", "msg 1", "reply 1", "msg 2", "reply 2",
+        ]
+
 
 class TestChatMemoryDropLast(BaseTest):
     """`drop_last` removes whole exchanges from the tail of the history.
