@@ -553,7 +553,7 @@ class WisemonkeyTui(App):
                 if "\n" in content:
                     buf = self._reasoning_buffer
                     self._reasoning_buffer = ""
-                    self.output.print(f"[dim]{buf}[/dim]")
+                    self.output.print(f"[thinking]{buf}[/thinking]")
 
         elif stage == Stage.STOP:
             if self._cancel_event.is_set():
@@ -569,7 +569,7 @@ class WisemonkeyTui(App):
                 self._thinking_spinner_interval = None
             # Flush any remaining reasoning content
             if self._reasoning_buffer:
-                self.output.print(f"[dim]{self._reasoning_buffer}[/dim]")
+                self.output.print(f"[thinking]{self._reasoning_buffer}[/thinking]")
                 self._reasoning_buffer = ""
 
             self.output.ok("💡 Done thinking")

@@ -224,6 +224,7 @@ The rules the palette encodes, each of which fixed a real defect:
 - **`patch-add`/`patch-remove` are the same green/red as `ok`/`error`.** They were `green` and `red` against `chartreuse4` and `bold red` — two greens and two reds doing one job each.
 - **`path` is foreground-only.** It was `#999999 on #252525`, which drew a dark rectangle around every path and every `$ command` in a light terminal.
 - **Yellow is keycaps only.** Keycaps are the one place a hue that means nothing semantic is worth the contrast.
+- **Reasoning text has its own role, `thinking`.** It was `[weak]` in the REPL and `[dim]` in the TUI — two different greys for one thing, and the brighter of the two competed with the answer. `thinking` is its own field, `think` (darker than both `weak` and `faint`), in both frontends, since the model musing about its plan is not part of the answer.
 
 Roles (`agent`, `user`, `tool`, `path`, ...) are **properties**, not fields, so they cannot be assigned independently and drift apart.
 

@@ -71,6 +71,7 @@ class Palette:
     warn: str = "#f0883e"
     ok: str = "#3fb950"
     error: str = "#f85149"
+    think: str = "#576069"  # thinking text
 
     # --- neutrals ------------------------------------------------------
     text: str = "#c9d1d9"  # default body text, if a style ever needs one
@@ -112,6 +113,19 @@ class Palette:
         return self.blue_dim
 
     @property
+    def thinking(self) -> str:
+        """The model's reasoning text, streamed mid-turn.
+
+        Its own grey, darker than `weak` (annotations the agent wrote) and
+        darker than `faint` (separators): the model musing about its plan is
+        not part of the answer, so it must never compete with either. `think`
+        is a dedicated field rather than a reuse of `faint`, because
+        separators and reasoning are different things that happen to want a
+        similar shade.
+        """
+        return self.think
+
+    @property
     def path(self) -> str:
         """Foreground only, no background block.
 
@@ -150,6 +164,7 @@ class Palette:
             "code": f"{self.text} on {self.bar_bg}",
             "prompt": f"{self.ok} bold",
             "weak": self.weak,
+            "thinking": self.thinking,
             "kbd": f"{self.kbd} bold on {self.bar_bg}",
             "link": f"{self.accent} underline",
             # Patching: the same green/red as ok/error, so a diff and a

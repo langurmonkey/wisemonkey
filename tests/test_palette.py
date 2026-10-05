@@ -23,7 +23,7 @@ STYLE_TAGS = {
     "accent", "accent-bold", "agent", "cmd", "code", "err", "error",
     "info", "kbd", "link", "list-desc", "list-item", "ok", "output-frame",
     "patch-add", "patch-remove", "path", "prompt", "server", "session-name",
-    "status", "time", "title", "tool", "user", "warn", "weak",
+    "status", "thinking", "time", "title", "tool", "user", "warn", "weak",
 }
 
 
@@ -78,6 +78,37 @@ class TestRichTheme(TestCase):
     def test_path_has_no_background(self):
         """`#999999 on #252525` drew a dark block on a light terminal."""
         assert " on " not in PALETTE.rich_theme_dict()["path"]
+
+    def test_thinking_is_dimmer_than_the_body(self):
+        """Reasoning text must recede below both the body and the annotations.
+
+        `weak` is an annotation the *agent* wrote; the model's own thinking is
+        not part of the answer at all, so it sits on a step of its own. The
+        test pins the *ordering*, not the hex: retuning `think` is allowed,
+        making it brighter than `weak` is not.
+        """
+        p = PALETTE
+        lum = lambda c: (0.2126 * int(c[1:3], 16)
+                         + 0.7152 * int(c[3:5], 16)
+                         + 0.0722 * int(c[5:7], 16))
+        assert p.thinking != p.weak
+        assert p.thinking != p.faint
+        assert lum(p.thinking) < lum(p.weak) < lum(p.text)
+        theme = p.rich_theme_dict()
+        assert theme["thinking"] == p.thinking
+        assert theme["thinking"] != theme["weak"]
+
+    def test_reasoning_sites_use_the_thinking_tag(self):
+        """Pins the wiring: a `[weak]`/`[dim]` left behind in a frontend would
+        pass every palette test above (the TUI rendered reasoning with `[dim]`,
+        the REPL with `[weak]` -- two different greys for one thing)."""
+        for src_path, needle in (
+            ("agent/agent.py", 'print(f"[thinking]{escape(payload.text)}[/]"'),
+            ("agent/tui.py", 'f"[thinking]{buf}[/thinking]"'),
+            ("agent/tui.py", 'f"[thinking]{self._reasoning_buffer}[/thinking]"'),
+        ):
+            src = pathlib.Path(src_path).read_text(encoding="utf-8")
+            assert needle in src, f"{src_path}: reasoning not using [thinking]"
 
     def test_kbd_is_the_only_yellow(self):
         p = PALETTE

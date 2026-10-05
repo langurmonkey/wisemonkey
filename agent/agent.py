@@ -212,7 +212,10 @@ class Agent:
                 self._reasoning_start(payload.visible)
             elif payload.stage == StageKind.PROCESS:
                 if payload.text and payload.visible:
-                    print(f"[weak]{escape(payload.text)}[/]", end="")
+                    # The model's own reasoning: the dimmest readable grey, so
+                    # it never competes with the answer or with `[weak]`
+                    # annotations.
+                    print(f"[thinking]{escape(payload.text)}[/]", end="")
             elif payload.stage == StageKind.STOP:
                 self._reasoning_stop()
 
