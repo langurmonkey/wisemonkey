@@ -61,7 +61,6 @@ uv publish
 
 ```bash
 git push origin master --follow-tags
-git push github master --follow-tags   # if you mirror to GitHub
 ```
 
 ## Notes / gotchas
