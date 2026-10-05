@@ -10,20 +10,20 @@ The core:
 import json
 import re
 import time
-import tiktoken
-
+from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
-from agent.config import get_config, get_mcp_config_path, BASE_CONFIG_DIR
-from agent.memory import Memory
-from agent.skills import SkillLoader
+import tiktoken
+
+from agent.config import BASE_CONFIG_DIR, get_config, get_mcp_config_path
 from agent.mcp import MCPClient
+from agent.memory import Memory
 from agent.router import ModelRouter
-from agent.tools import get_tool_schemas, execute_tool
-
+from agent.skills import SkillLoader
+from agent.tools import execute_tool, get_tool_schemas
 
 # Regex matching ANSI escape sequences (SGR codes and all CSI sequences).
 _ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
@@ -425,11 +425,18 @@ class Core:
                 # `include_usage`) has no delta to read, so it is checked
                 # before the delta access.
                 chunk_usage = getattr(chunk, "usage", None)
-                if chunk_usage:
-                    usage = {
-                        "prompt_tokens": chunk_usage.get("prompt_tokens", 0) or 0,
-                        "completion_tokens": chunk_usage.get("completion_tokens", 0) or 0,
-                    }
+                if chunk_usage is not None:
+                    if isinstance(chunk_usage, dict):
+                        usage = {
+                            "prompt_tokens": chunk_usage.get("prompt_tokens", 0) or 0,
+                            "completion_tokens": chunk_usage.get("completion_tokens", 0) or 0,
+                        }
+                    else:
+                        # OpenAI SDK returns a CompletionUsage dataclass.
+                        usage = {
+                            "prompt_tokens": getattr(chunk_usage, "prompt_tokens", 0) or 0,
+                            "completion_tokens": getattr(chunk_usage, "completion_tokens", 0) or 0,
+                        }
                     continue
 
                 # Track when first chunk arrives (excludes request send time)
@@ -608,8 +615,13 @@ class Core:
         prompt_tokens = 0
         completion_tokens = 0
         if usage:
-            prompt_tokens = usage.get("prompt_tokens", 0) or 0
-            completion_tokens = usage.get("completion_tokens", 0) or 0
+            if isinstance(usage, dict):
+                prompt_tokens = usage.get("prompt_tokens", 0) or 0
+                completion_tokens = usage.get("completion_tokens", 0) or 0
+            else:
+                # OpenAI SDK CompletionUsage dataclass.
+                prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+                completion_tokens = getattr(usage, "completion_tokens", 0) or 0
         tokens = completion_tokens
         if not tokens and self.encoding and self.response_buffer:
             tokens = len(self.encoding.encode(self.response_buffer))

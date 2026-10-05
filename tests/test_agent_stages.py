@@ -96,13 +96,15 @@ class TestPromptStage(unittest.TestCase):
             agent._prompt_stop()
         self.assertEqual(agent._spinner_started(), ["⏳ Processing prompt..."])
 
-    def test_completion_line_printed_once(self):
+    def test_no_completion_line_printed(self):
+        """The "✓ Prompt processed" line was removed: on a full screen it
+        overwrites the last line of the user's prompt text."""
         agent = self._agent()
         with mock.patch("agent.agent.ok") as printed:
             for _ in range(3):
                 agent._prompt_start()
                 agent._prompt_stop()
-        self.assertEqual(printed.call_count, 1)
+        self.assertEqual(printed.call_count, 0)
 
     def test_spinner_cleared_on_stop(self):
         agent = self._agent()

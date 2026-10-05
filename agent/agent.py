@@ -313,11 +313,10 @@ class Agent:
             self.spinner_prompt = None
         self._spinner_clear()
         # The prompt stage fires once per LLM round (each tool round
-        # re-enters the LLM), so only report completion on the first
-        # round of a turn.
-        if not self._prompt_reported:
-            self._prompt_reported = True
-            ok("⏳ Prompt processed")
+        # re-enters the LLM). No completion marker — the footer carries the
+        # model name and the response itself signals that the turn started.
+        # Printing "✓ Prompt processed" on a full screen overwrites the last
+        # line of the prompt text, which is why it was removed.
 
     def _reasoning_start(self, visible: bool) -> None:
         if visible:
