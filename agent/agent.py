@@ -848,6 +848,12 @@ class Agent:
                     continue
 
             else:
+                # Arm the sticky footer *before* the turn header.
+                # start() blanks the bottom FOOTER_LINES rows, so a
+                # header printed first is erased whenever the screen
+                # was already full and it landed on one of those rows.
+                self.output.footer_start()
+                self._footer_refresh()
                 self.output.newline()
                 self.output.rule(style="agent")
                 self.output.print(
@@ -860,9 +866,6 @@ class Agent:
                     # not poison this one (poll() must start out False).
                     self.emitter.reset()
                     self._md_stream_start()
-                    # Arm the sticky footer for the duration of the turn.
-                    self.output.footer_start()
-                    self._footer_refresh()
                     # Capture mid-turn keystrokes so the user can steer.
                     self._steer_start()
                     # Expand @file references into attached context (model
@@ -1244,6 +1247,12 @@ class Agent:
                             self.output.err(result.msg)
                     continue
 
+                # Arm the sticky footer *before* the turn header.
+                # start() blanks the bottom FOOTER_LINES rows, so a
+                # header printed first is erased whenever the screen
+                # was already full and it landed on one of those rows.
+                self.output.footer_start()
+                self._footer_refresh()
                 self.output.newline()
                 self.output.rule(style="agent")
                 self.output.print(
@@ -1253,9 +1262,6 @@ class Agent:
                 self.output.print("  [kbd]Ctrl[/kbd]+[kbd]C[/kbd]: Cancel turn\n")
                 self._turn_in_progress = True
                 self._md_stream_start()
-                # Arm the sticky footer for the duration of the turn.
-                self.output.footer_start()
-                self._footer_refresh()
                 # Capture mid-turn keystrokes so the user can steer.
                 self._steer_start()
                 try:
