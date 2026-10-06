@@ -21,7 +21,7 @@ from agent.completion import SmartPathCompleter
 from agent.console import err, info, newline, ok, print
 from agent.core import Core
 from agent.emitter import TurnEmitter
-from agent.footer import _ACCENT, _DIM, _LABEL, _RESET
+from agent.footer import _ACCENT, _DIM, _LABEL, _RESET, FOOTER_LINES
 from agent.ipc import (
     ContentPayload,
     Event,
@@ -938,6 +938,11 @@ class Agent:
                 # start() blanks the bottom FOOTER_LINES rows, so anything
                 # printed first is erased whenever the screen was already
                 # full and it landed on one of those rows.
+                # Push the prompt box above the footer zone first: a tall
+                # prompt leaves its last lines inside the FOOTER_LINES rows
+                # that start() would blank and streamed output would
+                # overwrite. The newlines scroll the box clear of the zone.
+                self.output.footer_clear_prompt()
                 self.output.footer_start()
                 self._turn_start_mem = self.core.memory.get_chat_stats()[0]
                 self._live_chars = 0
@@ -1348,6 +1353,9 @@ class Agent:
                 # start() blanks the bottom FOOTER_LINES rows, so anything
                 # printed first is erased whenever the screen was already
                 # full and it landed on one of those rows.
+                # Push the prompt box above the footer zone (same reason as
+                # the local path), then arm the footer.
+                self.output.footer_clear_prompt()
                 self.output.footer_start()
                 self._turn_start_mem = remote.memory_stats()[0]
                 self._live_chars = 0

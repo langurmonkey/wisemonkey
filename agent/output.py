@@ -109,6 +109,9 @@ class OutputAdapter(Protocol):
     # Frontends that own a plain terminal (the classic REPL) implement these;
     # full-screen frontends inherit these no-ops.
 
+    def footer_clear_prompt(self) -> None:
+        """Scroll the prompt box clear of the footer zone before arming."""
+
     def footer_start(self) -> None:
         """Reserve the bottom terminal rows for a sticky status line."""
 
@@ -190,6 +193,10 @@ class RichOutputAdapter(OutputAdapter):
         self._footer_status_cache: tuple[str, str] = ("", "")
 
     # ── sticky footer (active only during an assistant turn) ────────────
+
+    def footer_clear_prompt(self) -> None:
+        """Scroll the prompt box above the footer zone before arming it."""
+        self._footer.clear_prompt_zone()
 
     def footer_start(self) -> None:
         """Reserve the bottom terminal rows for the sticky status line."""

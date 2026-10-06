@@ -257,6 +257,26 @@ class Footer:
 
     # Lifecycle
 
+    def clear_prompt_zone(self) -> None:
+        """Push the prompt box above the footer zone before the footer arms.
+
+        After prompt_toolkit accepts a tall prompt, the cursor sits on the
+        last line of the prompt box. If that line is inside the bottom
+        ``FOOTER_LINES`` rows, ``start()`` will blank it and streamed output
+        will overwrite the bottom of the box. Emitting ``FOOTER_LINES``
+        newlines scrolls the box fully clear of the reserved rows.
+
+        No-op when stdout is not a TTY.
+        """
+        if not self._is_tty():
+            return
+        out = real_stream()
+        try:
+            out.write("\n" * FOOTER_LINES)
+            out.flush()
+        except Exception:
+            pass
+
     def start(self) -> None:
         """Arm the footer: set the scroll region and reserve the bottom rows.
 
