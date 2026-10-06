@@ -942,7 +942,9 @@ class Agent:
                 self._turn_start_mem = self.core.memory.get_chat_stats()[0]
                 self._live_chars = 0
                 self._footer_refresh()
-                self.output.newline()
+                # No newline here: footer_start() leaves the cursor at the
+                # bottom of the scroll region, so \r\n would advance the cursor
+                # onto the first footer row and overwrite the separator.
                 try:
                     self._turn_in_progress = True
                     # Reset the emitter so a previously cancelled turn does
@@ -1350,13 +1352,14 @@ class Agent:
                 self._turn_start_mem = remote.memory_stats()[0]
                 self._live_chars = 0
                 self._footer_refresh()
-                self.output.newline()
+                # No newline here: footer_start() leaves the cursor at the
+                # bottom of the scroll region, so \r\n would advance the cursor
+                # onto the first footer row and overwrite the separator.
                 self._turn_in_progress = True
                 self._md_stream_start()
                 # Capture mid-turn keystrokes so the user can steer.
                 self._steer_start()
                 try:
-                    end = remote.prompt(text=user_input, on_event=self._handle_event)
                     # Flush the streaming renderer before the statusline so
                     # the trailing partial line doesn't land after it.
                     self._md_stream_stop()
