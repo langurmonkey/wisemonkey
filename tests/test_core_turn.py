@@ -1,6 +1,7 @@
 """Tests for the phase-1 core turn changes: TurnResult, cancellation state,
 tool result reporting, and the emitter integration."""
 
+import json
 import unittest
 
 from typing import Any, cast
@@ -639,3 +640,58 @@ class TestSteerInjection(unittest.TestCase):
                 core.run_turn("go", inject_callback=lambda: value)
             users = [m for m in core.messages if m["role"] == "user"]
             assert [m["content"] for m in users] == ["go"]
+
+
+class TestImageToolResults(unittest.TestCase):
+    """Images from screenshot/read_image must reach the model as image blocks.
+
+    `execute_tool` serializes dict results to JSON, so the image branch in
+    `_tool_calls` used to be dead code: `isinstance(result, dict)` was never
+    true and the base64 blob went to the model as a plain string it could
+    not see. The result is now parsed back before the branch.
+    """
+
+    def _core(self):
+        core = make_core([{"text": "", "tool_calls": [
+            {"id": "c1", "type": "function",
+             "function": {"name": "fake_img", "arguments": "{}"}},
+        ]}, {"text": "done"}])
+        return core
+
+    def test_image_result_becomes_multimodal_block(self):
+        core = self._core()
+        payload = {"image_base64": "QUJD", "mime_type": "image/jpeg"}
+        with patch("agent.core.execute_tool",
+                   return_value=json.dumps(payload)):
+            core.run_turn("look")
+        tool_msgs = [m for m in core.messages if m["role"] == "tool"]
+        self.assertEqual(len(tool_msgs), 1)
+        content = tool_msgs[0]["content"]
+        self.assertIsInstance(content, list)
+        self.assertEqual(content[0]["type"], "image_url")
+        self.assertEqual(
+            content[0]["image_url"]["url"], "data:image/jpeg;base64,QUJD"
+        )
+
+    def test_error_dict_is_flagged(self):
+        """A dict-shaped {"error": ...} must be reported as an error."""
+        core = make_core([{"text": "", "tool_calls": [
+            {"id": "c1", "type": "function",
+             "function": {"name": "fake", "arguments": "{}"}},
+        ]}, {"text": "done"}])
+        seen = []
+        with patch("agent.core.execute_tool",
+                   return_value=json.dumps({"error": "boom"})):
+            core.run_turn("go", tool_result_callback=lambda *a, **k: seen.append(a))
+        self.assertTrue(seen[0][3])  # is_error
+
+    def test_plain_string_stays_plain(self):
+        """A handler returning a plain string must not be re-parsed."""
+        core = make_core([{"text": "", "tool_calls": [
+            {"id": "c1", "type": "function",
+             "function": {"name": "fake", "arguments": "{}"}},
+        ]}, {"text": "done"}])
+        with patch("agent.core.execute_tool", return_value="ok"):
+            core.run_turn("go")
+        tool_msgs = [m for m in core.messages if m["role"] == "tool"]
+        self.assertEqual(tool_msgs[0]["content"], "ok")

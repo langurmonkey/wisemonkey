@@ -396,7 +396,8 @@ class ModelRouter:
         format than OpenAI.  This method:
         1. Extracts system messages into a separate string.
         2. Converts OpenAI-style image_url content blocks to Anthropic's
-           image source format in tool result messages.
+           image source format, in tool results and in user messages (the
+           pending-image path attaches images to user prompts too).
         """
         system_parts = []
         chat_messages = []
@@ -406,8 +407,10 @@ class ModelRouter:
                 if content:
                     system_parts.append(content)
             else:
-                # Convert image blocks in tool results from OpenAI to Anthropic format
-                if msg.get("role") == "tool" and isinstance(msg.get("content"), list):
+                # Convert image blocks from OpenAI to Anthropic format. Tool
+                # results carry screenshots; user messages carry images
+                # attached by the pending-image path or /attach-image.
+                if msg.get("role") in ("tool", "user") and isinstance(msg.get("content"), list):
                     converted_content = []
                     text_parts = []
                     for block in msg["content"]:
@@ -656,8 +659,29 @@ class ModelRouter:
                         },
                     })
                 adapted.append({**msg, "tool_calls": fixed_tcs})
-            else:
-                adapted.append(msg)
+                continue
+
+            # Ollama has no image_url content blocks: images go in a separate
+            # `images` list of raw base64 strings and content must be plain
+            # text. Extract the base64 data out of OpenAI-style blocks
+            # (tool results from screenshot/read_image, user messages with a
+            # pending image) so the vision decoder actually receives them.
+            content = msg.get("content")
+            if msg.get("role") in ("tool", "user") and isinstance(content, list):
+                images = list(msg.get("images", []) or [])
+                text_parts = []
+                for block in content:
+                    if block.get("type") == "image_url":
+                        url = block.get("image_url", {}).get("url", "")
+                        if url.startswith("data:"):
+                            _, data = url.split(",", 1)
+                            images.append(data)
+                    elif block.get("type") == "text":
+                        text_parts.append(block.get("text", ""))
+                msg = {**msg, "content": "\n".join(text_parts)}
+                if images:
+                    msg["images"] = images
+            adapted.append(msg)
 
         options = {"temperature": temp}
         if thinking and thinking != "none":

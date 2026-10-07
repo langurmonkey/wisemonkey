@@ -6,11 +6,12 @@ required for privacy/security.
 """
 
 from io import BytesIO
+
 from PIL import ImageGrab
 
+from agent.output import get_output_or_ipc
 from agent.tools import tool
 from agent.utils import resize_image
-from agent.output import get_output_or_ipc
 
 
 @tool(

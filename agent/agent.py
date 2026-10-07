@@ -1368,6 +1368,7 @@ class Agent:
                 # Capture mid-turn keystrokes so the user can steer.
                 self._steer_start()
                 try:
+                    end = remote.prompt(text=user_input, on_event=self._handle_event)
                     # Flush the streaming renderer before the statusline so
                     # the trailing partial line doesn't land after it.
                     self._md_stream_stop()

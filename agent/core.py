@@ -1064,39 +1064,81 @@ class Core:
                 raise
             duration = time.time() - started
 
+            # `execute_tool` serializes dict results to JSON, so what comes
+            # back is usually a *string* even when the handler returned a
+            # dict. The image and error checks below need the structured
+            # form, so parse it back. Without this the multimodal branch
+            # never fired and images reached the model as a raw base64
+            # string it could not see -- and a dict-shaped `{"error": ...}`
+            # was never flagged as an error either. Only objects are
+            # promoted: a handler that returns a plain string ("ok") or a
+            # JSON list stays exactly as it was.
+            if isinstance(result, str):
+                try:
+                    parsed = json.loads(result)
+                except (ValueError, TypeError):
+                    parsed = None
+                if isinstance(parsed, dict):
+                    result = parsed
+
             # Check if the result contains an image (e.g. screenshot tool)
             if isinstance(result, dict) and "image_base64" in result:
-                # Build a multimodal content block with the image
                 mime_type = result.get("mime_type", "image/png")
                 b64_data = result["image_base64"]
-                content = [
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:{mime_type};base64,{b64_data}",
-                        },
-                    },
-                    {
-                        "type": "text",
-                        "text": result.get("text", f"[Tool '{tool_name}' returned an image]"),
-                    },
-                ]
-                self.messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": content,
-                })
-                # Record a short placeholder for the image tool result
-                summary = result.get("text", f"[Tool '{tool_name}' returned an image]")
-                self.memory.add_chat_exchange(
-                    self, "tool_result", summary, name=tool_name,
-                    tool_call_id=tc["id"],
-                )
-                if tool_result_callback:
-                    tool_result_callback(
-                        tc["id"], tool_name, summary, False, duration,
-                        b64_data, mime_type,
+
+                # Some tools (read_image) return "_pending": True to attach
+                # the image to the *next* user prompt rather than emitting it
+                # immediately as a multimodal content block. The pending image
+                # is consumed by _send_to_llm when building the user message.
+                if result.get("_pending"):
+                    self._pending_image = {
+                        "image_base64": b64_data,
+                        "mime_type": mime_type,
+                    }
+                    summary = f"[Tool '{tool_name}' loaded an image — will be sent with your next message]"
+                    self.messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": json.dumps({"success": True, "message": summary}),
+                    })
+                    self.memory.add_chat_exchange(
+                        self, "tool_result", summary, name=tool_name,
+                        tool_call_id=tc["id"],
                     )
+                    if tool_result_callback:
+                        tool_result_callback(
+                            tc["id"], tool_name, summary, False, duration,
+                        )
+                else:
+                    # Immediate multimodal content block (screenshot behaviour)
+                    content = [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{b64_data}",
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": result.get("text", f"[Tool '{tool_name}' returned an image]"),
+                        },
+                    ]
+                    self.messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": content,
+                    })
+                    # Record a short placeholder for the image tool result
+                    summary = result.get("text", f"[Tool '{tool_name}' returned an image]")
+                    self.memory.add_chat_exchange(
+                        self, "tool_result", summary, name=tool_name,
+                        tool_call_id=tc["id"],
+                    )
+                    if tool_result_callback:
+                        tool_result_callback(
+                            tc["id"], tool_name, summary, False, duration,
+                            b64_data, mime_type,
+                        )
             else:
                 # Standard text/JSON tool result
                 is_error = isinstance(result, dict) and bool(result.get("error"))

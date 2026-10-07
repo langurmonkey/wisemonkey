@@ -174,6 +174,18 @@ Ownership differs by mode, because the queue lives in the client but the turn li
 
 In both modes the line stays in the client FIFO until delivery is confirmed, so a turn that ends before another tool call loses nothing: the main loop's `_steer_drain` runs the line as an ordinary next prompt. A new turn also clears the server queue, so injections never leak across turns. A callback that raises is swallowed by `Core._drain_injections` — a UI failure to collect typed text must not abort a working turn.
 
+### Images from tools (`tools/screenshot.py`, `tools/read_image.py`)
+
+`execute_tool()` serializes dict results to JSON, so what `Core._tool_calls()` receives is usually a **string** even when the handler returned a dict. The result is parsed back (`json.loads`, dicts only) before the image/error branches — without that, `isinstance(result, dict)` was never true, the multimodal branch was dead code, and images reached the model as a raw base64 string it could not see. A dict-shaped `{"error": ...}` was never flagged as an error either. A handler returning a plain string or a JSON list is untouched.
+
+An image result (`image_base64` + `mime_type`) becomes a multimodal `tool` message with an `image_url` data-URL block. The routers translate it per provider:
+
+- **OpenAI/LM Studio/generic** — sent as-is (`image_url` blocks).
+- **Anthropic** — `_adapt_messages_for_anthropic()` converts `image_url` blocks to `{type: image, source: {type: base64, ...}}` in **tool results and user messages** (the pending-image path attaches to user prompts too).
+- **Ollama** — has no image blocks at all: `_chat_ollama()` extracts the base64 data out of the blocks into a separate `images: [...]` list on the message and flattens content to plain text.
+
+`tools/read_image.py` loads an image file from disk and returns the same shape as `screenshot`, so both reach the vision decoder through the identical path. `tests/test_core_turn.py::TestImageToolResults` pins the parse-back, the multimodal block, the error flag and the plain-string pass-through.
+
 ### Chat memory rolling window (`agent/memory.py`)
 
 `ChatMemory` supports a turn-based rolling window via `agent.memory_rolling_window_turns` (default `0` = disabled). When > 0, only the last n exchanges (a user message plus everything after it until the next user message) are kept; older exchanges leave the live history. Trimming happens after each `add_exchange()` and at load time (reconciling a lowered setting), before the token-cap compaction, which remains as a backstop.

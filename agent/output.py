@@ -612,6 +612,9 @@ class TuiOutputAdapter(OutputAdapter):
     # The full-screen TUI owns the terminal, so it draws its own status bar
     # and keeps the prompt live during a turn. These are no-ops here.
 
+    def footer_clear_prompt(self) -> None:
+        """No-op: the TUI owns the whole screen."""
+
     def footer_start(self) -> None:
         """No-op: the TUI status bar is always visible."""
 
@@ -766,6 +769,9 @@ class IpcOutputAdapter(OutputAdapter):
             return bool(value)
         self._output("text", f"[ask] {message}", level="warn")
         return default
+
+    def footer_clear_prompt(self) -> None:
+        """No-op: no terminal is owned in an IPC context."""
 
     def footer_start(self) -> None:
         """No-op: no terminal is owned in an IPC context."""
