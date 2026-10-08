@@ -9,17 +9,16 @@ Design: memory is buffered in memory. Changes are persisted to disk
 when save() is called. On init, state is loaded from disk.
 """
 
-import json
-
-from agent.tokens import count_tokens
 import datetime
+import json
 import os
-
-from textwrap import shorten
-from rich.markup import escape
 from pathlib import Path
+from textwrap import shorten
+
+from rich.markup import escape
 from xdg_base_dirs import xdg_data_home
 
+from agent.tokens import count_tokens
 
 # Roles that represent the human-readable conversation, as opposed to the
 # machinery around it. A recap of "what did we discuss" wants these; the

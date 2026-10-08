@@ -8,18 +8,18 @@ the proper modules. It also creates the actual agent and runs it.
 
 import argparse
 import datetime
-import sys
 import os
+import sys
 import traceback
-
-from importlib.metadata import version as get_version
 from importlib.metadata import metadata
-from rich.prompt import Confirm
+from importlib.metadata import version as get_version
 from pathlib import Path
+
+from rich.prompt import Confirm
 from xdg_base_dirs import xdg_data_home
 
+from agent.console import console, err, newline, ok, print
 from agent.utils import contractuser
-from agent.console import print, err, ok, console, newline
 
 # Ensure the project root (parent of agent/) is on the path
 # This handles both pip-installed and direct execution

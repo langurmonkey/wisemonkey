@@ -22,6 +22,7 @@ from agent.console import err, info, newline, ok, print
 from agent.core import Core
 from agent.emitter import TurnEmitter
 from agent.footer import _ACCENT, _DIM, _LABEL, _RESET, FOOTER_LINES
+from agent.history import PromptHistory
 from agent.ipc import (
     ContentPayload,
     Event,
@@ -38,13 +39,12 @@ from agent.ipc import (
     loopback_pair,
     payload_as,
 )
-from agent.mdstream import MarkdownStreamRenderer
-from agent.history import PromptHistory
 from agent.keys import (
     disable_kitty_keyboard,
     enable_kitty_keyboard,
     install_enter_bindings,
 )
+from agent.mdstream import MarkdownStreamRenderer
 from agent.output import RichOutputAdapter, set_output
 from agent.palette import PALETTE
 from agent.startup import startup_info

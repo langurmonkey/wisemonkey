@@ -717,7 +717,7 @@ def _cmd_history_compact(
     if params:
         return False, no_params_error, None, None
 
-    history_text = core.memory.get_chat_formatted()
+    history_text = core.memory.get_chat_history_formatted()
     chars_before = len(history_text) if history_text else 0
     tks_before = count_tokens(history_text) if history_text else 0
 
