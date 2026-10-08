@@ -284,6 +284,10 @@ class Memory:
         self._user_profile = self._load_json(self._user_profile_path, {})
         self._notes = self._load_json(self._notes_path, [])
 
+        # Load session-specific config, falling back to global
+        from agent.config import get_config
+        get_config().load_for_session(session)
+
     def switch_session(
         self,
         session,

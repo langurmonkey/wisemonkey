@@ -233,7 +233,9 @@ Sessions contain:
 - Notes (see [session memory](#session-memory))
 - User profile (see [session memory](#session-memory))
 
-For now, the configuration file is the same for all sessions.
+The configuration file can be session-specific. When a session starts, the agent first looks for
+`<session_dir>/config.yaml`. If it exists, that file is used; otherwise, the global config
+`<config_dir>/wisemonkey/config.yaml` is used.
 
 > Sessions are matched by the directory name in the sessions location (`~/.local/share/wisemonkey/sessions`). You can rename a session by just renaming the directory! 
 

@@ -122,6 +122,22 @@ class Config:
             repo_dir = agent_dir.parent
             self.load(repo_dir / "config.yaml")
 
+    def load_for_session(self, session_name: str):
+        """Load configuration for a session, falling back to global config.
+        
+        Looks for $XDG_DATA_HOME/wisemonkey/sessions/<session_name>/config.yaml.
+        If not found, uses the global config file.
+        """
+        from xdg_base_dirs import xdg_data_home
+        session_dir = xdg_data_home() / "wisemonkey" / "sessions" / session_name
+        session_config_path = session_dir / "config.yaml"
+        
+        if session_config_path.exists():
+            self.load(str(session_config_path))
+        else:
+            # Fall back to global config
+            self.load()
+
     def reload(self):
         """Reload the currently selected configuration file."""
         self.load(self._config_path)
