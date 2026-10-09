@@ -417,9 +417,6 @@ class Core:
                     prompt_callback(Stage.STOP)
                     prompt_stopped = True
 
-                delta = chunk.choices[0].delta
-                now = time.time()
-
                 # Provider-reported token usage, when the final chunk
                 # carries it. A choices-less usage chunk (OpenAI with
                 # `include_usage`) has no delta to read, so it is checked
@@ -438,6 +435,13 @@ class Core:
                             "completion_tokens": getattr(chunk_usage, "completion_tokens", 0) or 0,
                         }
                     continue
+
+                # Guard against empty choices (keepalive chunks, metadata, etc.)
+                if not getattr(chunk, "choices", None):
+                    continue
+
+                delta = chunk.choices[0].delta
+                now = time.time()
 
                 # Track when first chunk arrives (excludes request send time)
                 if first_chunk_time is None:
