@@ -1007,17 +1007,38 @@ def _cmd_skills(
     return True, None, buff, None
 
 
-@cmd("/model", "Configure the model to use", aliases=["/models"])
-def _cmd_models(
+def _configure_endpoint(
     core, params, output: OutputAdapter | None = None
 ) -> tuple[bool, str | None, str | None, str | None]:
+    """Configure a whole endpoint in one flow.
+
+    URL, provider, API key and model are one decision, not four: OpenRouter,
+    OpenCode and a local vLLM are all ``generic`` but need three *different*
+    keys, and the key belongs to the endpoint rather than to the model. Asking
+    for the URL first therefore also decides the provider (auto-detected) and
+    which key variables are even relevant -- a local endpoint asks no key
+    question at all.
+
+    Steps: URL -> provider (auto-detected, overridable) -> key variable ->
+    router init -> model.
+    """
     ui = output or _fallback_output()
     from agent.config import get_config
-    from agent.router import Provider
+    from agent.router import Provider, _match_provider_url
 
     config = get_config()
 
-    # Provider selection
+    # --- 1. Endpoint URL -------------------------------------------------
+    current_url = config.get("model.base_url") or ""
+    new_url = ui.ask_string(
+        " Enter the endpoint URL", default=current_url
+    ).strip()
+    config.set("model.base_url", new_url)
+
+    # --- 2. Provider, auto-detected from the URL ------------------------
+    # None means an unrecognised host, not "generic": only a known URL decides
+    # the provider by itself.
+    detected = _match_provider_url(new_url)
     current_provider = config.get("model.provider", "")
     provider_opts = [
         (Provider.OPENAI.value, "OpenAI"),
@@ -1027,12 +1048,72 @@ def _cmd_models(
         (Provider.GENERIC.value, "Generic (OpenAI-compatible)"),
     ]
 
-    selected_provider = ui.ask_choice(
-        message="Choose a provider:",
-        options=provider_opts,
-        default=current_provider if current_provider else Provider.GENERIC.value,
-    )
+    known_providers = {p for p, _ in provider_opts}
+    if detected is not None and detected.value in known_providers:
+        # Known URL: no question. The URL is authoritative, and asking anyway
+        # is how people end up sending their Anthropic key to a generic host.
+        selected_provider = detected.value
+    else:
+        # Unknown host (OpenRouter, OpenCode, vLLM, ...): ask, defaulting to
+        # the current setting or `generic`. Only the canonical URLs are in
+        # _PROVIDER_URLS, so anything else is an OpenAI-compatible endpoint
+        # unless the user says otherwise.
+        default_provider = (
+            current_provider if current_provider in known_providers
+            else Provider.GENERIC.value
+        )
+        selected_provider = ui.ask_choice(
+            message="Provider for this URL (OpenAI-compatible?):",
+            options=provider_opts,
+            default=default_provider,
+        )
     config.set("model.provider", selected_provider)
+
+    # API key env var. Asked before the router is reinitialized because the
+    # key is what the router needs in order to list models at all, and because
+    # switching routers is exactly the case where the right variable changes.
+    # We store the variable *name*, never the key, so config.yaml stays safe to
+    # share.
+    from agent.router import api_key_candidates, suggest_key_env
+
+    candidates = api_key_candidates(Provider(selected_provider))
+    if candidates:
+        current_env = str(config.get("model.api_key_env", "") or "").strip()
+        # Choice list, not free text: the key variable for an
+        # OpenAI-compatible host is arbitrary (one per endpoint), and having
+        # to recall the exact name is the failure mode. Offer the host's
+        # conventional name first, then the resolution chain, with "auto" as
+        # the default so behaviour is unchanged for anyone who does not need
+        # the explicit link.
+        options: list[tuple[str, str]] = [
+            ("", "Auto-detect: " + " or ".join(candidates)),
+        ]
+        for name in [suggest_key_env(new_url), current_env, *candidates]:
+            if name and not any(n == name for n, _ in options):
+                mark = " (set)" if os.environ.get(name, "").strip() else ""
+                options.append((name, name + mark))
+
+        new_env = str(
+            ui.ask_choice(
+                message=(
+                    f" Environment variable holding the API key for "
+                    f"{selected_provider}:"
+                ),
+                options=options,
+                default=current_env,
+            )
+            or ""
+        ).strip()
+        config.set("model.api_key_env", new_env)
+        if new_env and not os.environ.get(new_env, "").strip():
+            return (
+                False,
+                f"{new_env} is not set in your environment or .env file. "
+                f"Set it, or choose auto-detect "
+                f"({' or '.join(candidates)}).",
+                None,
+                None,
+            )
 
     # Reinitialize router with new provider
     ok, msg = core.initialize_router()
@@ -1048,7 +1129,9 @@ def _cmd_models(
     if not models:
         return (
             True,
-            f"Provider set to {selected_provider} (no models listed)",
+            f"Endpoint: [accent]{new_url}[/accent] · "
+            f"Provider: [accent]{selected_provider}[/accent] "
+            f"(no models listed)",
             None,
             None,
         )
@@ -1066,9 +1149,13 @@ def _cmd_models(
         success = core.set_model(result)
         if success:
             pub.sendMessage("prompt-update")
+            key_src = config.get("model.api_key_env", "") or "auto"
             return (
                 True,
-                f"Provider: [accent]{selected_provider}[/accent]— Model: [accent]{result}[/accent]",
+                f"Endpoint: [accent]{new_url}[/accent] · "
+                f"Provider: [accent]{selected_provider}[/accent] · "
+                f"Key: [accent]{key_src}[/accent] · "
+                f"Model: [accent]{result}[/accent]",
                 None,
                 None,
             )
@@ -1079,30 +1166,36 @@ def _cmd_models(
 
 
 @cmd(
+    "/model",
+    "Configure the endpoint: URL, provider, API key variable and model",
+    aliases=["/models"],
+)
+def _cmd_models(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
+    """Entry point for the merged endpoint flow; see :func:`_configure_endpoint`."""
+    return _configure_endpoint(core, params, output)
+
+
+@cmd(
     "/url",
-    "Configure the base URL",
+    "Configure the endpoint (alias of /model: URL, provider, key, model)",
 )
 def _cmd_url(
     core, params, output: OutputAdapter | None = None
 ) -> tuple[bool, str | None, str | None, str | None]:
-    if params:
-        return False, no_params_error, None, None
+    """Alias of ``/model``.
 
-    ui = output or _fallback_output()
-    from agent.config import get_config
+    URL, provider, API key and model are one decision: an OpenAI-compatible
+    host needs its key chosen alongside the URL, not as a separate step, so
+    ``/url`` runs the same flow rather than setting the URL and leaving the
+    endpoint half-configured.
 
-    config = get_config()
-    base_url = config.get("model.base_url")
-
-    new_url = ui.ask_string(" Enter the endpoint URL", default=base_url or "")
-
-    config.set("model.base_url", new_url)
-
-    ok, msg = core.initialize_router()
-    if not ok:
-        return False, f"{msg}", None, None
-
-    return True, "Configuration saved successfully", None, None
+    Delegates to :func:`_configure_endpoint` rather than to ``/model``, because
+    the ``@cmd`` decorator registers a command and returns ``None`` -- there is
+    no usable function under that name.
+    """
+    return _configure_endpoint(core, params, output)
 
 
 @cmd(
@@ -1157,8 +1250,8 @@ def _cmd_config(
     if params:
         return False, no_params_error, None, None
 
-    # URL, model, reasoning, temperature, vi
-    commands = ["/url", "/model", "/reasoning", "/temperature", "/vi", "/markdown"]
+    # Endpoint (URL, provider, key, model), then, reasoning, temperature, vi
+    commands = ["/model", "/reasoning", "/temperature", "/vi", "/markdown"]
 
     for command in commands:
         ok, msg, _, _, _ = registry.run_command(core, command, output)

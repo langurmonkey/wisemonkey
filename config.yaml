@@ -10,6 +10,15 @@ model:
   base_url: http://127.0.0.1:1234/v1
   # Temperature setting for inference
   temperature: 0.8
+  # Name of the environment variable holding this endpoint's API key. Set it
+  # when you use several routers/endpoints and want to keep their keys side by
+  # side, e.g. OPENROUTER_API_KEY or OPENCODE_API_KEY. It is a variable NAME,
+  # never the key itself, so config.yaml stays safe to share.
+  # Left unset, the key is resolved from the environment in this order:
+  #   WM_API_KEY_<PROVIDER>  (e.g. WM_API_KEY_GENERIC, WM_API_KEY_ANTHROPIC)
+  #   the provider's conventional var (OPENAI_API_KEY / ANTHROPIC_API_KEY)
+  #   WM_API_KEY  (generic fallback, tried last)
+  # api_key_env: OPENROUTER_API_KEY
   # Token prices, per million tokens, in your currency. Optional: when set,
   # the per-turn cost is shown in the status line. Leave unset to hide cost
   # (a made-up price would be worse than none).

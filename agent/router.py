@@ -60,14 +60,37 @@ _PROVIDER_URLS = [
     ("http://127.0.0.1:1234/v1", Provider.LMSTUDIO),
 ]
 
-# Provider-specific API key environment variables
-_PROVIDER_KEYS = {
-    Provider.OPENAI: "OPENAI_API_KEY",
-    Provider.ANTHROPIC: "ANTHROPIC_API_KEY",
-    Provider.OLLAMA: None,    # No key needed
-    Provider.LMSTUDIO: None,  # No key needed
-    Provider.GENERIC: "OPENAI_API_KEY",
+# API key resolution, per provider.
+#
+# One config value must serve several very different endpoints: a user who
+# mostly drives Wisemonkey through routers (OpenRouter, OpenCode, ...) flips
+# between them, and all of them speak the OpenAI dialect. A single global
+# WM_API_KEY would have to be rewritten on every switch -- ending up in shell
+# history -- and, worse, would send one endpoint's key to another the moment
+# the provider changed. So resolution is an ordered chain, per provider, and
+# the first non-empty entry wins:
+#
+#   1. ``model.api_key_env``  -- the env var *name* from config.yaml. Explicit
+#      wins, and naming a var rather than storing a secret keeps the key out of
+#      a config file that may be shared or committed.
+#   2. ``WM_API_KEY_<PROVIDER>`` -- namespaced, so several endpoint keys can
+#      coexist. This is what actually solves the router case.
+#   3. The provider's conventional var (``OPENAI_API_KEY`` / ...), so the
+#      ``openai``/``anthropic`` SDKs' own auto-discovery keeps working and
+#      existing setups do not break.
+#
+# Local providers need nothing.
+_PROVIDER_KEY_CHAINS: dict[Provider, tuple[str, ...]] = {
+    Provider.OPENAI: ("WM_API_KEY_OPENAI", "OPENAI_API_KEY"),
+    Provider.ANTHROPIC: ("WM_API_KEY_ANTHROPIC", "ANTHROPIC_API_KEY"),
+    Provider.OLLAMA: (),
+    Provider.LMSTUDIO: (),
+    Provider.GENERIC: ("WM_API_KEY_GENERIC", "OPENAI_API_KEY"),
 }
+
+# Last-resort convenience var, tried last for every key-bearing provider. Never
+# the only source: it must not be able to leak one provider's key to another.
+WM_FALLBACK_KEY_ENV = "WM_API_KEY"
 
 # Ordered effort vocabulary. ``config.yaml`` offers one ladder and each
 # provider supports a different subset of it, so the configured value is
@@ -112,21 +135,89 @@ def _clamp_effort(effort: str, allowed: tuple[str, ...]) -> str:
     return _EFFORT_ORDER[min(max(idx, lo), hi)]
 
 
+def _match_provider_url(base_url: str) -> Provider | None:
+    """Return the provider for a *known* base URL, or None if unrecognised.
+
+    ``_detect_provider`` collapses everything unknown to ``GENERIC``, which is
+    the right answer for routing but hides the distinction the endpoint
+    configurator needs: a canonical host decides the provider outright, while an
+    unknown host (OpenRouter, OpenCode, vLLM) has to ask.
+    """
+    normalized = (base_url or "").rstrip("/")
+    for url, provider in _PROVIDER_URLS:
+        if normalized and normalized == url.rstrip("/"):
+            return provider
+    return None
+
+
 def _detect_provider(base_url: str) -> Provider:
     """Auto-detect provider from base URL."""
-    normalized = base_url.rstrip("/")
-    for url, provider in _PROVIDER_URLS:
-        if normalized == url.rstrip("/"):
-            return provider
-    return Provider.GENERIC
+    return _match_provider_url(base_url) or Provider.GENERIC
 
 
-def _get_api_key(provider: Provider) -> str:
-    """Get the appropriate API key for the provider."""
-    env_var = _PROVIDER_KEYS.get(provider)
-    if env_var is None:
-        return ""
-    return os.environ.get(env_var, "")
+# Host fragment -> the env var name a user of that endpoint most likely keeps
+# its key in. This is a *hint*, never part of the resolution order: the key for
+# an OpenAI-compatible host is genuinely arbitrary, so the point is only to put
+# the right name in front of the user instead of making them recall it. Matched
+# as a substring of the base URL, longest-first, so "api.openrouter.ai" wins
+# over a bare "openrouter".
+_HOST_KEY_HINTS: tuple[tuple[str, str], ...] = (
+    ("opencode.ai", "OPENCODE_API_KEY"),
+    ("openrouter.ai", "OPENROUTER_API_KEY"),
+    ("localhost:1234", "LMSTUDIO_API_KEY"),
+    ("localhost:3001", "FREELLMAPI_API_KEY"),
+    ("api.openai.com", "OPENAI_API_KEY"),
+    ("api.anthropic.com", "ANTHROPIC_API_KEY"),
+)
+
+
+def suggest_key_env(base_url: str) -> str:
+    """Return the env var name most likely to hold this endpoint's key.
+
+    Empty string when nothing matches. Advisory only: it never affects
+    :func:`_get_api_key`, which resolves strictly through
+    :func:`api_key_candidates`.
+    """
+    url = (base_url or "").lower()
+    for fragment, env_name in sorted(
+        _HOST_KEY_HINTS, key=lambda kv: -len(kv[0])
+    ):
+        if fragment in url:
+            return env_name
+    return ""
+
+
+def api_key_candidates(provider: Provider, explicit_env: str = "") -> list[str]:
+    """Return the env var names tried for ``provider``, in order.
+
+    Order is "most explicit wins": the configured ``model.api_key_env``, then
+    the namespaced ``WM_API_KEY_<PROVIDER>``, then the provider's conventional
+    var, then the generic ``WM_API_KEY`` fallback. Exposed so the "missing key"
+    error can name every name it looked for instead of guessing.
+    """
+    if provider not in (Provider.OPENAI, Provider.ANTHROPIC, Provider.GENERIC):
+        return []
+    explicit = (explicit_env or "").strip()
+    chain: list[str] = []
+    if explicit:
+        chain.append(explicit)
+    chain += [n for n in _PROVIDER_KEY_CHAINS[provider] if n != explicit]
+    chain.append(WM_FALLBACK_KEY_ENV)
+    # de-dupe, preserving order (an explicit name may repeat a chain entry)
+    return list(dict.fromkeys(chain))
+
+
+def _get_api_key(provider: Provider, explicit_env: str = "") -> str:
+    """Resolve the API key for ``provider`` from the environment chain.
+
+    The first non-empty variable in :func:`api_key_candidates` wins; the value
+    itself is never stored in config.
+    """
+    for name in api_key_candidates(provider, explicit_env):
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +336,8 @@ class ModelRouter:
         self._base_url: str = ""
         self._temperature: float = 0.8
         self._thinking_effort: str = "low"
+        # Env var *name* (never the key itself) naming this endpoint's key
+        self._key_env: str = ""
     # ------------------------------------------------------------------
     # Initialisation
     # ------------------------------------------------------------------
@@ -272,12 +365,16 @@ class ModelRouter:
             self.provider = _detect_provider(self._base_url)
 
         # 2. Resolve API key
-        api_key = _get_api_key(self.provider)
+        explicit_env = self.config.get("model.api_key_env", "") or ""
+        self._key_env = str(explicit_env).strip()
+        api_key = _get_api_key(self.provider, self._key_env)
         if not api_key and self.provider in (Provider.OPENAI, Provider.ANTHROPIC):
-            env_var = _PROVIDER_KEYS[self.provider]
+            tried = ", ".join(api_key_candidates(self.provider, explicit_env))
             return False, (
-                f"Missing API key for {self.provider.value}. "
-                f"Set {env_var} in your environment or .env file."
+                f"Missing API key for {self.provider.value}. Tried: {tried}. "
+                f"Set one in your environment or .env file, or point "
+                f"model.api_key_env at a variable holding the key, or run "
+                f"/onboard."
             )
 
         # 3. Create the *single* client needed for this provider
@@ -939,8 +1036,11 @@ class ModelRouter:
 
     def get_status(self) -> str:
         """Return a human-readable status string."""
-        key_env = _PROVIDER_KEYS.get(self.provider)
-        key_set = bool(os.environ.get(key_env)) if key_env else True
+        # Report the variable that will actually supply the key, so the status
+        # line names the same source the resolver uses.
+        chain = api_key_candidates(self.provider, self._key_env)
+        key_env = chain[0] if chain else "not needed"
+        key_set = bool(_get_api_key(self.provider, self._key_env))
         effort = self._thinking_effort
         if not effort or effort == "none":
             thinking_desc = "off"

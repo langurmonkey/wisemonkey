@@ -231,6 +231,44 @@ The child gets its own **process group**, so `kill_job` signals the whole group:
 
 `ChatMemory` tracks `total_tokens` and triggers `/history-compact` when it exceeds `agent.max_chat_history`. `total_tokens` is computed by tokenizing the exact rendered history returned by `get_formatted(timestamps=False, width=0)`, including tool-result truncation and compact adjacent tool call/result blocks. Recount after changes to stored exchanges, loading, trimming, or clearing. Keep this accounting in sync with `get_formatted()` if its rendering changes.
 
+### API key resolution (`agent/router.py`)
+
+Wisemonkey is typically driven through routers (OpenRouter, OpenCode, a local vLLM) that all speak the OpenAI dialect but each want their own key. A single global key variable is therefore the wrong shape: it must be rewritten on every provider switch (so it ends up in shell history), and one endpoint's key would be sent to another the moment the provider changed. `_get_api_key()` is instead an ordered, per-provider chain, first non-empty wins:
+
+1. `model.api_key_env` — an environment variable **name** from `config.yaml`. Explicit always wins. It is a name and never the key itself, so `config.yaml` stays safe to share or commit; the key lives in the environment or `.env`.
+2. `WM_API_KEY_<PROVIDER>` — namespaced per provider (`WM_API_KEY_GENERIC`, `WM_API_KEY_OPENAI`, `WM_API_KEY_ANTHROPIC`). This is what actually solves the router case: several endpoint keys coexist without any of them moving.
+3. The provider's conventional variable — `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`. This step is what keeps the `openai`/`anthropic` SDKs' own auto-discovery and every existing user setup working.
+4. `WM_API_KEY` — a generic fallback, tried **last** for every key-bearing provider.
+
+Local providers (`OLLAMA`, `LMSTUDIO`) resolve to no chain at all and get a `dummy` key. `api_key_candidates()` is the single definition of the order and is also what the missing-key error and `get_status()` render, so the message names every variable actually tried instead of guessing one. Two invariants the tests pin: only step 4 is shared (so `WM_API_KEY_GENERIC` never satisfies an Anthropic request), and an empty value anywhere in the chain is skipped rather than treated as a stop.
+
+Do not collapse the chain into one variable, and do not cache the resolved key on the router: the point of the design is that switching `model.provider` / `model.base_url` re-resolves correctly.
+
+### The endpoint is one decision (`agent/commands.py`)
+
+`/model` configures a whole endpoint: URL → provider → key variable → model, with `/url` as an alias for the same flow. URL, provider, key and model are not four independent settings. OpenRouter, OpenCode and a local vLLM are all `generic` but need three *different* keys, and the key belongs to the endpoint, not to the model — switching from `deepseek-v4` to `gpt-5.1` on OpenRouter must never touch `api_key_env`. Asking for the URL first also decides what else is relevant: a local endpoint (`api_key_candidates` returns `[]`) asks no key question at all.
+
+Two details worth preserving:
+
+- `_match_provider_url()` returns `None` for an unknown host, while `_detect_provider()` collapses to `GENERIC`. The command needs the distinction: a **known** URL (`api.anthropic.com`, `localhost:11434`) decides the provider with no question — asking is how an Anthropic key ends up being offered to a generic host — while an **unknown** host must ask, defaulting to `generic`.
+- `@cmd` registers the handler and returns `None`, so no command function name survives the decorator. Both `/model` and `/url` therefore delegate to the plain `_configure_endpoint()`; calling the decorated name raises `TypeError: 'NoneType' object is not callable`.
+
+`/config` runs the merged flow exactly once (it used to run `/url` and then `/model`, asking for the URL twice).
+
+The key step is a **choice list**, not free text. For an OpenAI-compatible host the variable name is genuinely arbitrary — one per endpoint — and having to recall it is the failure mode, so the options are the host's conventional name first (`suggest_key_env()`, matched longest-fragment-first over `_HOST_KEY_HINTS`), then the resolution chain, then whatever is already configured; variables actually present in the environment are marked `(set)`. `suggest_key_env()` is advisory only and never enters `api_key_candidates()`, which is the single definition of the order. "Auto-detect" (empty) stays the default so existing setups are unaffected.
+
+### Reasoning / thinking effort across providers
+
+One config vocabulary (`model.thinking.effort`: `none, minimal, low, medium, high, xhigh, max`) meets three providers with different dialects, so each path translates it separately:
+
+- **OpenAI / generic** — `reasoning_effort` in `extra_body`, sent only when thinking is actually on. `none` is a valid value in the OpenAI spec (gpt-5.1+), but it is a 400 on older models and on strict OpenAI-compatible proxies, and the same config key feeds LM Studio/vLLM/OpenCode, so the field is **omitted** instead of sent as `"none"` — omitting is the only value every endpoint accepts.
+- **Ollama** — a *top-level* `think` param (`bool | "low" | "medium" | "high"`), **not** an entry in `options`. `options` is serialized through the Pydantic `Options` model, which has no such field, so putting `reasoning_effort` there is silently dropped and Ollama thinking never turns on.
+- **Anthropic** — no ladder at all: an absolute `budget_tokens`, and `max_tokens` is *derived* from it (`max(8192, budget + 4096)`) because the API requires `budget_tokens < max_tokens`. A fixed `max_tokens` makes every budget above it a guaranteed 400.
+
+`_clamp_effort(effort, allowed)` snaps a *known* config level to the nearest one a provider accepts, up or down — asking for more than a provider has caps at its ceiling rather than silently meaning "off". An unknown value (a vendor extension like `ultra`) passes through untouched so an endpoint that does understand it still receives it.
+
+`reasoning_content` must be echoed back on the assistant message for DeepSeek-style thinking mode (`Core._tool_calls`), and stripped on the Anthropic path (`_adapt_messages_for_anthropic`), whose SDK rejects unknown message keys and whose thinking blocks are signed and cannot be reconstructed from text.
+
 ### Colour (`agent/palette.py`)
 
 `agent/palette.py` is the single source of truth for every colour the agent draws. Four frontends consume it, and **each is generated from the same fields**, so they cannot disagree:
@@ -300,6 +338,8 @@ Sessions are directories under `~/.local/share/wisemonkey/sessions/`. Each sessi
 1. Add a function in `agent/commands.py`
 2. Decorate with `@cmd(name, description, aliases=[])`
 3. Return `(ok, msg, content, markdown)`
+
+`@cmd` returns `None`, so another command cannot call a decorated handler by name. Put the logic in a plain function and let each `@cmd` entry point delegate to it (as `/model` and `/url` do via `_configure_endpoint`).
 
 ### Adding a Skill
 

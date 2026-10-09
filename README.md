@@ -82,10 +82,58 @@ Create the `.env` file with the API key:
 ```bash
 echo "OPENAI_API_KEY=your-api-key-here" > .env
 echo "ANTHROPIC_API_KEY=your-api-key-here" > .env
-echo "OLLAMA_API_KEY=your-api-key-here" > .env
 ```
 
-> The agent uses `python-dotenv` to load `.env` at startup. The `openai` package reads `OPENAI_API_KEY` from the environment automatically. You can also set `OPENAI_API_KEY` in your shell profile. Same goes for `ANTHROPIC_API_KEY` and `OLLAMA_API_KEY`.
+> The agent uses `python-dotenv` to load `.env` at startup. The `openai` package reads `OPENAI_API_KEY` from the environment automatically. You can also set `OPENAI_API_KEY` in your shell profile. Same goes for `ANTHROPIC_API_KEY`.
+
+### API keys for several endpoints
+
+Wisemonkey is usually driven through a router — OpenRouter, OpenCode, a local vLLM — and each of those wants its own key. A single global variable cannot cover that: you would have to rewrite it on every switch (into shell history), and one endpoint's key would be sent to another the moment the provider changed. So the key is resolved from an **ordered, per-provider chain**, first non-empty wins:
+
+1. `model.api_key_env` — the environment variable **name** given in `config.yaml`. Explicit always wins.
+2. `WM_API_KEY_<PROVIDER>` — namespaced, so several keys coexist. Providers are `GENERIC`, `OPENAI`, `ANTHROPIC` (`WM_API_KEY_GENERIC`, …). This is the one that makes router hopping painless.
+3. The provider's conventional variable — `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`. Existing setups keep working untouched.
+4. `WM_API_KEY` — a generic fallback, tried **last**, for every key-bearing provider.
+
+Local providers (Ollama, LM Studio) need no key.
+
+The rule is that only step 4 is shared: `WM_API_KEY_GENERIC` never satisfies an Anthropic request, so switching provider cannot send the wrong credential anywhere.
+
+**Recommended setup for routers.** Give each endpoint its own variable and point at it:
+
+```bash
+cat >> .env <<'EOF'
+OPENROUTER_API_KEY=sk-or-...
+OPENCODE_API_KEY=sk-oc-...
+EOF
+```
+
+```yaml
+model:
+  provider: generic
+  base_url: https://openrouter.ai/api/v1
+  api_key_env: OPENROUTER_API_KEY   # name only, never the key itself
+  name: anthropic/claude-sonnet-4.5
+```
+
+Switching to OpenCode is then two lines in `config.yaml`, with both keys still in `.env` and neither moving to your shell history. If you do not care which key is which, the namespaced variables need no config at all:
+
+```bash
+WM_API_KEY_GENERIC=sk-or-...   # used by any OpenAI-compatible endpoint
+WM_API_KEY_ANTHROPIC=sk-ant-...
+```
+
+In the agent loop, `/model` configures a whole endpoint in one flow: URL → provider → key variable → model (`/url` is an alias for the same flow). A canonical URL picks the provider for you, an unknown host asks whether it is OpenAI-compatible, and a local endpoint asks no key question at all. The key step is a list, not free text: it offers the host's conventional name first (`OPENROUTER_API_KEY` for `openrouter.ai`, `OPENCODE_API_KEY` for `opencode.ai`), marks the variables that are actually set in your environment, and keeps auto-detect as the default.
+
+Storing a key in `config.yaml` is not supported, deliberately: `config.yaml` gets shared and committed, `.env` does not. See `.env.example`.
+
+If a key cannot be found, Wisemonkey names every variable it tried, e.g.
+
+```
+Missing API key for generic. Tried: WM_API_KEY_GENERIC, OPENAI_API_KEY,
+WM_API_KEY. Set one in your environment or .env file, or point
+model.api_key_env at a variable holding the key, or run /onboard.
+```
 
 
 ## Run from source
@@ -93,8 +141,8 @@ echo "OLLAMA_API_KEY=your-api-key-here" > .env
 ```bash
 # Clone the repo, then build the project:
 uv build
-# Set API key:
-export OPENAI_API_KEY=your-api-key
+# Set an API key (any of the names in "API keys for several endpoints"):
+export WM_API_KEY_GENERIC=your-api-key
 # Run the agent with the default session:
 uv run wmk
 ```

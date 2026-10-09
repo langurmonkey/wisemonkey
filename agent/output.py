@@ -7,15 +7,14 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from typing import Protocol
 
-from rich.console import Console
-from rich.prompt import Prompt as RichPrompt, FloatPrompt, Confirm
-from rich.rule import Rule
-from rich.align import AlignMethod
-from rich.text import Text as RichText
-
-from prompt_toolkit.shortcuts import choice
 from prompt_toolkit.formatted_text import HTML
-
+from prompt_toolkit.shortcuts import choice
+from rich.align import AlignMethod
+from rich.console import Console
+from rich.prompt import Confirm, FloatPrompt
+from rich.prompt import Prompt as RichPrompt
+from rich.rule import Rule
+from rich.text import Text as RichText
 from textual.widgets import RichLog
 
 from agent.console import console, theme_dict
@@ -180,11 +179,11 @@ class RichOutputAdapter(OutputAdapter):
     """
 
     def __init__(self) -> None:
-        from agent.console import monkee_theme
         # `agent.footer_debug_bytes`: append every byte written to the
         # footer to $XDG_STATE_HOME/wisemonkey/footer.log, for diagnosing
         # terminal rendering problems.
         from agent.config import Config
+        from agent.console import monkee_theme
 
         debug = bool(Config().get("agent.footer_debug_bytes", False))
         self._footer = Footer(debug_bytes=debug)
