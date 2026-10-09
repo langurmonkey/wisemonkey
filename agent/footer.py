@@ -549,7 +549,6 @@ class Footer:
         follow-up), and is blank otherwise. The stage spinner and the
         reasoning indicator live on the right of the key-hints row instead,
         so an animation frame never competes with what the user is typing.
-        so an animation frame never competes with what the user is typing.
 
         The terminal size is re-read on every redraw so a resize mid-turn
         cannot leave stale geometry behind. The cursor is moved back to the
