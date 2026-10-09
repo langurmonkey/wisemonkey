@@ -69,12 +69,47 @@ _PROVIDER_KEYS = {
     Provider.GENERIC: "OPENAI_API_KEY",
 }
 
-# Anthropic thinking effort -> budget_tokens mapping
+# Ordered effort vocabulary. ``config.yaml`` offers one ladder and each
+# provider supports a different subset of it, so the configured value is
+# clamped rather than dropped: asking for more than a provider has must not
+# silently turn reasoning off.
+_EFFORT_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+
+# Anthropic thinking effort -> budget_tokens. Covers the whole config
+# vocabulary so an effort like ``max`` no longer falls back to 4096.
 _THINKING_BUDGET = {
-    "low": 1024,
-    "medium": 4096,
+    "minimal": 1024,
+    "low": 2048,
+    "medium": 8192,
     "high": 16384,
+    "xhigh": 24576,
+    "max": 32768,
 }
+
+# Anthropic requires budget_tokens < max_tokens, so max_tokens is derived from
+# the budget rather than fixed: with a hard-coded 8192, ``high`` (16384) was a
+# guaranteed 400 on every request.
+_ANTHROPIC_MAX_TOKENS = 8192
+_ANTHROPIC_RESPONSE_MARGIN = 4096
+
+
+def _clamp_effort(effort: str, allowed: tuple[str, ...]) -> str:
+    """Clamp a configured effort into the range ``allowed`` supports.
+
+    Providers accept different subsets of the config vocabulary: OpenAI takes
+    minimal..high, Ollama only low|medium|high. Asking for a level a provider
+    does not know must not raise and must not silently mean "off", so a known
+    level is snapped to the nearest one the provider *does* accept (down or
+    up). An unknown value (a vendor extension, say ``ultra``) is returned
+    unchanged so an endpoint that does understand it still receives it.
+    """
+    if effort not in _EFFORT_ORDER:
+        return effort
+    if effort in allowed:
+        return effort
+    idx = _EFFORT_ORDER.index(effort)
+    lo, hi = _EFFORT_ORDER.index(allowed[0]), _EFFORT_ORDER.index(allowed[-1])
+    return _EFFORT_ORDER[min(max(idx, lo), hi)]
 
 
 def _detect_provider(base_url: str) -> Provider:
@@ -223,7 +258,8 @@ class ModelRouter:
         self._base_url = self.config.get("model.base_url", "").strip()
         self._model_name = self.config.get("model.name", "")
         self._temperature = self.config.get("model.temperature", 0.6)
-        self._thinking_effort = self.config.get("model.thinking.effort", "low")
+        effort = str(self.config.get("model.thinking.effort", "low") or "").strip().lower()
+        self._thinking_effort = effort or "none"
 
         # 1. Detect provider
         explicit = self.config.get("model.provider", "").strip().lower()
@@ -384,10 +420,14 @@ class ModelRouter:
         if stream:
             kwargs["stream_options"] = {"include_usage": True}
 
-        # Extra body params (reasoning_effort, etc.)
-        kwargs["extra_body"] = {
-            "reasoning_effort": thinking
-        }
+# Extra body params (reasoning_effort, etc.). Only sent when thinking
+        # is actually on: `none` is valid on recent OpenAI models but is a 400
+        # on older ones and on strict OpenAI-compatible proxies, and an empty
+        # effort would be meaningless. Clamped to the levels the OpenAI family
+        # accepts so the config-only `xhigh`/`max` do not 400 either.
+        if thinking and thinking != "none":
+            effort = _clamp_effort(thinking, ("minimal", "low", "medium", "high"))
+            kwargs["extra_body"] = {"reasoning_effort": effort}
 
         return self._openai_client.chat.completions.create(**kwargs)
 
@@ -486,12 +526,20 @@ class ModelRouter:
         anthropic_tools = self._convert_tools_for_anthropic(tools)
 
         # Anthropic requires temperature=1 when thinking is enabled.
-        thinking_enabled = thinking and thinking != "none"
+        thinking_enabled = bool(thinking) and thinking != "none"
         effective_temp = 1.0 if thinking_enabled else temp
+        # Anthropic has no effort ladder: it takes an absolute token budget and
+        # requires budget_tokens < max_tokens. max_tokens is therefore derived
+        # from the budget -- hard-coding 8192 made every budget above it (all
+        # of `high`/`xhigh`/`max`) a guaranteed 400.
+        budget = _THINKING_BUDGET.get(thinking, 8192) if thinking_enabled else 0
+        max_tokens = _ANTHROPIC_MAX_TOKENS
+        if thinking_enabled:
+            max_tokens = max(max_tokens, budget + _ANTHROPIC_RESPONSE_MARGIN)
 
         kwargs: dict = {
             "model": model_name,
-            "max_tokens": 8192,
+            "max_tokens": max_tokens,
             "messages": chat_msgs,
             "temperature": effective_temp,
         }
@@ -500,7 +548,6 @@ class ModelRouter:
             kwargs["system"] = system
 
         if thinking_enabled:
-            budget = _THINKING_BUDGET.get(thinking, 4096)
             kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
 
         if anthropic_tools:
@@ -699,14 +746,20 @@ class ModelRouter:
             adapted.append(msg)
 
         options = {"temperature": temp}
-        if thinking and thinking != "none":
-            options["reasoning_effort"] = thinking
 
         kwargs = {
             "model": model_name,
             "messages": adapted,   # <-- use adapted, not messages
             "options": options,
         }
+        # Ollama's thinking switch is a *top-level* `think` parameter
+        # (bool | "low" | "medium" | "high"), not an option. Stuffing it into
+        # `options` looked right but was silently dropped: `options` is
+        # serialised through the Pydantic `Options` model, which has no such
+        # field, so Ollama thinking never actually turned on. Clamped to the
+        # three levels Ollama accepts.
+        if thinking and thinking != "none":
+            kwargs["think"] = _clamp_effort(thinking, ("low", "medium", "high"))
         if tools:
             kwargs["tools"] = tools
 
@@ -888,13 +941,24 @@ class ModelRouter:
         """Return a human-readable status string."""
         key_env = _PROVIDER_KEYS.get(self.provider)
         key_set = bool(os.environ.get(key_env)) if key_env else True
-        thinking_enabled = self._thinking_effort and self._thinking_effort != "none"
-        budget = _THINKING_BUDGET.get(self._thinking_effort, "n/a") if thinking_enabled else "off"
+        effort = self._thinking_effort
+        if not effort or effort == "none":
+            thinking_desc = "off"
+        elif self.provider == Provider.ANTHROPIC:
+            # Anthropic has no ladder: the config effort becomes a token
+            # budget, and max_tokens is sized off it.
+            thinking_desc = (f"{effort} "
+                             f"(budget: {_THINKING_BUDGET.get(effort, 8192)} tokens)")
+        elif self.provider == Provider.OLLAMA:
+            thinking_desc = _clamp_effort(effort, ("low", "medium", "high"))
+        else:
+            thinking_desc = _clamp_effort(
+                effort, ("minimal", "low", "medium", "high"))
         return (
             f"Provider: {self.provider.value} | "
             f"Model: {self._model_name} | "
             f"URL: {self._base_url} | "
             f"Temp: {self._temperature} | "
-            f"Thinking: {self._thinking_effort} (budget: {budget} tokens) | "
+            f"Thinking: {thinking_desc} | "
             f"Key: {'set' if key_set else 'missing'}"
         )
