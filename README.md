@@ -386,7 +386,7 @@ If the turn finishes before another tool call happens, nothing is lost. The line
 
 ### Details
 
-- The footer input row is deliberately **not** a line editor: no history, no completion, and nothing is echoed to stdout while you type. It only draws the transient row. The spinner yields to whatever you are typing.
+- The footer input row is deliberately **not** a line editor: no history, no completion, and nothing is echoed to stdout while you type. It only draws the transient row. The stage spinner and the `💡 Thinking...` indicator live on the bottom hints row, to the right of the key bindings, so they never overwrite what you are typing.
 - <kbd>Ctrl</kbd> + <kbd>c</kbd> still cancels the running turn, even mid-turn. The key is deliberately left enabled in cbreak mode for exactly this reason.
 - Lines you type are captured as raw keystrokes, so an accidental keypress is harmless; it just does not appear until you press <kbd>Enter</kbd>.
 - Steering works in both modes: local, and attached to a daemon server (the client forwards the line over the socket, and the server confirms delivery before the client drops its own copy).

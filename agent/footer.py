@@ -52,6 +52,7 @@ import shutil
 import sys
 import threading
 import time
+
 from agent.palette import PALETTE
 
 # Number of lines reserved for the footer:
@@ -65,6 +66,11 @@ FOOTER_LINES = 4
 # (see :func:`real_stream`).
 SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 SPINNER_INTERVAL = 0.08
+
+# Label of the reasoning indicator on the key-hints row. It carries an
+# animation frame in front of it exactly like the stage spinner, so the glyph
+# is part of the label (the frame goes before it, not in place of it).
+THINKING_LABEL = "💡 Thinking..."
 
 # Sentinel for "the transient row has not been drawn yet". Distinct from "",
 # which means "drawn, and empty": the spinner thread relies on that
@@ -222,11 +228,12 @@ class Footer:
         self._term_width = 80
         self._status_text = ""
         # `_UNSET` marks "the transient row has not been drawn yet", which is
-        # distinct from "" ("drawn, and empty"). `_input_is_spinner` records
-        # whether the row currently holds one of our own animation frames, so
-        # the spinner thread knows whether it may advance it.
+        # distinct from "" ("drawn, and empty").
         self._input_text: str = _UNSET
-        self._input_is_spinner = False
+        # Whether the "💡 Thinking..." indicator is shown on the key-hints row.
+        # Set via `set_thinking`; `start` clears it, since a new turn is not
+        # reasoning.
+        self._thinking = False
         self._debug_bytes = debug_bytes
         self._saved_stdout = None
         # Spinner state. `_spinner_text` is the stage label ("" = idle);
@@ -282,6 +289,9 @@ class Footer:
 
         No-op if stdout is not a TTY or the terminal is too small.
         """
+        # A new turn means no reasoning is in progress: clear any indicator
+        # the previous turn left behind (it may have ended mid-reasoning).
+        self._thinking = False
         if self._active or not self._is_tty():
             return
         self._term_width, self._term_height = self._read_terminal_size()
@@ -343,7 +353,11 @@ class Footer:
         of the screen, so the prompt_toolkit prompt renders normally.
         """
         # Stop any animation *before* blanking the rows, so the spinner
-        # thread cannot redraw into a torn-down footer.
+        # thread cannot redraw into a torn-down footer. Clearing the
+        # reasoning indicator first is what lets `set_spinner("")` stop the
+        # thread: on its own it leaves the animation running for a
+        # still-active indicator.
+        self._thinking = False
         self.set_spinner("")
         if not self._active:
             return
@@ -393,10 +407,10 @@ class Footer:
         :data:`WRITE_LOCK`, and it writes only inside the reserved rows, so
         it cannot disturb the streaming response.
 
-        The spinner is drawn on the *transient* row (the one that otherwise
-        shows steering input). Whatever the caller last passed to
-        :meth:`update_status` takes priority, so a partially typed line is
-        never overwritten by an animation frame.
+        The spinner is drawn on the right of the *key-hints* row (the
+        bottom one), left of the reasoning indicator. That row belongs to
+        the footer alone, so a typed steering line -- which lives on the
+        row above it -- is never overwritten by an animation frame.
         """
         text = text or ""
         with self._lock:
@@ -404,13 +418,15 @@ class Footer:
                 return
             self._spinner_text = text
             if not text:
-                self._stop_spinner_thread()
+                # Stop the animation only when nothing else needs a tick: a
+                # running reasoning indicator keeps animating on its own.
+                if not self._thinking:
+                    self._stop_spinner_thread()
                 self._frame = 0
-                # Force a redraw: the row may currently hold a spinner frame
-                # that has just gone away. `_redraw` no-ops with no spinner,
-                # so the clearing redraw is issued explicitly.
+                # Force a redraw: the hints row may currently hold a spinner
+                # frame that has just gone away. `_redraw` no-ops with nothing
+                # animating, so the clearing redraw is issued explicitly.
                 self._input_text = _UNSET
-                self._input_is_spinner = False
                 self.update_status(self._status_text, "", force=True)
                 return
             if self._active and self._spinner_thread is None:
@@ -418,6 +434,31 @@ class Footer:
 
         # Redraw immediately so the label appears without waiting a tick.
         self._redraw()
+
+    def set_thinking(self, active: bool) -> None:
+        """Show or hide the reasoning indicator on the key-hints row.
+
+        The indicator animates like the stage spinner — its own frame, its
+        own label — and sits right of the key bindings, so the model's
+        reasoning state is visible without a chat-output marker. It drives
+        the animation thread by itself, so reasoning is still animated when
+        no stage spinner is showing. A no-op when the state is unchanged.
+        """
+        with self._lock:
+            if active == self._thinking:
+                return
+            self._thinking = active
+            if active:
+                if self._active and self._spinner_thread is None:
+                    self._start_spinner_thread()
+            elif not self._spinner_text:
+                self._stop_spinner_thread()
+        # The hints row changed even though status and transient did not.
+        self.update_status(self._status_text, self._transient(), force=True)
+
+    def _transient(self) -> str:
+        """The current transient-row content ("" when it was never drawn)."""
+        return "" if self._input_text == _UNSET else self._input_text
 
     def _start_spinner_thread(self) -> None:
         stop = threading.Event()
@@ -440,42 +481,53 @@ class Footer:
             # Bounded join: the loop wakes at least every SPINNER_INTERVAL.
             thread.join(timeout=SPINNER_INTERVAL * 10)
 
+    def _animating(self) -> bool:
+        """Whether anything on the key-hints row still needs a tick."""
+        return bool(self._spinner_text or self._thinking)
+
     def _spin_loop(self, stop: threading.Event) -> None:
         while not stop.wait(SPINNER_INTERVAL):
             with self._lock:
-                if not self._active or not self._spinner_text:
+                if not self._active or not self._animating():
                     return
                 self._frame = (self._frame + 1) % len(SPINNER_FRAMES)
             self._redraw()
 
-    def _spinner_line(self) -> str:
-        """The transient row content for the current frame, or ""."""
-        if not self._spinner_text:
-            return ""
+    def _indicator(self, label: str, frame: str) -> str:
+        """One animated indicator: frame, then *label*, on the bar background."""
+        return (
+            f"{_BAR_BG} {_ACCENT}{frame}{_RESET}"
+            f"{_BAR_BG} {_LABEL}{label}{_RESET}"
+        )
+
+    def _hints_right(self) -> str:
+        """Right-hand content of the key-hints row, or "".
+
+        The stage spinner and the reasoning indicator, each with its own
+        animation frame, styled to sit on the bar background. Both are
+        footer-owned, so neither has to defer to typed text.
+        """
         frame = SPINNER_FRAMES[self._frame % len(SPINNER_FRAMES)]
-        return f" {_ACCENT}{frame}{_RESET} {_LABEL}{self._spinner_text}{_RESET}"
+        parts: list[str] = []
+        if self._spinner_text:
+            parts.append(self._indicator(self._spinner_text, frame))
+        if self._thinking:
+            parts.append(self._indicator(THINKING_LABEL, frame))
+        return "".join(parts)
 
     # Footer rendering
 
     def _redraw(self) -> None:
-        """Advance one animation frame, if the transient row is free.
+        """Advance one animation frame on the key-hints row.
 
-        Does nothing when no spinner is active, or when the caller has put
-        something of its own on the transient row (a partially typed
-        steering line, a queued follow-up): that text must never be
-        overwritten by an animation frame.
+        Does nothing when neither indicator is showing. The hints row is
+        written only by the footer, so there is no other writer to defer to:
+        the current transient-row content is passed back unchanged.
         """
         with self._lock:
-            if not self._spinner_text:
+            if not self._animating():
                 return
-            # Another writer owns the row (a partially typed steering line, a
-            # queued follow-up): leave it alone until they hand it back.
-            if not self._input_is_spinner and self._input_text not in ("", _UNSET):
-                return
-            # Drop the cached transient row so this frame is drawn even if it
-            # happens to repeat the previous one.
-            self._input_text = _UNSET
-        self.update_status(self._status_text, "", force=True)
+        self.update_status(self._status_text, self._transient(), force=True)
 
     def update_status(
         self,
@@ -487,16 +539,17 @@ class Footer:
 
         Layout (top to bottom)::
 
-            ──────────────────────────────  separator
-             ⇒ model | session:x | Mem…    status
-             ⤷ what you are typing          steering input / spinner / blank
-             Ctrl+C: cancel turn | …       key hints
+            ────...──── separator
+            ⇒ model | session:x | Mem…    status
+            ⤷ what you are typing          steering input / queued follow-up
+            Ctrl+C: cancel turn | …       key hints  ⠋ ⏳ stage… ⠋ 💡 Thinking…
 
         The third row is the transient one: it shows *input_line* when the
         caller supplied one (a partially typed steering line, or a queued
-        follow-up), and otherwise the spinner animation, and is blank when
-        there is neither. A spinner frame therefore never overwrites what
-        the user is typing.
+        follow-up), and is blank otherwise. The stage spinner and the
+        reasoning indicator live on the right of the key-hints row instead,
+        so an animation frame never competes with what the user is typing.
+        so an animation frame never competes with what the user is typing.
 
         The terminal size is re-read on every redraw so a resize mid-turn
         cannot leave stale geometry behind. The cursor is moved back to the
@@ -507,8 +560,7 @@ class Footer:
         if not self._active:
             return
         with self._lock:
-            spinner = self._spinner_line()
-            transient = input_line if input_line else spinner
+            transient = input_line
             if not force and (
                 status_line == self._status_text
                 and transient == self._input_text
@@ -516,7 +568,6 @@ class Footer:
                 return
             self._status_text = status_line
             self._input_text = transient
-            self._input_is_spinner = bool(spinner) and not input_line
             try:
                 # Re-read the size: the window may have been resized mid-turn.
                 self._term_width, self._term_height = self._read_terminal_size()
@@ -532,14 +583,21 @@ class Footer:
 
                 # Hint line: advertised key bindings for the current state.
                 # The dark gray bar extends the full terminal width: draw the
-                # hint, then pad with background-colored spaces.
+                # hint, then the right-hand indicators, then pad with
+                # background-colored spaces.
                 hint_plain = " Ctrl+C: cancel turn   |   type + ↵ to steer "
                 hint = (
                     f" {_KEY}Ctrl{_RESET}{_BAR_BG}+{_KEY}C{_RESET}{_BAR_BG}:{_RESET}"
                     f"{_BAR_BG} cancel turn   {_DIM}|{_RESET}{_BAR_BG}   type + "
                     f"{_KEY}↵{_RESET}{_BAR_BG} to steer {_RESET}"
                 )
-                pad = " " * max(0, width - len(hint_plain))
+                # Two spaces of right padding for the *content*: the spinner
+                # and the reasoning indicator end two columns short of the
+                # edge. The gray bar itself still fills the row to the very
+                # end (the trailing background spaces below).
+                right_width = max(0, width - len(hint_plain) - 2)
+                right = clip_ansi(self._hints_right(), right_width)
+                pad = " " * max(0, right_width - visible_len(right))
 
                 # Never let a line wrap into the row below it.
                 status_line = clip_ansi(status_line, width)
@@ -557,7 +615,13 @@ class Footer:
                     out.write(f"\x1b[{footer_top + 2};1H")
                     out.write(f"\x1b[2K{transient}")
                     out.write(f"\x1b[{footer_top + 3};1H")
-                    out.write(f"\x1b[2K{_BAR_BG}{hint}{_BAR_BG}{pad}{_RESET}")
+                    # `right` ends with its own reset; re-apply the bar
+                    # background for the two trailing spaces so the bar
+                    # reaches the window edge, not the content.
+                    out.write(
+                        f"\x1b[2K{_BAR_BG}{hint}{_BAR_BG}{pad}{right}"
+                        f"{_BAR_BG}  {_RESET}"
+                    )
                     # Move the cursor back to the bottom of the scroll region.
                     out.write(f"\x1b[{footer_top - 1};1H")
                     out.flush()

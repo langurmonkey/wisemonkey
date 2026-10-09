@@ -172,6 +172,13 @@ class OutputAdapter(Protocol):
         """
         return
 
+    def footer_thinking(self, active: bool) -> None:
+        """Show or hide the model's reasoning indicator on the footer.
+
+        No-op where the footer has no reasoning indicator.
+        """
+        return
+
     def steer_start(
         self,
         on_submit: Callable[[str], None],
@@ -257,6 +264,10 @@ class RichOutputAdapter(OutputAdapter):
     def footer_spinner(self, text: str) -> None:
         """Start/stop the footer's own spinner animation."""
         self._footer.set_spinner(text)
+
+    def footer_thinking(self, active: bool) -> None:
+        """Show/hide the footer's reasoning indicator (key-hints row)."""
+        self._footer.set_thinking(active)
 
     # ── mid-turn steering (classic REPL only) ─────────────────────────────────
 

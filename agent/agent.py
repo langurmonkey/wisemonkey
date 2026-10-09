@@ -18,10 +18,10 @@ from rich.prompt import Prompt
 from agent.at_files import expand_at_references
 from agent.commands import registry
 from agent.completion import SmartPathCompleter
-from agent.console import err, info, newline, ok, print
+from agent.console import err, info, newline, print
 from agent.core import Core
 from agent.emitter import TurnEmitter
-from agent.footer import _ACCENT, _DIM, _LABEL, _RESET, FOOTER_LINES
+from agent.footer import _ACCENT, _DIM, _LABEL, _RESET
 from agent.history import PromptHistory
 from agent.ipc import (
     ContentPayload,
@@ -81,6 +81,12 @@ class Agent:
         self.session = session
         self.spinner_prompt = None
         self.spinner_thinking = None
+        # Set by `_reasoning_start`; read by `_reasoning_stop` to place the
+        # "Done thinking" marker. See there for why.
+        # Whether reasoning is currently active. `output.footer_thinking`
+        # reads this to show a "💡 Thinking..." indicator on the footer's
+        # key-hints row. No "Done thinking" marker: it simply disappears.
+        self._reasoning_active = False
         # While the sticky footer is armed, stage spinners are drawn in the
         # footer input row rather than as a Rich `Live` display (see _spinner).
         self._footer_spinner: str | None = None
@@ -270,7 +276,8 @@ class Agent:
 
         So while the sticky footer owns the bottom rows, the label is handed
         to :meth:`OutputAdapter.footer_spinner` instead, and the footer
-        animates it on its own transient row. No ``Live`` is started at all.
+        animates it on the right of its key-hints row. No ``Live`` is started
+        at all.
         """
         if self.output.footer_active():
             self._footer_spinner = text
@@ -320,19 +327,20 @@ class Agent:
         # line of the prompt text, which is why it was removed.
 
     def _reasoning_start(self, visible: bool) -> None:
-        if visible:
-            info("💡 Thinking...\n")
-        else:
-            self.spinner_thinking = self._spinner("💡 Thinking...")
-            if self.spinner_thinking:
-                self.spinner_thinking.start()
+        """Mark reasoning as active; the footer shows it on the key-hints row.
+
+        The thinking status is shown on the footer's bottom row rather than
+        as a chat-output marker, so the response area stays clean. The
+        *visible* flag is accepted for API compatibility but no longer
+        affects rendering — both modes use the same footer indicator.
+        """
+        self._reasoning_active = True
+        self.output.footer_thinking(True)
 
     def _reasoning_stop(self) -> None:
-        if self.spinner_thinking:
-            self.spinner_thinking.stop()
-            self.spinner_thinking = None
-        self._spinner_clear()
-        ok("💡 Done thinking\n")
+        """Clear the thinking status; the footer indicator disappears."""
+        self._reasoning_active = False
+        self.output.footer_thinking(False)
 
     def content_callback(self, content: str = ""):
         """Called when new chunks arrive in streaming mode."""
@@ -380,10 +388,10 @@ class Agent:
         args_str = format_tool_args(tool_args)
         if args_str:
             info(
-                f"🛠️ [weak]Activating tool:[/weak]  [tool]{tool_name}[/tool]  [weak]({escape(args_str)})[/weak]"
+                f"🛠️ [tool]{tool_name}[/tool]  [weak]({escape(args_str)})[/weak]"
             )
         else:
-            info(f"🛠️ [weak]Activating tool:[/weak]  [tool]{tool_name}[/tool]")
+            info(f"🛠️ [tool]{tool_name}[/tool]")
 
     def tool_result_callback(self, tool_id, tool_name, content, is_error, duration):
         """Called after a tool finishes (event: TOOL_RESULT).
@@ -500,10 +508,10 @@ class Agent:
         """Build the steering input row shown under the status line.
 
         Priority: what is being typed, then the oldest queued follow-up.
-        Empty when there is nothing to show, which is the common case -- the
-        footer then falls back to its own spinner animation on this same row
-        (see :meth:`Footer.set_spinner`), so a partially typed line is never
-        overwritten by an animation frame.
+        Empty when there is nothing to show, which is the common case. The
+        footer's own spinner animation lives on the key-hints row (see
+        :meth:`Footer.set_spinner`), never on this one, so a partially typed
+        line is never overwritten by an animation frame.
         """
         if not self._turn_in_progress:
             return ""
@@ -523,8 +531,9 @@ class Agent:
                 f" {_ACCENT}↳{_RESET} {_LABEL}queued: {queued}{_RESET}"
                 f"  {_DIM}(next tool result){_RESET}"
             )
-        # No typed text and nothing queued: leave the row for the footer,
-        # which draws the spinner frame there if a stage is active.
+        # No typed text and nothing queued: the row stays blank. Stage
+        # spinners and the thinking indicator are drawn on the key-hints
+        # row instead.
         return ""
 
     # ── mid-turn steering ───────────────────────────────────────────────────

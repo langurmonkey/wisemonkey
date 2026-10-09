@@ -19,6 +19,7 @@ class _FakeFooterOutput:
         self._footer_active = footer_active
         self.spinner_labels: list[str] = []
         self.refreshes = 0
+        self.thinking: list[bool] = []
 
     # `Agent._spinner` reaches for `_console` on the output adapter; the fake
     # just needs the attribute to exist (and to be replaceable).
@@ -33,6 +34,10 @@ class _FakeFooterOutput:
     def footer_spinner(self, text: str) -> None:
         """Record the label the agent handed to the footer's own animation."""
         self.spinner_labels.append(text)
+
+    def footer_thinking(self, active: bool) -> None:
+        """Record what the agent asked the footer's reasoning indicator."""
+        self.thinking.append(active)
 
     def steer_line(self) -> str:
         return ""
@@ -52,6 +57,7 @@ class _SpyAgent(Agent):
         self._prompt_reported = False
         self._prompt_rounds = 0
         self._turn_in_progress = True
+        self._reasoning_active = False
         self._fake_output = _FakeFooterOutput(footer_active)
         self.output = self._fake_output
 
@@ -153,6 +159,49 @@ class TestPromptStage(unittest.TestCase):
             agent._prompt_stop()
         self.assertEqual(agent._footer_spinner, "🔧 Tool running")
         self.assertEqual(agent._spinner_stops(), stops_before)
+
+
+class TestReasoningFooterIndicator(unittest.TestCase):
+    """Thinking status is shown on the footer's key-hints row, not in chat.
+
+    The footer's bottom row carries a "💡 Thinking..." indicator, right of the
+    key bindings and next to the stage spinner, while the model is
+    reasoning. The response area stays clean.
+    """
+
+    def _agent(self) -> _SpyAgent:
+        return _SpyAgent()
+
+    def test_reasoning_start_sets_active_flag(self):
+        agent = self._agent()
+        agent._reasoning_start(visible=True)
+        self.assertTrue(agent._reasoning_active)
+
+    def test_reasoning_stop_clears_active_flag(self):
+        agent = self._agent()
+        agent._reasoning_start(visible=True)
+        agent._reasoning_stop()
+        self.assertFalse(agent._reasoning_active)
+
+    def test_reasoning_start_tells_the_footer(self):
+        agent = self._agent()
+        agent._reasoning_start(visible=True)
+        self.assertEqual(agent._fake_output.thinking, [True])
+
+    def test_reasoning_stop_tells_the_footer(self):
+        agent = self._agent()
+        agent._reasoning_start(visible=True)
+        agent._reasoning_stop()
+        self.assertEqual(agent._fake_output.thinking, [True, False])
+
+    def test_no_chat_output_markers(self):
+        """No 'Thinking...' or 'Done thinking' text is printed to chat."""
+        agent = self._agent()
+        with mock.patch("agent.agent.info") as info, mock.patch("agent.agent.ok") as ok:
+            agent._reasoning_start(visible=True)
+            agent._reasoning_stop()
+        info.assert_not_called()
+        ok.assert_not_called()
 
 
 
@@ -354,6 +403,7 @@ class _LiveTokenAgent(Agent):
         self._turn_start_mem = used
         self._live_chars = 0
         self._last_footer_tick = 0.0
+        self._reasoning_active = False
 
         class _Core:
             config = _PricingConfig(pricing)

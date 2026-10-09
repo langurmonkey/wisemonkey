@@ -18,6 +18,7 @@ from agent.footer import (
     FOOTER_LINES,
     SPINNER_FRAMES,
     SPINNER_INTERVAL,
+    THINKING_LABEL,
     WRITE_LOCK,
     Footer,
     _LockedWriter,
@@ -480,6 +481,20 @@ class TestFooterSpinner(unittest.TestCase):
         self.tty.seek(0)
         self.tty.truncate(0)
 
+    def _row(self, out: str, row: int) -> str:
+        """The content the footer last wrote to physical *row* (1-based).
+
+        The footer addresses each row explicitly (``CUP`` + ``EL``), so a
+        row's content runs from its addressing to the next one.
+        """
+        marker = f"\x1b[{row};1H\x1b[2K"
+        idx = out.rfind(marker)
+        if idx < 0:
+            return ""
+        rest = out[idx + len(marker):]
+        m = re.search(r"\x1b\[\d+;1H", rest)
+        return rest[: m.start()] if m else rest
+
     def _wait_for_frames(self, count: int, timeout: float = 3.0) -> str:
         """Let the animation tick, then return everything it wrote."""
         self._clear()
@@ -550,40 +565,40 @@ class TestFooterSpinner(unittest.TestCase):
             time.sleep(SPINNER_INTERVAL / 2)
         self.assertGreaterEqual(len(seen), 3, f"only saw frames {seen}")
 
-    def test_typed_input_wins_over_the_spinner(self):
-        """A partially typed steering line is never overwritten by a frame."""
+    def test_typed_input_is_never_disturbed_by_the_spinner(self):
+        """The spinner lives on the hints row, so typed text is safe.
+
+        Frames keep animating (on the hints row) while the user types; the
+        transient row holds only the typed line.
+        """
         self.footer.set_spinner("working")
         self._clear()
         self.footer.update_status("status", "⤷ half typed")
-        drawn = self.tty.getvalue()
-        self.assertIn("half typed", drawn)
-        # Now let several animation ticks go by: none of them may write to
-        # the row, so the typed text stays put and legible.
-        self._clear()
         time.sleep(SPINNER_INTERVAL * 5)
-        ticks = self.tty.getvalue()
+        out = self.tty.getvalue()
+        transient = self._row(out, 23)
+        self.assertIn("half typed", transient)
         for frame in SPINNER_FRAMES:
-            self.assertNotIn(frame, ticks)
-        self.assertNotIn("2K", ticks)
-
-    def test_input_row_returns_to_the_spinner_when_typing_stops(self):
-        self.footer.set_spinner("working")
-        self.footer.update_status("status", "typed")
-        self.footer.update_status("status", "")
-        self._clear()
-        time.sleep(SPINNER_INTERVAL / 2)
-        deadline = time.time() + 3.0
-        while time.time() < deadline:
-            out = self.tty.getvalue()
-            if any(f in out for f in SPINNER_FRAMES):
-                break
-            time.sleep(SPINNER_INTERVAL / 2)
+            self.assertNotIn(frame, transient)
         self.assertTrue(
-            any(f in self.tty.getvalue() for f in SPINNER_FRAMES),
-            "spinner did not resume after the input line was cleared",
+            any(f in self._row(out, 24) for f in SPINNER_FRAMES),
+            "spinner did not animate on the hints row",
         )
 
-    def test_clearing_spinner_blanks_the_row(self):
+    def test_spinner_keeps_animating_while_the_user_types(self):
+        """Typing no longer pauses the animation: it moved to the hints row."""
+        self.footer.set_spinner("working")
+        self.footer.update_status("status", "⤷ typed")
+        self._clear()
+        time.sleep(SPINNER_INTERVAL * 5)
+        out = self.tty.getvalue()
+        self.assertTrue(
+            any(f in self._row(out, 24) for f in SPINNER_FRAMES),
+            "spinner stopped animating while the user typed",
+        )
+        self.assertIn("typed", self._row(out, 23))
+
+    def test_clearing_spinner_blanks_the_hints_row(self):
         self.footer.set_spinner("working")
         self.footer.update_status("status", "")
         self._clear()
@@ -625,6 +640,142 @@ class TestFooterSpinner(unittest.TestCase):
         time.sleep(SPINNER_INTERVAL * 3)
         out = self.tty.getvalue()
         self.assertIn("…", out)
+
+
+class TestFooterHintsRow(unittest.TestCase):
+    """The bottom row: key bindings on the left, status indicators on the right.
+
+    The stage spinner and the reasoning indicator are drawn on the right of
+    the key-hints row, where they never compete with the typed steering
+    line on the row above. Both animate, each with its own frame.
+    """
+
+    def setUp(self) -> None:
+        self.saved = sys.stdout
+        self.tty = FakeTTY()
+        sys.stdout = self.tty
+        patcher = mock.patch.object(Footer, "_read_terminal_size", return_value=(80, 24))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.footer = Footer()
+        self.footer.start()
+
+    def tearDown(self) -> None:
+        self.footer.stop()
+        sys.stdout = self.saved
+
+    def _row(self, out: str, row: int) -> str:
+        """The content the footer last wrote to physical *row* (1-based)."""
+        marker = f"\x1b[{row};1H\x1b[2K"
+        idx = out.rfind(marker)
+        if idx < 0:
+            return ""
+        rest = out[idx + len(marker):]
+        m = re.search(r"\x1b\[\d+;1H", rest)
+        return rest[: m.start()] if m else rest
+
+    def test_no_indicators_leaves_the_row_as_before(self):
+        self.footer.update_status("status", "")
+        out = self.tty.getvalue()
+        self.assertIn("cancel turn", out)
+        self.assertNotIn(THINKING_LABEL, out)
+
+    def test_reasoning_indicator_is_on_the_hints_row(self):
+        self.footer.set_thinking(True)
+        out = self.tty.getvalue()
+        self.assertIn(THINKING_LABEL, self._row(out, 24))
+        # Not on the status or transient rows.
+        self.assertNotIn(THINKING_LABEL, self._row(out, 22))
+        self.assertNotIn(THINKING_LABEL, self._row(out, 23))
+
+    def test_reasoning_indicator_has_its_own_spinner_frame(self):
+        """It reads like the stage spinner: a frame, then the label."""
+        self.footer.set_thinking(True)
+        hints = self._row(self.tty.getvalue(), 24)
+        self.assertTrue(
+            any(frame in hints for frame in SPINNER_FRAMES),
+            f"no animation frame in {hints!r}",
+        )
+
+    def test_reasoning_indicator_animates_without_a_stage_spinner(self):
+        """Reasoning alone drives the animation thread."""
+        self.footer.set_thinking(True)
+        self.assertIsNotNone(self.footer._spinner_thread)
+        self.tty.seek(0)
+        self.tty.truncate(0)
+        seen: set[str] = set()
+        deadline = time.time() + 3.0
+        while time.time() < deadline and len(seen) < 3:
+            hints = self._row(self.tty.getvalue(), 24)
+            seen |= {frame for frame in SPINNER_FRAMES if frame in hints}
+            time.sleep(SPINNER_INTERVAL / 2)
+        self.assertGreaterEqual(len(seen), 3, f"only saw frames {seen}")
+
+    def test_clearing_the_reasoning_indicator_stops_the_animation(self):
+        self.footer.set_thinking(True)
+        thread = self.footer._spinner_thread
+        self.footer.set_thinking(False)
+        self.assertIsNone(self.footer._spinner_thread)
+        assert thread is not None
+        self.assertFalse(
+            thread.is_alive(),
+            "animation thread outlived the reasoning indicator",
+        )
+
+    def test_clearing_the_stage_spinner_keeps_reasoning_animating(self):
+        """Reasoning keeps ticking after the stage spinner goes away."""
+        self.footer.set_spinner("⏳ Processing prompt...")
+        self.footer.set_thinking(True)
+        self.footer.set_spinner("")
+        self.assertIsNotNone(
+            self.footer._spinner_thread,
+            "clearing the stage spinner stopped the reasoning animation",
+        )
+        hints = self._row(self.tty.getvalue(), 24)
+        self.assertNotIn("Processing prompt...", hints)
+        self.assertIn(THINKING_LABEL, hints)
+
+    def test_reasoning_indicator_can_be_cleared(self):
+        self.footer.set_thinking(True)
+        self.tty.seek(0)
+        self.tty.truncate(0)
+        self.footer.set_thinking(False)
+        self.assertNotIn(THINKING_LABEL, self.tty.getvalue())
+
+    def test_spinner_is_on_the_hints_row(self):
+        self.footer.set_spinner("⏳ Processing prompt...")
+        out = self.tty.getvalue()
+        self.assertIn("⏳ Processing prompt...", self._row(out, 24))
+        self.assertNotIn("⏳ Processing prompt...", self._row(out, 23))
+
+    def test_spinner_and_reasoning_share_the_hints_row(self):
+        self.footer.set_spinner("🔧 Tool running")
+        self.footer.set_thinking(True)
+        out = self.tty.getvalue()
+        hints = self._row(out, 24)
+        self.assertIn("🔧 Tool running", hints)
+        self.assertIn(THINKING_LABEL, hints)
+        # The reasoning indicator sits right of the stage spinner.
+        self.assertLess(hints.index("🔧 Tool running"), hints.index(THINKING_LABEL))
+        # The transient row holds neither.
+        transient = self._row(out, 23)
+        self.assertNotIn("🔧 Tool running", transient)
+        self.assertNotIn(THINKING_LABEL, transient)
+
+    def test_indicators_are_clipped_to_the_terminal_width(self):
+        self.footer.set_spinner("x" * 100)
+        self.footer.set_thinking(True)
+        hints = self._row(self.tty.getvalue(), 24)
+        self.assertIn("…", hints)
+        # The hints row never wraps: its visible width stays within 80.
+        self.assertLessEqual(visible_len(hints), 80)
+
+    def test_start_clears_a_leftover_thinking_indicator(self):
+        self.footer.set_thinking(True)
+        self.footer.stop()
+        with mock.patch.object(Footer, "_read_terminal_size", return_value=(80, 24)):
+            self.footer.start()
+        self.assertFalse(self.footer._thinking)
 
 
 class TestWriteLockIsShared(unittest.TestCase):
