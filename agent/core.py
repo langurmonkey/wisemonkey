@@ -89,6 +89,7 @@ class Core:
     def __init__(self, config_path=None, session='default', full_startup=True):
         self.config = get_config()
         self.config.load(config_path)
+        self.session = session
 
         # Initialize API router
         ok, msg = self.initialize_router()
@@ -149,8 +150,7 @@ class Core:
         self.mcp.start_all()
 
     def initialize_router(self):
-        """Initialize the model router from the current in-memory config."""
-        self.router = ModelRouter(self.config)
+        self.router = ModelRouter(self.config, session=self.session)
         return self.router.initialize()
 
     def reload_config(self) -> tuple[bool, str | None]:
@@ -205,6 +205,9 @@ class Core:
         self._pending_image = None
         self.pending_prompt = None
         self._turn_cancelled = False
+        # Reset session-specific router state
+        if hasattr(self, "router"):
+            self.router.session = self.session
 
     def shutdown(self):
         """Shutdown the agent core."""

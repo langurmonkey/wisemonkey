@@ -195,11 +195,12 @@ class ModelRouter:
         models = router.list_models()
     """
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, session=None):
         self.config = config or get_config()
+        self.session = session
         self.provider: Provider = Provider.GENERIC
 
-        # SDK clients — only the one matching self.provider will be created
+        # SDK clients \u2014 only the one matching self.provider will be created
         self._openai_client: Optional[Any] = None
         self._anthropic_client: Optional[Any] = None
         self._ollama_client: Optional[Any] = None
@@ -209,7 +210,6 @@ class ModelRouter:
         self._base_url: str = ""
         self._temperature: float = 0.8
         self._thinking_effort: str = "medium"
-
     # ------------------------------------------------------------------
     # Initialisation
     # ------------------------------------------------------------------
@@ -358,12 +358,21 @@ class ModelRouter:
             "temperature": temp,
             "stream": stream,
         }
-        
         kwargs["extra_headers"] = {
             "HTTP-Referer": "https://tonisagrista.com/projects/wisemonkey/",
             "X-Title": "Wisemonkey Agent",
         }
+        # Add the OpenCode session header only for OpenCode endpoints.
+        if "opencode.ai" in self._base_url.lower():
+            session_id = self.session
 
+            if not isinstance(session_id, str) or not session_id.strip():
+                raise ValueError(
+                    "OpenCode API requires a non-empty session ID. "
+                    "Pass a stable session ID to ModelRouter."
+                )
+
+            kwargs["extra_headers"]["x-opencode-session"] = session_id.strip()
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"

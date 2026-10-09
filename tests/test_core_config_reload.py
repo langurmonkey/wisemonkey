@@ -41,6 +41,7 @@ class TestCoreConfigReload(unittest.TestCase):
         config = _Config()
         history = Mock()
         core.config = config
+        core.session = "ses_test123"
         core.router = object()
         core.system_prompt = "old prompt"
         core.memory = SimpleNamespace(_chat_history=history)
@@ -76,7 +77,6 @@ class TestCoreConfigReload(unittest.TestCase):
         previous_router = core.router
         new_router = Mock()
         new_router.initialize.return_value = (False, "invalid model configuration")
-
         with patch("agent.core.ModelRouter", return_value=new_router):
             ok, message = core.reload_config()
 
