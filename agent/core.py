@@ -1005,12 +1005,20 @@ class Core:
 
     def _tool_calls(self, tool_calls, tool_callback=None, tool_result_callback=None):
         """Handle tool calls"""
-        # Append the assistant message with tool calls as plain dictionaries
-        self.messages.append({
+        # Append the assistant message with tool calls as plain dictionaries.
+        # The reasoning collected during this round rides along as
+        # ``reasoning_content``: DeepSeek's thinking mode *requires* it to be
+        # passed back with the assistant message and rejects the whole request
+        # with a 400 otherwise. Providers that do not know the key ignore it
+        # (the OpenAI-compatible SDK forwards unknown message keys verbatim).
+        assistant: dict = {
             "role": "assistant",
             "content": None,
             "tool_calls": tool_calls,
-        })
+        }
+        if getattr(self, "thinking_buffer", ""):
+            assistant["reasoning_content"] = self.thinking_buffer
+        self.messages.append(assistant)
 
         n_tools = 0
         # Execute each tool call

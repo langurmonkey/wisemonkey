@@ -406,6 +406,52 @@ class TestMalformedToolArguments(unittest.TestCase):
             good.run_turn("go")
         assert calls == [{"path": "x"}]
 
+
+class TestReasoningContentRoundTrip(unittest.TestCase):
+    """DeepSeek's thinking mode rejects a request whose assistant tool-call
+    message has no ``reasoning_content``, so the reasoning collected during the
+    round must ride back on that message."""
+
+    def _core(self, thinking):
+        reply = {
+            "text": "",
+            "thinking": thinking,
+            "tool_calls": [{"id": "c1", "type": "function",
+                            "function": {"name": "read_file", "arguments": "{}"}}],
+        }
+        core = make_core([reply, {"text": "done"}])
+        # _stream_handler is what accumulates reasoning_content; make_core's
+        # fake _send_to_llm does not, so mirror the real one.
+        fake_send = core._send_to_llm
+
+        def _send(*a, **k):
+            if not core.messages[-1].get("role") == "tool":
+                core.thinking_buffer = ""
+            result = fake_send(*a, **k)
+            core.thinking_buffer = result[0].get("thinking", "")
+            return result
+
+        core._send_to_llm = _send
+        return core
+
+    def _assistant_with_tool_call(self, core):
+        return [m for m in core.messages if m.get("tool_calls")][0]
+
+    def test_reasoning_is_passed_back_with_the_tool_call(self):
+        core = self._core("I should read the file first.")
+        with patch("agent.core.execute_tool", return_value="ok"):
+            core.run_turn("go")
+        assert self._assistant_with_tool_call(core)["reasoning_content"] == (
+            "I should read the file first."
+        )
+
+    def test_no_reasoning_means_no_key(self):
+        # A provider without thinking mode must not receive an empty or
+        # invented field.
+        core = self._core("")
+        with patch("agent.core.execute_tool", return_value="ok"):
+            core.run_turn("go")
+        assert "reasoning_content" not in self._assistant_with_tool_call(core)
 class TestEmitterIntegration(unittest.TestCase):
     """The emitter can drive a whole turn through a loopback transport."""
 

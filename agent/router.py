@@ -411,6 +411,12 @@ class ModelRouter:
         system_parts = []
         chat_messages = []
         for msg in messages:
+            # DeepSeek's thinking mode requires `reasoning_content` back on the
+            # assistant message, so core.py puts it there. Anthropic names the
+            # same thing differently (thinking blocks) and its SDK rejects
+            # unknown message keys, so it is dropped on this path.
+            if msg.get("reasoning_content"):
+                msg = {k: v for k, v in msg.items() if k != "reasoning_content"}
             if msg.get("role") == "system":
                 content = msg.get("content", "")
                 if content:
