@@ -53,8 +53,11 @@ from __future__ import annotations
 
 import atexit
 import os
+import re
 import sys
 
+from collections.abc import Generator
+from contextlib import contextmanager
 from functools import lru_cache
 from typing import cast
 
@@ -513,6 +516,16 @@ def _write(sequence: str) -> bool:
     return True
 
 
+# Whether the disambiguate flag is currently pushed, and how deeply
+# :func:`legacy_key_encoding` has nested. The flag is a *terminal* mode, not a
+# per-reader one: anything else that reads the tty inherits it, which is why the
+# state lives here rather than on whoever pushed it.
+_protocol_pushed = False
+_atexit_registered = False
+_legacy_encoding_depth = 0
+_readline_loaded = False
+
+
 def enable_kitty_keyboard() -> bool:
     """Push the disambiguate flag. Returns whether it was sent.
 
@@ -520,16 +533,179 @@ def enable_kitty_keyboard() -> bool:
     a False return here is not an error: it just means Shift+Enter will keep
     arriving as a plain Enter and only Alt+Enter will work.
     """
+    global _protocol_pushed, _atexit_registered
+
     pushed = _write(PUSH)
     if pushed:
-        # The terminal must not be left in enhanced mode if we are killed.
-        atexit.register(_write, POP)
+        _protocol_pushed = True
+        if not _atexit_registered:
+            # The terminal must not be left in enhanced mode if we are killed.
+            # Registered once, not per push: :func:`legacy_key_encoding` pushes
+            # and pops repeatedly, and one POP per PUSH is what the terminal
+            # expects -- a pile of duplicate atexit pops is not.
+            atexit.register(disable_kitty_keyboard)
+            _atexit_registered = True
     return pushed
 
 
 def disable_kitty_keyboard() -> None:
     """Pop the disambiguate flag, restoring the terminal's default mode."""
+    global _protocol_pushed
+
+    _protocol_pushed = False
     _write(POP)
+
+
+def protocol_pushed() -> bool:
+    """Whether the disambiguate flag is currently pushed."""
+    return _protocol_pushed
+
+
+@contextmanager
+def legacy_key_encoding() -> Generator[None, None, None]:
+    """Temporarily restore the terminal's default key encoding.
+
+    The disambiguate flag re-encodes *every* functional key, so anything that
+    reads the tty without :mod:`agent.keys`' table has to cope with
+    ``CSI 1 ; 129 A`` where it expects ``CSI A``. prompt_toolkit does, because
+    :func:`extend_ansi_sequences` taught it. **readline does not**: the builtin
+    ``input()`` that ``rich.prompt`` is built on recognises the legacy
+    spellings, and given the protocol's it inserts the raw escape bytes into the
+    line instead of moving the cursor -- the question appears to type ``^[[1;129D``
+    when the user presses Left.
+
+    So while such a reader owns the tty the flag is popped, and re-pushed
+    afterwards. Nothing is sent if the flag was never pushed, and nesting is a
+    no-op after the outermost pop.
+
+    Applies to ``rich.prompt`` (``ask_string``/``ask_float``/``ask_confirm``) and
+    to child processes handed the terminal. It deliberately does **not** apply to
+    the prompt_toolkit-based ``ask_choice``: that one parses the sequences
+    itself, so dropping the flag would only cost it Shift+Enter.
+    """
+    global _legacy_encoding_depth
+
+    if not _protocol_pushed or _legacy_encoding_depth:
+        yield
+        return
+
+    disable_kitty_keyboard()
+    _legacy_encoding_depth += 1
+    try:
+        yield
+    finally:
+        _legacy_encoding_depth -= 1
+        if not _protocol_pushed:
+            enable_kitty_keyboard()
+
+
+def ensure_readline() -> bool:
+    """Make sure ``readline`` is loaded, so ``input()`` has a line editor.
+
+    CPython only gives the builtin ``input()`` line editing when the
+    ``readline`` module has been *imported* -- it does not import it for you
+    unless the interpreter itself is interactive. Wisemonkey is a script, so
+    the module is absent and ``input()`` degrades to a bare canonical read: the
+    kernel echoes every byte it receives, arrow keys and all, which is why
+    pressing Right in a ``rich.prompt`` question types ``^[[C`` into the line
+    instead of moving the cursor.
+
+    Importing it here, next to the keyboard protocol helpers, is the single
+    place that has to know: the prompts in ``agent/output.py`` call this before
+    delegating to ``rich.prompt``. Returns whether readline is available (it
+    always is on Linux/macOS; a Windows build without it just keeps the plain
+    behaviour instead of raising).
+    """
+    global _readline_loaded
+    if _readline_loaded:
+        return True
+    try:
+        import readline  # noqa: F401  (imported for its side effect on input)
+    except ImportError:
+        return False
+    _readline_loaded = True
+    return True
+
+
+# Escape sequences a terminal consumes without occupying a column: CSI
+# (``ESC [ ... final``), OSC (``ESC ] ... BEL|ST``) and the two-character
+# escapes. Only the CSI branch matters for SGR colour, but all three are
+# non-printing and readline has to be told so.
+_ANSI_ESCAPE = re.compile(
+    r"\x1b\[[0-9;?]*[ -/]*[@-~]"
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"
+    r"|\x1b[@-Z\\-_]"
+)
+
+# readline's non-printing delimiters: ``\001`` is RL_PROMPT_START_IGNORE and
+# ``\002`` is RL_PROMPT_END_IGNORE. Text between them is emitted verbatim but
+# excluded from the prompt-width arithmetic readline does when it redraws.
+_PROMPT_START_IGNORE = "\001"
+_PROMPT_END_IGNORE = "\002"
+
+
+def mark_prompt_nonprinting(text: str) -> str:
+    """Wrap every ANSI escape in ``text`` in readline's ignore delimiters.
+
+    readline counts the *characters* of its prompt to work out where the line
+    buffer begins, so an escape sequence it does not know about is counted as
+    if it were visible, and every column it computes afterwards is wrong.
+
+    Both GNU readline and libedit honour ``\\001``/``\\002``, and both drop the
+    delimiters from the display.
+    """
+    return _ANSI_ESCAPE.sub(
+        lambda m: _PROMPT_START_IGNORE + m.group(0) + _PROMPT_END_IGNORE, text
+    )
+
+
+def readline_prompt(console, text) -> str:
+    """Render a Rich ``Text`` as the prompt string to hand to ``input()``.
+
+    Rich prints the prompt itself and then calls ``input()`` with *no* prompt,
+    which leaves readline believing the line buffer starts at column 1. Any
+    redraw -- Backspace, an insert in the middle of the line, any character
+    after a Left -- then rewrites from column 1 and erases the question, which
+    is the "the whole prompt disappears" symptom. Handing readline the prompt
+    fixes it, because readline then knows where the buffer starts.
+
+    Two details make this safe:
+
+    - The Rich ``Text`` is rendered to the exact ANSI string ``console.print``
+      would have emitted, so the styling is unchanged.
+    - It is rendered **unwrapped**. Rich would break a long prompt at the
+      console width; readline does its own wrapping and knows how to undo its
+      own, whereas an embedded newline would be read as a character in the
+      prompt and permanently shift its arithmetic.
+
+    When ``console`` is not a terminal (output redirected, a pipe) there is no
+    styling to preserve and no readline to satisfy, so the plain text is
+    returned -- importantly *without* the ignore delimiters, since ``input()``
+    prints a prompt verbatim when readline is not in play and the raw
+    ``\\001``/``\\002`` bytes would then reach the output.
+    """
+    if not console.is_terminal:
+        return text.plain
+
+    # Text.render() splits the text into styled segments and does no layout
+    # at all -- no wrapping, no trailing newline. Console.render() would
+    # apply the console width and append a line break, both wrong here.
+    parts: list[str] = []
+    for segment in text.render(console):
+        if segment.is_control:
+            continue
+        style = segment.style
+        if style:
+            parts.append(
+                style.render(
+                    segment.text,
+                    color_system=console.color_system,
+                    legacy_windows=console.legacy_windows,
+                )
+            )
+        else:
+            parts.append(segment.text)
+    return mark_prompt_nonprinting("".join(parts))
 
 
 def install_enter_bindings(kb) -> None:

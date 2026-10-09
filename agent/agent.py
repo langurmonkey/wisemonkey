@@ -42,6 +42,7 @@ from agent.ipc import (
 from agent.keys import (
     disable_kitty_keyboard,
     enable_kitty_keyboard,
+    ensure_readline,
     install_enter_bindings,
 )
 from agent.mdstream import MarkdownStreamRenderer
@@ -679,6 +680,12 @@ class Agent:
         # second push would need a second pop to unwind.
         if not getattr(self, "_kitty_enabled", False):
             self._kitty_enabled = enable_kitty_keyboard()
+
+        # Load readline once, at REPL start. The builtin input() only has a
+        # line editor when the readline module is imported, and CPython does
+        # not import it for a script -- so without this, any question asked
+        # mid-session echoes arrow keys as `^[[C` instead of moving the cursor.
+        ensure_readline()
 
         # Enter submits; a modified Enter inserts a newline. Installed from
         # agent/keys.py so the rule lives in one place.

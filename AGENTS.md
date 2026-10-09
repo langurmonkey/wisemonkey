@@ -115,6 +115,20 @@ A terminal sends the *same* byte (`0x0D`) for Enter, Shift+Enter and Ctrl+Enter,
 
 prompt_toolkit 3.0.52 does not parse the `CSI u` form, so `extend_ansi_sequences()` adds those sequences to its table (idempotent, never clobbering an existing mapping). `install_enter_bindings(kb)` is the single definition of the rule — **Enter submits, a modified Enter inserts a newline** — including an explicit `c-j` binding: prompt_toolkit's default for Ctrl+J is a newline, but the `enter` binding resolves the same key on some terminals and a bound handler wins, which made Ctrl+J submit the prompt instead of continuing the line.
 
+**Not every reader understands the protocol.** The flag is a *terminal* mode, so anything else reading the tty inherits it, and only prompt_toolkit has been taught the sequences. `rich.prompt` (`ask_string`/`ask_float`/`ask_confirm`) goes through the builtin `input()`, i.e. readline, which knows only `CSI D`; under the flag a Left arrow arrives as `CSI 1;129D` and is **typed into the line as escape characters** instead of moving the cursor. `legacy_key_encoding()` (in `agent/keys.py`) pops the flag for the duration and re-pushes on exit, and it wraps exactly those three plus `run_subprocess` (a `$EDITOR` that never asked for the protocol has the same problem). It deliberately does **not** wrap `ask_choice`, which is prompt_toolkit and parses them itself — dropping the flag there would only cost Shift+Enter. The pushed state lives in `keys.py` (`_protocol_pushed`), not on whoever pushed it, because the flag outlives the prompt that set it; the atexit pop is registered once rather than per push, so repeated push/pop cycles cannot unbalance it.
+
+**`rich.prompt` also needs readline imported, and that was the actual arrow-key bug.** CPython only gives the builtin `input()` a line editor when the `readline` module has been *imported*; it imports it for an interactive interpreter, never for a script. Wisemonkey is a script, so every question it asked degraded to a bare canonical read: the kernel echoed each byte it received, and Right/Left typed `^[[C`/`^[[D` into the line. Popping the kitty flag was necessary but not sufficient — the bytes arrived in their *legacy* encoding and still had no line editor to interpret them. `ensure_readline()` (`agent/keys.py`) imports it once, called both at REPL start and before each of the three prompts, and returns False rather than raising when readline is genuinely absent. Do not remove it on the grounds that the protocol work covers arrow keys.
+
+**A line editor is not enough: readline must be told what the prompt is.** `rich.prompt` prints the question itself and then calls `input()` with an *empty* prompt, so readline believes the line buffer begins at column 1. Every redraw it performs — Backspace above all, and equally an insert in the middle of the line or any character typed after a Left — then rewrites from column 1 and issues an erase-to-end-of-line, which wipes the question. The symptom is precise: press Backspace once and the whole question disappears, leaving only the typed text. Typing and even arrow keys look fine, because readline can patch those in place; only a redraw exposes it.
+
+`_ReadlinePromptMixin` (`agent/output.py`) overrides Rich's `get_input` to hand readline the prompt instead, and `readline_prompt()` (`agent/keys.py`) builds it. Three things in there are load-bearing:
+
+- **ANSI escapes must be marked non-printing.** readline counts the *characters* of its prompt to work out where the buffer starts, so an SGR escape it does not know about is counted as if it were visible and every column afterwards is wrong. `mark_prompt_nonprinting()` wraps each escape in `\001`/`\002` (`RL_PROMPT_START_IGNORE`/`END_IGNORE`, honoured by both GNU readline and libedit).
+- **The prompt must not be wrapped.** Rich would break a long question at the console width; readline does its own wrapping and knows how to undo its own, whereas an embedded newline is read as a character of the prompt and skews the arithmetic permanently. `Text.render()` is used rather than `Console.render()` for exactly this reason — the latter applies the width and appends a line break.
+- **A non-terminal console gets plain text with no delimiters.** `input()` prints a prompt verbatim when readline is not in play, so the raw SOH/STX bytes would reach the output.
+
+Do not "simplify" this back to `RichPrompt.ask()`: the prompt looks right until the first Backspace. `tests/test_readline_prompt.py` drives a real pty and replays the bytes with a cursor tracker, because no mocked test can see this; it also asserts that Rich's own behaviour still reproduces the bug, so the fix cannot pass for the wrong reason.
+
 ### Sticky footer (`agent/footer.py`)
 
 During an assistant turn the REPL pins a status line (model, session, memory usage) to the bottom of the terminal using the ANSI scroll region (`DECSTBM`, `\x1b[1;<H-4>r`): the bottom four rows (separator, status, steering input / spinner, key hints) are excluded from scrolling, so they stay put while output streams. No cursor-position queries, no Rich file swapping — output code is untouched. Both modules degrade to no-ops when stdout is not a TTY or the terminal is too small.
@@ -401,8 +415,10 @@ tests/
 ├── test_palette.py      # The shared colour source: tag coverage, frontend agreement, no stray colours
 ├── test_ipc.py          # IPC protocol: message factories, serialization, loopback transport
 ├── test_emitter.py      # TurnEmitter: core callbacks -> events, cancel state
-├── test_keys.py         # Terminal key protocol: modified Enter, newline bindings
-└── test_tools.py        # Tool registration, discovery, execution
+├── test_keys.py         # Terminal key protocol: modified Enter, newline bindings, readline prompt
+├── test_output_prompts.py # Adapter prompts: readline loaded, kitty flag dropped, prompt passed to input()
+├── test_readline_prompt.py # A Rich prompt survives a readline redraw (real pty + cursor replay)
+├── test_tools.py        # Tool registration, discovery, execution
 ```
 
 ### Running Tests

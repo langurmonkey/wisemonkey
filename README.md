@@ -227,6 +227,10 @@ When a terminal ignores the protocol, <kbd>Shift</kbd>+<kbd>Enter</kbd> simply a
 
 During inference, you can cancel the turn and return to the input prompt with <kbd>Ctrl</kbd> + <kbd>c</kbd>, or type into the footer to steer the running turn (see [mid-turn steering](#mid-turn-steering)).
 
+#### Questions asked mid-session
+
+Commands like `/model` and `/config` ask you things (a URL, a key variable, a yes/no). Those questions are fully line-edited — arrows, <kbd>Backspace</kbd>, <kbd>Ctrl</kbd>+<kbd>u</kbd>, history — with the question itself styled like the rest of the UI. The one thing that does not work there is a modified <kbd>Enter</kbd>: the questions are read by `readline`, which cannot tell <kbd>Shift</kbd>+<kbd>Enter</kbd> from a plain <kbd>Enter</kbd>, so <kbd>Enter</kbd> submits.
+
 ### Sessions
 
 Internally, Wisemonkey uses sessions to separate different memory histories. Sessions are **named by the user**. By default, the agent uses the `default` session. You can start in a different session (either create a new one, or restore it if it exists) by passing its name as a positional argument:

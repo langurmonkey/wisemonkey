@@ -211,6 +211,185 @@ class TestTerminalSupport(unittest.TestCase):
         self.assertEqual(PUSH, "\x1b[>1u")
 
 
+class TestLegacyKeyEncoding(unittest.TestCase):
+    """readline readers need the terminal's *legacy* encodings.
+
+    ``rich.prompt`` reads through the builtin ``input()``, and readline knows
+    only ``CSI D``. With the disambiguate flag pushed, Left arrives as
+    ``CSI 1;129D`` and is typed into the line as escape characters instead of
+    moving the cursor -- so the flag has to come down for the duration.
+    """
+
+    def setUp(self):
+        from agent import keys
+
+        self.keys = keys
+        self.buf: Any = io.StringIO()
+        self.buf.isatty = lambda: True
+        patches = [
+            mock.patch.object(keys.sys, "stdout", self.buf),
+            mock.patch.object(keys, "_protocol_pushed", False),
+            mock.patch.object(keys, "_legacy_encoding_depth", 0),
+        ]
+        for p in patches:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in patches])
+
+    def test_it_pops_inside_and_pushes_after(self):
+        self.keys.enable_kitty_keyboard()
+        self.buf.truncate(0)
+        self.buf.seek(0)
+        inside: list[bool] = []
+        with self.keys.legacy_key_encoding():
+            inside.append(self.keys.protocol_pushed())
+        self.assertEqual(inside, [False])
+        self.assertTrue(self.keys.protocol_pushed())
+
+    def test_the_written_bytes_are_balanced(self):
+        self.keys.enable_kitty_keyboard()
+        self.buf.truncate(0)
+        self.buf.seek(0)
+        with self.keys.legacy_key_encoding():
+            pass
+        # Exactly one POP while reading, one PUSH after.
+        self.assertEqual(self.buf.getvalue(), self.keys.POP + self.keys.PUSH)
+
+    def test_nothing_is_sent_when_the_flag_was_never_pushed(self):
+        # A terminal that does not support the protocol (or no tty at all)
+        # must not be sent a POP it never had a PUSH for.
+        with self.keys.legacy_key_encoding():
+            pass
+        self.assertEqual(self.buf.getvalue(), "")
+
+    def test_the_flag_is_restored_after_an_exception(self):
+        self.keys.enable_kitty_keyboard()
+        with self.assertRaises(RuntimeError):
+            with self.keys.legacy_key_encoding():
+                raise RuntimeError("boom")
+        self.assertTrue(self.keys.protocol_pushed())
+
+    def test_nesting_pops_only_once(self):
+        self.keys.enable_kitty_keyboard()
+        self.buf.truncate(0)
+        self.buf.seek(0)
+        with self.keys.legacy_key_encoding():
+            with self.keys.legacy_key_encoding():
+                self.assertFalse(self.keys.protocol_pushed())
+            # The inner exit must not re-push while the outer still holds.
+            self.assertFalse(self.keys.protocol_pushed())
+        self.assertEqual(self.buf.getvalue(), self.keys.POP + self.keys.PUSH)
+        self.assertTrue(self.keys.protocol_pushed())
+
+
+class TestEnsureReadline(unittest.TestCase):
+    """The builtin ``input()`` has no line editor until readline is imported.
+
+    CPython only wires readline into ``input()`` when the module has been
+    imported, and it does not import it for a script. Wisemonkey is a script,
+    so ``rich.prompt``'s read was a bare canonical read: the kernel echoed
+    every byte, and an arrow key typed ``^[[C`` into the line instead of moving
+    the cursor.
+    """
+
+    def test_it_imports_readline_and_reports_success(self):
+        from agent import keys
+
+        with mock.patch.object(keys, "_readline_loaded", False):
+            self.assertTrue(keys.ensure_readline())
+            # Idempotent: the second call is a no-op, not a re-import.
+            self.assertTrue(keys.ensure_readline())
+
+    def test_a_missing_readline_is_not_fatal(self):
+        # Windows builds can lack it; the plain behaviour is preferable to an
+        # ImportError taking down the REPL.
+        from agent import keys
+
+        with mock.patch.object(keys, "_readline_loaded", False), mock.patch.dict(
+            "sys.modules", {"readline": None}
+        ):
+            self.assertFalse(keys.ensure_readline())
+
+
+class TestMarkPromptNonprinting(unittest.TestCase):
+    """readline counts prompt *characters*; escapes must not count.
+
+    An escape it does not know about is counted as if it were visible, so every
+    column readline computes afterwards -- and therefore every redraw -- lands
+    in the wrong place.
+    """
+
+    def test_sgr_escapes_are_wrapped(self):
+        from agent.keys import mark_prompt_nonprinting
+
+        self.assertEqual(
+            mark_prompt_nonprinting("\x1b[1mhi\x1b[0m"),
+            "\001\x1b[1m\002hi\001\x1b[0m\002",
+        )
+
+    def test_plain_text_is_untouched(self):
+        from agent.keys import mark_prompt_nonprinting
+
+        self.assertEqual(mark_prompt_nonprinting("hello"), "hello")
+
+    def test_every_escape_family_is_covered(self):
+        from agent.keys import mark_prompt_nonprinting
+
+        for escape in ("\x1b[2K", "\x1b[?25l", "\x1b]8;;http://x\x1b\\", "\x1bM"):
+            with self.subTest(escape=escape):
+                self.assertEqual(
+                    mark_prompt_nonprinting(f"a{escape}b"), f"a\001{escape}\002b"
+                )
+
+
+class TestReadlinePrompt(unittest.TestCase):
+    """The prompt string handed to ``input()`` must be styled but unwrapped."""
+
+    def _console(self, *, terminal: bool):
+        import io
+
+        from rich.console import Console
+
+        return Console(
+            file=io.StringIO(),
+            force_terminal=terminal,
+            color_system="truecolor" if terminal else None,
+            width=40,
+        )
+
+    def _text(self):
+        from rich.text import Text
+
+        return Text.from_markup("[bold]Enter the endpoint URL[/bold]: ")
+
+    def test_a_terminal_gets_the_styling_with_escapes_marked(self):
+        from agent.keys import readline_prompt
+
+        out = readline_prompt(self._console(terminal=True), self._text())
+        self.assertIn("\001\x1b[1m\002Enter the endpoint URL", out)
+        self.assertIn("\001\x1b[0m\002: ", out)
+
+    def test_a_long_prompt_is_not_wrapped_by_rich(self):
+        # Rich would break it at the console width; an embedded newline becomes
+        # a character in readline's prompt and permanently skews its arithmetic.
+        from agent.keys import readline_prompt
+        from rich.text import Text
+
+        out = readline_prompt(self._console(terminal=True), Text("x" * 200))
+        self.assertNotIn("\n", out)
+        self.assertEqual(out.count("x"), 200)
+
+    def test_a_pipe_gets_plain_text_with_no_markers(self):
+        # input() prints a prompt verbatim when readline is not in play, so the
+        # raw SOH/STX bytes would otherwise reach the output.
+        from agent.keys import readline_prompt
+
+        out = readline_prompt(self._console(terminal=False), self._text())
+        self.assertEqual(out, "Enter the endpoint URL: ")
+        self.assertNotIn("\001", out)
+        self.assertNotIn("\002", out)
+        self.assertNotIn("\x1b", out)
+
+
 class TestEnableDisable(unittest.TestCase):
     """Enabling must be paired with a pop, or the shell inherits the mode."""
 

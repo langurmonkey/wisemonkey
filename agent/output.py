@@ -19,6 +19,7 @@ from textual.widgets import RichLog
 
 from agent.console import console, theme_dict
 from agent.footer import Footer
+from agent.keys import ensure_readline, legacy_key_encoding, readline_prompt
 from agent.steer import SteerInput
 from agent.utils import term_width
 
@@ -50,6 +51,45 @@ def get_output_or_ipc() -> OutputAdapter:
     if _active_output:
         return _active_output
     return IpcOutputAdapter()
+
+
+# ── readline-aware Rich prompts ─────────────────────────────────────────────
+#
+# Rich prints the prompt itself and then calls `input()` with an *empty*
+# prompt. readline therefore believes the line buffer begins at column 1, so
+# any redraw — Backspace above all, and equally an insert in the middle of the
+# line or any character typed after a Left — rewrites from column 1 and erases
+# the question that was already on screen. The symptom is precise: press
+# Backspace once and the whole question vanishes, leaving only the typed text.
+#
+# `readline_prompt()` hands readline the prompt so it knows where the buffer
+# starts. These three subclasses are the only difference from the Rich
+# originals; `ask_choice` uses prompt_toolkit, which renders and reads the
+# line itself and never had the problem.
+
+
+class _ReadlinePromptMixin:
+    """Give a Rich prompt class a line editor that knows the prompt exists."""
+
+    @classmethod
+    def get_input(cls, console, prompt, password, stream=None) -> str:
+        if password or stream is not None:
+            # Password input goes through getpass, and an explicit stream means
+            # the caller is reading lines itself; neither wants readline.
+            return RichPrompt.get_input(console, prompt, password, stream)
+        return input(readline_prompt(console, prompt))
+
+
+class _ReadlinePrompt(_ReadlinePromptMixin, RichPrompt):
+    pass
+
+
+class _ReadlineFloatPrompt(_ReadlinePromptMixin, FloatPrompt):
+    pass
+
+
+class _ReadlineConfirm(_ReadlinePromptMixin, Confirm):
+    pass
 
 class OutputAdapter(Protocol):
     """Abstract interface for output adapters.
@@ -315,17 +355,41 @@ class RichOutputAdapter(OutputAdapter):
 
     def rule(self, style: str = "dim", title: str = "") -> None:
         self._console.rule(title=title, style=style)
-
-    # A turn may ask the user something (confirmation, a question) or hand the
+# A turn may ask the user something (confirmation, a question) or hand the
     # terminal to a subprocess. Both need a normal tty, so mid-turn steering
     # is suspended for the duration.
+    #
+    # Three things are needed for these three prompts:
+    #
+    # 1. `ensure_readline()`. `rich.prompt` reads through the builtin
+    #    `input()`, and CPython only gives that a line editor when the
+    #    `readline` module has been imported -- it does not import it for a
+    #    script. Without it the read is bare, the kernel echoes every byte it
+    #    gets, and pressing Right types `^[[C` into the line instead of moving
+    #    the cursor.
+    # 2. `legacy_key_encoding`. The disambiguate flag re-encodes every
+    #    functional key, so a Left arrow arrives as `CSI 1;129D`, which
+    #    readline does not know.
+    # 3. `_ReadlinePrompt`. Rich prints the question and then calls `input()`
+    #    with an *empty* prompt, so readline believes the line buffer starts at
+    #    column 1. Every redraw -- Backspace above all -- then rewrites from
+    #    column 1 and erases the question, leaving only the typed text. The
+    #    subclasses below hand readline the prompt instead; see
+    #    `agent.keys.readline_prompt`.
+    #
+    # `ask_choice` is prompt_toolkit: it renders and reads the line itself, so
+    # it needs none of the three and keeps Shift+Enter.
     def ask_string(self, message: str, default: str = "") -> str:
-        with self.steer_paused():
-            return RichPrompt.ask(message, default=default, console=console)
+        ensure_readline()
+        with self.steer_paused(), legacy_key_encoding():
+            return _ReadlinePrompt.ask(message, default=default, console=console)
 
     def ask_float(self, message: str, default: float = 0.0) -> float:
-        with self.steer_paused():
-            return FloatPrompt.ask(message, default=default, console=console)
+        ensure_readline()
+        with self.steer_paused(), legacy_key_encoding():
+            return _ReadlineFloatPrompt.ask(
+                message, default=default, console=console
+            )
 
     def ask_choice(
         self,
@@ -344,18 +408,23 @@ class RichOutputAdapter(OutputAdapter):
             )
 
     def ask_confirm(self, message: str, default: bool = False) -> bool:
-        with self.steer_paused():
-            return Confirm.ask(message, default=default, console=console)
+        ensure_readline()
+        with self.steer_paused(), legacy_key_encoding():
+            return _ReadlineConfirm.ask(message, default=default, console=console)
 
     def run_subprocess(self, cmd: list[str]):
         """Run a program with full terminal control.
 
-        Steering and the scroll region both interfere with a child process,
-        so they are torn down around the run and restored afterwards.
+        Steering, the scroll region and the keyboard protocol all interfere
+        with a child process, so they are torn down around the run and restored
+        afterwards. The protocol matters for `$EDITOR`: the flag re-encodes
+        every functional key, and a program that never asked for it -- which is
+        every program that does not implement the kitty protocol -- reads the
+        result as escape characters typed into its input.
         """
         import subprocess
 
-        with self.steer_paused():
+        with self.steer_paused(), legacy_key_encoding():
             active = self._footer.active
             if active:
                 self._footer.stop()
