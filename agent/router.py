@@ -209,7 +209,7 @@ class ModelRouter:
         self._model_name: str = ""
         self._base_url: str = ""
         self._temperature: float = 0.8
-        self._thinking_effort: str = "medium"
+        self._thinking_effort: str = "low"
     # ------------------------------------------------------------------
     # Initialisation
     # ------------------------------------------------------------------
@@ -222,8 +222,8 @@ class ModelRouter:
         """
         self._base_url = self.config.get("model.base_url", "").strip()
         self._model_name = self.config.get("model.name", "")
-        self._temperature = self.config.get("model.temperature", 0.8)
-        self._thinking_effort = self.config.get("model.thinking.effort", "medium")
+        self._temperature = self.config.get("model.temperature", 0.6)
+        self._thinking_effort = self.config.get("model.thinking.effort", "low")
 
         # 1. Detect provider
         explicit = self.config.get("model.provider", "").strip().lower()

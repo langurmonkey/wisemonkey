@@ -9,12 +9,13 @@ Follows XDG Base Directory spec:
 import json
 import os
 import shutil
+from pathlib import Path
+
 import yaml
+from dotenv import load_dotenv
+from xdg_base_dirs import xdg_config_home
 
 from agent.output import OutputAdapter
-from dotenv import load_dotenv
-from pathlib import Path
-from xdg_base_dirs import xdg_config_home
 
 BASE_CONFIG_DIR = xdg_config_home() / "wisemonkey"
 

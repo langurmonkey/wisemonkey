@@ -4,12 +4,12 @@ Allows the agent to operate with files and directories in the file system,
 including searching by name and content.
 """
 
+import difflib
 import fnmatch
 import os
 import re
 import tempfile
 from pathlib import Path
-from textwrap import indent
 
 from agent.output import get_output_or_ipc
 from agent.tools import tool
@@ -385,6 +385,40 @@ def _apply_line_edit(
     return file_lines[:start] + inserted + file_lines[start + count :], start + 1, start + len(inserted)
 
 
+def _diff_lines(
+    removed: list[str],
+    new_string: str,
+    old_start: int,
+    new_start: int,
+) -> list[tuple[int, str, str]]:
+    """The changed lines of an edit, as a minimal unified diff.
+
+    Only the lines that actually differ are returned: reprinting the whole
+    replaced block and the whole replacement is mostly unchanged text when
+    the edit is one line inside a long block, and it makes a two-line change
+    read like a fifty-line one.
+
+    Each entry is ``(line_number, marker, text)`` -- ``marker`` is ``"-"``
+    for a removed line and ``"+"`` for an added one. A removal carries its
+    number in the *old* file and an addition its number in the *new* one, so
+    a one-for-one replacement shows the same number on both sides while a
+    pure insertion shows only the new position. Trailing newlines are
+    dropped so a line is not rendered with a stray blank line after it.
+    """
+    old = [line.rstrip("\n") for line in removed]
+    new = new_string.splitlines()
+    entries: list[tuple[int, str, str]] = []
+    matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        # Removals first, so a replacement reads "- old" then "+ new" rather
+        # than interleaving the two sides.
+        entries.extend((old_start + k, "-", old[k]) for k in range(i1, i2))
+        entries.extend((new_start + k, "+", new[k]) for k in range(j1, j2))
+    return entries
+
+
 @tool(
     name="patch_file",
     description=(
@@ -618,10 +652,16 @@ def patch_file_handler(args):
             f"[weak]lines[/weak] [path]{at + 1}-{at + len(removed)}[/path] "
             f"[weak]→[/weak] [path]{new_start}-{new_end}[/path]"
         )
-    if removed:
-        output.print(f"[patch-remove]{escape(indent(''.join(removed), '  - '))}[/patch-remove]")
-    if new_string:
-        output.print(f"[patch-add]{escape(indent(new_string, '  + '))}[/patch-add]")
+    entries = _diff_lines(removed, new_string, at + 1, new_start)
+    if entries:
+        # Right-align the numbers to the widest one so the diff column stays
+        # straight whether the edit sits at line 3 or line 1200.
+        width = max(len(str(num)) for num, _, _ in entries)
+        for num, marker, text in entries:
+            tag = "patch-add" if marker == "+" else "patch-remove"
+            output.print(
+                f"[weak]{num:>{width}}|[/weak] [{tag}]{marker} {escape(text)}[/{tag}]"
+            )
 
     parent = os.path.dirname(path)
     fd, tmp_path = tempfile.mkstemp(dir=parent if parent else None, prefix=".patched-")

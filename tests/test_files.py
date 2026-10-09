@@ -727,3 +727,88 @@ class TestSearchContentRegex(BaseTest):
         result = self._run("needle")
         assert result["count"] == 1
         assert result["results"][0]["file"] == "real.py"
+
+
+class _CapturingOutput(_FakeOutput):
+    """Records every printed line instead of discarding it."""
+
+    def __init__(self):
+        self.lines: list[str] = []
+
+    def print(self, *args, **kwargs):
+        self.lines.append(" ".join(str(a) for a in args))
+
+
+class TestPatchFileDiffOutput(BaseTest):
+    """`patch_file` prints a diff, not the whole block it replaced.
+
+    Reprinting the replaced block and the replacement made a one-line edit
+    read as two full blocks: the unchanged majority of the text was printed
+    twice, once in red and once in green.
+    """
+
+    def setUp(self):
+        super().setUp()
+        discover_tools()
+        self.handler = get_registry()["patch_file"]["handler"]
+        self.output = _CapturingOutput()
+        set_output(cast(OutputAdapter, self.output))
+        self.addCleanup(set_output, None)
+
+    def _printed(self, tag: str) -> list[str]:
+        # The number is wrapped in its own [weak] tag, so the marker tag is
+        # no longer at the start of the line: find it anywhere.
+        return [line for line in self.output.lines if f"[{tag}]" in line]
+
+    def test_only_changed_lines_are_printed(self):
+        path = self._write_file(
+            "f.py", "".join(f"line{i}\n" for i in range(1, 11))
+        )
+        self.handler(
+            {"path": str(path), "old_string": "line5", "new_string": "LINE5"}
+        )
+        removed = self._printed("patch-remove")
+        added = self._printed("patch-add")
+        # A one-for-one replacement is numbered from both files, so the same
+        # line number appears on each side.
+        assert removed == ["[weak]5|[/weak] [patch-remove]- line5[/patch-remove]"]
+        assert added == ["[weak]5|[/weak] [patch-add]+ LINE5[/patch-add]"]
+        # No line of the untouched surrounding block is reprinted.
+        assert "line4" not in "".join(self.output.lines)
+        assert "line6" not in "".join(self.output.lines)
+
+    def test_a_pure_deletion_prints_no_additions(self):
+        path = self._write_file("f.py", "a\nb\nc\n")
+        self.handler({"path": str(path), "start_line": 2, "new_string": ""})
+        assert self._printed("patch-add") == []
+        assert self._printed("patch-remove") == [
+            "[weak]2|[/weak] [patch-remove]- b[/patch-remove]"
+        ]
+
+    def test_an_insertion_prints_no_removals(self):
+        path = self._write_file("f.py", "a\nb\n")
+        self.handler({"path": str(path), "start_line": 3, "new_string": "c\n"})
+        assert self._printed("patch-remove") == []
+        assert self._printed("patch-add") == [
+            "[weak]3|[/weak] [patch-add]+ c[/patch-add]"
+        ]
+
+    def test_numbers_are_right_aligned_to_the_widest(self):
+        # A one-line change deep in a long file must keep the marker column
+        # straight, so the number is padded to the widest one in the diff.
+        path = self._write_file(
+            "f.py", "".join(f"line{i}\n" for i in range(1, 121))
+        )
+        self.handler(
+            {
+                "path": str(path),
+                "old_string": "line9\nline10\nline11",
+                "new_string": "line9\nLINE10\nline11",
+            }
+        )
+        assert self._printed("patch-remove") == [
+            "[weak]10|[/weak] [patch-remove]- line10[/patch-remove]"
+        ]
+        assert self._printed("patch-add") == [
+            "[weak]10|[/weak] [patch-add]+ LINE10[/patch-add]"
+        ]

@@ -242,9 +242,12 @@ def _cmd_reasoning(
     try:
         # Reasoning effort
         opts = [
+            ("max", "Max"),
+            ("xhigh", "Extra high"),
             ("high", "High"),
             ("medium", "Medium"),
             ("low", "Low"),
+            ("minimal", "Minimal"),
             ("none", "Disable model reasoning"),
         ]
         defa = core.router.thinking_effort

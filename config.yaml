@@ -18,8 +18,8 @@ model:
   #   output: 15.0
   # Configure model reasoning
   thinking:
-    # none, low, medium, high
-    effort: medium
+    # none, minimal, low, medium, high, xhigh, max
+    effort: low
     # Display the model internal thinking
     display: False
 
