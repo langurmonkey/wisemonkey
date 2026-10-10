@@ -323,11 +323,22 @@ class TestFooterRendering(unittest.TestCase):
             self.footer.update_status("status", "input")
         self.assertEqual(self.tty.getvalue(), "")
 
-    def test_cursor_returned_to_scroll_region(self):
+    def test_cursor_saved_and_restored_around_redraw(self):
+        """A redraw must not clobber the streamed cursor column.
+
+        Answer text is printed line by line, so the cursor happens to sit at
+        column 1 of the bottom scroll-region row and a bare CUP back there is
+        harmless. A reasoning block is printed mid-line (``end=""``), so the
+        cursor sits at an arbitrary column; repositioning it to column 1
+        would make the next streamed chunk overwrite the start of the line.
+        The redraw therefore saves the cursor (DECSC, ``ESC 7``) before
+        drawing and restores it (DECRC, ``ESC 8``) afterwards, inside the
+        write lock.
+        """
         self.footer.update_status("s", "i")
         out = self.tty.getvalue()
-        top = 24 - FOOTER_LINES + 1
-        self.assertTrue(out.rstrip().endswith(f"\x1b[{top - 1};1H"))
+        self.assertTrue(out.startswith("\x1b7"))
+        self.assertTrue(out.rstrip().endswith("\x1b8"))
 
 
 class TestRealStream(unittest.TestCase):
@@ -485,14 +496,16 @@ class TestFooterSpinner(unittest.TestCase):
         """The content the footer last wrote to physical *row* (1-based).
 
         The footer addresses each row explicitly (``CUP`` + ``EL``), so a
-        row's content runs from its addressing to the next one.
+        row's content runs from its addressing to the next one -- or to the
+        ``ESC 8`` that closes the redraw (DECRC restores the streamed
+        cursor, so it also bounds the frame's writes).
         """
         marker = f"\x1b[{row};1H\x1b[2K"
         idx = out.rfind(marker)
         if idx < 0:
             return ""
         rest = out[idx + len(marker):]
-        m = re.search(r"\x1b\[\d+;1H", rest)
+        m = re.search(r"\x1b\[\d+;1H|\x1b8", rest)
         return rest[: m.start()] if m else rest
 
     def _wait_for_frames(self, count: int, timeout: float = 3.0) -> str:
@@ -671,7 +684,7 @@ class TestFooterHintsRow(unittest.TestCase):
         if idx < 0:
             return ""
         rest = out[idx + len(marker):]
-        m = re.search(r"\x1b\[\d+;1H", rest)
+        m = re.search(r"\x1b\[\d+;1H|\x1b8", rest)
         return rest[: m.start()] if m else rest
 
     def test_no_indicators_leaves_the_row_as_before(self):

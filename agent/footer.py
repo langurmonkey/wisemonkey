@@ -551,10 +551,11 @@ class Footer:
         so an animation frame never competes with what the user is typing.
 
         The terminal size is re-read on every redraw so a resize mid-turn
-        cannot leave stale geometry behind. The cursor is moved back to the
-        bottom of the scroll region afterwards. No-op when the footer is not
-        armed, or when neither line changed (pass *force* to bypass that,
-        which the spinner does on every tick).
+        cannot leave stale geometry behind. The cursor position is saved
+        before the redraw and restored afterwards, so streamed output that
+        left the cursor mid-line (a reasoning block) continues where it was.
+        No-op when the footer is not armed, or when neither line changed
+        (pass *force* to bypass that, which the spinner does on every tick).
         """
         if not self._active:
             return
@@ -575,9 +576,14 @@ class Footer:
                 footer_top = self._term_height - FOOTER_LINES + 1
                 width = self._term_width
 
-                # The content cursor is always at the bottom of the scroll
-                # region after normal output, so we simply move back there
-                # after drawing; no save/restore is needed.
+                # The content cursor is *not* necessarily at column 1 of the
+                # bottom scroll-region row: streamed answer text is printed
+                # line by line (so it happens to end at column 1), but a
+                # reasoning block is printed mid-line (``print(..., end="")``
+                # in ``agent.py``), so the cursor sits at an arbitrary column.
+                # A bare CUP-to-column-1 here would make the next streamed
+                # chunk overwrite the start of the line. Save the cursor
+                # before the redraw and restore it afterwards instead.
                 sep = _DIM + "─" * width + _RESET
 
                 # Hint line: advertised key bindings for the current state.
@@ -607,6 +613,12 @@ class Footer:
                 # literal text. Write to the real stream instead.
                 out = real_stream()
                 with WRITE_LOCK:
+                    # Save the cursor so the redraw can restore the exact
+                    # position the streamed output left behind (in particular
+                    # a mid-line column inside a reasoning block). Inside the
+                    # lock, so no streamed write can slip between save and
+                    # restore.
+                    out.write("\x1b7")
                     out.write(f"\x1b[{footer_top};1H")
                     out.write(f"\x1b[2K{sep}")
                     out.write(f"\x1b[{footer_top + 1};1H")
@@ -621,8 +633,9 @@ class Footer:
                         f"\x1b[2K{_BAR_BG}{hint}{_BAR_BG}{pad}{right}"
                         f"{_BAR_BG}  {_RESET}"
                     )
-                    # Move the cursor back to the bottom of the scroll region.
-                    out.write(f"\x1b[{footer_top - 1};1H")
+                    # Restore the cursor to where the streamed output had left
+                    # it, so a mid-line reasoning block continues in place.
+                    out.write("\x1b8")
                     out.flush()
             except Exception:
                 pass

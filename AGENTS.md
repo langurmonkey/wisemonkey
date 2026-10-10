@@ -165,7 +165,9 @@ Visible reasoning is **not** marked in the chat output. Instead, the footer's bo
 
 `_reasoning_start` sets the flag and calls `output.footer_thinking(True)`; `_reasoning_stop` clears it and calls `output.footer_thinking(False)`. `Footer.set_thinking` redraws the hints row on the change; `Footer.start` clears the indicator, so a turn that ended mid-reasoning cannot leave it stuck on the next one. The stage spinner (`Footer.set_spinner`) and the thinking indicator share the right of the hints row, clipped to the terminal width; neither ever touches the transient row above, so typed steering text is never overwritten.
 
-The TUI needs no equivalent: it flushes the reasoning buffer without a marker and has its own status-bar indicator. `tests/test_agent_stages.py::TestReasoningFooterIndicator` pins the flag lifecycle and the absence of chat-output markers; `tests/test_footer.py::TestFooterHintsRow` pins which row the indicators are drawn on.
+The reasoning text itself **is** printed to chat: `_handle_event` streams it with `print(..., end="")` in the `thinking` role. Because that leaves the cursor mid-line, `_reasoning_stop` emits the missing newline when the block ended without one (`_reasoning_mid_line`), so the dim thinking text and the answer never share a line. A block that already ended in a newline adds none.
+
+The TUI needs no equivalent: it buffers reasoning and flushes whole lines, and has its own status-bar indicator. `tests/test_agent_stages.py::TestReasoningFooterIndicator` pins the flag lifecycle, the absence of chat-output markers, the closing newline and its absence when the block already ended at a line boundary; `tests/test_footer.py::TestFooterHintsRow` pins which row the indicators are drawn on.
 
 ### Mid-turn steering (`agent/steer.py`)
 

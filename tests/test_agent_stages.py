@@ -10,6 +10,7 @@ from typing import Any, Callable, cast
 from unittest import mock
 
 from agent.agent import Agent
+from agent.ipc import Event, Message, ReasoningPayload, StageKind
 
 
 class _FakeFooterOutput:
@@ -58,6 +59,7 @@ class _SpyAgent(Agent):
         self._prompt_rounds = 0
         self._turn_in_progress = True
         self._reasoning_active = False
+        self._reasoning_mid_line = False
         self._fake_output = _FakeFooterOutput(footer_active)
         self.output = self._fake_output
 
@@ -89,8 +91,7 @@ class TestPromptStage(unittest.TestCase):
         """A tool round re-enters the LLM; no second "Processing prompt"."""
         agent = self._agent()
         agent._prompt_start()
-        with mock.patch("agent.agent.ok"):
-            agent._prompt_stop()
+        agent._prompt_stop()
         agent._prompt_start()  # round 2, after a tool batch
         self.assertEqual(agent._spinner_started(), ["⏳ Processing prompt..."])
         self.assertEqual(agent._prompt_rounds, 2)
@@ -106,18 +107,17 @@ class TestPromptStage(unittest.TestCase):
         """The "✓ Prompt processed" line was removed: on a full screen it
         overwrites the last line of the user's prompt text."""
         agent = self._agent()
-        with mock.patch("agent.agent.ok") as printed:
+        with mock.patch("agent.agent.print") as printed:
             for _ in range(3):
                 agent._prompt_start()
                 agent._prompt_stop()
-        self.assertEqual(printed.call_count, 0)
+        printed.assert_not_called()
 
     def test_spinner_cleared_on_stop(self):
         agent = self._agent()
         agent._prompt_start()
         self.assertIsNotNone(agent._footer_spinner)
-        with mock.patch("agent.agent.ok"):
-            agent._prompt_stop()
+        agent._prompt_stop()
         self.assertIsNone(agent._footer_spinner)
 
     def test_spinner_is_handed_to_the_footer_not_a_live_display(self):
@@ -149,14 +149,12 @@ class TestPromptStage(unittest.TestCase):
         """Round 2 has no spinner of its own, so it must not stop one."""
         agent = self._agent()
         agent._prompt_start()
-        with mock.patch("agent.agent.ok"):
-            agent._prompt_stop()
+        agent._prompt_stop()
         # Something else (a tool) owns the footer spinner now.
         agent._footer_spinner = "🔧 Tool running"
         stops_before = agent._spinner_stops()
         agent._prompt_start()
-        with mock.patch("agent.agent.ok"):
-            agent._prompt_stop()
+        agent._prompt_stop()
         self.assertEqual(agent._footer_spinner, "🔧 Tool running")
         self.assertEqual(agent._spinner_stops(), stops_before)
 
@@ -197,11 +195,60 @@ class TestReasoningFooterIndicator(unittest.TestCase):
     def test_no_chat_output_markers(self):
         """No 'Thinking...' or 'Done thinking' text is printed to chat."""
         agent = self._agent()
-        with mock.patch("agent.agent.info") as info, mock.patch("agent.agent.ok") as ok:
+        with (
+            mock.patch("agent.agent.info") as info,
+            mock.patch("agent.agent.print") as printed,
+        ):
             agent._reasoning_start(visible=True)
             agent._reasoning_stop()
         info.assert_not_called()
-        ok.assert_not_called()
+        printed.assert_not_called()
+
+    def test_reasoning_mid_line_is_closed_with_a_newline(self):
+        """A reasoning block streamed mid-line is closed with a newline.
+
+        Reasoning is printed with ``end=""`` so it can be streamed. If the
+        block ends without a trailing newline the answer would start on the
+        same line -- and in the same dim grey -- as the thinking text.
+        """
+        agent = self._agent()
+        agent._reasoning_start(visible=True)
+        process = Message.event(
+            Event.REASONING,
+            ReasoningPayload(stage=StageKind.PROCESS, text="thinking", visible=True),
+        )
+        with mock.patch("agent.agent.print"):
+            agent._handle_event(process)
+        self.assertTrue(agent._reasoning_mid_line)
+
+        with mock.patch("agent.agent.newline") as newline:
+            agent._reasoning_stop()
+        newline.assert_called_once()
+        self.assertFalse(agent._reasoning_mid_line)
+
+    def test_reasoning_ending_in_newline_adds_none(self):
+        """A block already at a line boundary must not add a blank line."""
+        agent = self._agent()
+        agent._reasoning_start(visible=True)
+        process = Message.event(
+            Event.REASONING,
+            ReasoningPayload(stage=StageKind.PROCESS, text="thinking\n", visible=True),
+        )
+        with mock.patch("agent.agent.print"):
+            agent._handle_event(process)
+        self.assertFalse(agent._reasoning_mid_line)
+
+        with mock.patch("agent.agent.newline") as newline:
+            agent._reasoning_stop()
+        newline.assert_not_called()
+
+    def test_reasoning_without_visible_text_adds_none(self):
+        """Invisible reasoning prints nothing, so it adds no newline."""
+        agent = self._agent()
+        agent._reasoning_start(visible=False)
+        with mock.patch("agent.agent.newline") as newline:
+            agent._reasoning_stop()
+        newline.assert_not_called()
 
 
 

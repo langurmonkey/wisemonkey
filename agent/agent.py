@@ -87,6 +87,13 @@ class Agent:
         # reads this to show a "💡 Thinking..." indicator on the footer's
         # key-hints row. No "Done thinking" marker: it simply disappears.
         self._reasoning_active = False
+        # Whether the streamed reasoning left the cursor mid-line, i.e. the
+        # last visible chunk did not end in a newline. Reasoning is printed
+        # with ``end=""`` (see `_handle_event`), so a block ending mid-line
+        # would make the answer start on the same line and in the same dim
+        # grey as the thinking text; `_reasoning_stop` emits the missing
+        # newline when this is set.
+        self._reasoning_mid_line = False
         # While the sticky footer is armed, stage spinners are drawn in the
         # footer input row rather than as a Rich `Live` display (see _spinner).
         self._footer_spinner: str | None = None
@@ -234,6 +241,9 @@ class Agent:
                     # it never competes with the answer or with `[weak]`
                     # annotations.
                     print(f"[thinking]{escape(payload.text)}[/]", end="")
+                    # Remember whether the cursor is left mid-line so the
+                    # block can be closed with a newline at STOP.
+                    self._reasoning_mid_line = not payload.text.endswith("\n")
             elif payload.stage == StageKind.STOP:
                 self._reasoning_stop()
 
@@ -335,10 +345,22 @@ class Agent:
         affects rendering — both modes use the same footer indicator.
         """
         self._reasoning_active = True
+        # A fresh block starts at a line boundary; clear any mid-line state a
+        # previous block (e.g. one cancelled before its STOP) left behind.
+        self._reasoning_mid_line = False
         self.output.footer_thinking(True)
 
     def _reasoning_stop(self) -> None:
-        """Clear the thinking status; the footer indicator disappears."""
+        """Clear the thinking status; the footer indicator disappears.
+
+        Reasoning is streamed mid-line (``print(..., end="")``), so a block
+        that ends without a trailing newline would leave the answer starting
+        on the same line — and in the same dim grey — as the thinking text.
+        Emit the missing newline so the two never share a line.
+        """
+        if self._reasoning_mid_line:
+            newline()
+            self._reasoning_mid_line = False
         self._reasoning_active = False
         self.output.footer_thinking(False)
 
