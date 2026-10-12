@@ -280,7 +280,7 @@ identically in the REPL, the TUI and the IPC/daemon path), never a bare
 
 #### Chat memory accounting
 
-`ChatMemory` tracks `total_tokens` and triggers `/history-compact` when it exceeds `agent.max_chat_history`. `total_tokens` is computed by tokenizing the exact rendered history returned by `get_formatted(timestamps=False, width=0)`, including tool-result truncation and compact adjacent tool call/result blocks. Recount after changes to stored exchanges, loading, trimming, or clearing. Keep this accounting in sync with `get_formatted()` if its rendering changes.
+`ChatMemory` tracks `total_tokens` and triggers `/history-compact` when it exceeds `agent.max_chat_history`. `total_tokens` is computed by tokenizing the exact rendered history returned by `get_formatted(timestamps=False, width=0)`, including tool-result truncation and compact adjacent tool call/result blocks. Recount after changes to stored exchanges, loading, trimming, or clearing. Both `get_formatted()` and `exchange_info()` (the per-interaction timestamps and sizes behind `/history-info`) render through the one `_render_history()` helper, so keep this accounting in sync with that renderer if its output changes.
 
 ### API key resolution (`agent/router.py`)
 

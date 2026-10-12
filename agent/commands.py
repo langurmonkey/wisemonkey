@@ -45,7 +45,7 @@ class Command:
         empty  # (agent, params: list[str], output: OutputAdapter | None) -> str | None
     )
     aliases: list[str] = field(default_factory=list)
-    examples: list[str] = field(default_factory=list)
+    examples: list[tuple[str, str]] = field(default_factory=list)
 
 
 class CommandRegistry:
@@ -176,10 +176,19 @@ class CommandRegistry:
         result += f"• {names} → {cmd.description}\n"
 
         if cmd.examples:
-            result += f"[output-frame]  Examples:[/output-frame]\n"
-
-        for example in cmd.examples:
-            result += f"[time]    {example}[/time]\n"
+            result += "[output-frame]  Examples:[/output-frame]\n"
+            # Descriptions line up in a column: the command list is short and
+            # reading it with the descriptions ragged would be worse than a
+            # little arithmetic here.
+            width = max(len(example) for example, _ in cmd.examples)
+            for example, description in cmd.examples:
+                if description:
+                    result += (
+                        f"[time]    {example:<{width}}[/time]"
+                        f"  [weak]{description}[/weak]\n"
+                    )
+                else:
+                    result += f"[time]    {example}[/time]\n"
 
         return result
 
@@ -190,7 +199,10 @@ registry = CommandRegistry()
 
 # Decorator for commands
 def cmd(
-    name: str, description: str = "", aliases: list[str] = [], examples: list[str] = []
+    name: str,
+    description: str = "",
+    aliases: list[str] = [],
+    examples: list[tuple[str, str]] = [],
 ):
     """
     Decorator to register commands.
@@ -298,7 +310,7 @@ def _cmd_notes(
     "/notes-add",
     "Add a note to memory",
     examples=[
-        "/notes add This is my note   # Add a new note",
+        ("/notes add This is my note", "Add a new note"),
     ],
 )
 def _cmd_notes_add(
@@ -315,7 +327,7 @@ def _cmd_notes_add(
     "/sessions",
     "List all sessions with their size and last access",
     examples=[
-        "/sessions     # List every session, most recently used first",
+        ("/sessions", "List every session, most recently used first"),
     ],
 )
 def _cmd_sessions(
@@ -377,8 +389,8 @@ def _cmd_sessions(
     "/resume",
     "Switch to another session, keeping this process running",
     examples=[
-        "/resume              # Resume the most recently used other session",
-        "/resume gaiasky      # Switch to the session named 'gaiasky'",
+        ("/resume", "Resume the most recently used other session"),
+        ("/resume gaiasky", "Switch to the session named 'gaiasky'"),
     ],
 )
 def _cmd_resume(
@@ -502,8 +514,8 @@ def _cmd_session_agent(
     "/history",
     "Show the session chat history contents",
     examples=[
-        "/history     # Print entire session chat history",
-        "/history 2   # Print last 2 interactions",
+        ("/history", "Print entire session chat history"),
+        ("/history 2", "Print last 2 interactions"),
     ],
 )
 def _cmd_history(
@@ -525,12 +537,84 @@ def _cmd_history(
     return True, stats, None, mem
 
 
+def _short_utc(when: str) -> str:
+    """Shorten an entry's ISO-ish ``utc`` stamp to ``YYYY-MM-DD HH:MM``.
+
+    History entries store ``str(datetime)`` (e.g.
+    ``2026-06-26 12:00:00.123456+00:00``), whose microseconds and offset are
+    noise when the question is only "when did this interaction happen". An
+    un-parseable or missing stamp is passed through as-is rather than dropped,
+    so an entry never looks older than it is just because its timestamp was
+    in an unexpected shape.
+    """
+    if not when:
+        return "—"
+    try:
+        return datetime.datetime.fromisoformat(when).strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return when
+
+
+@cmd(
+    "/history-info",
+    "Get info on the chat history interactions and each one's share of the history",
+    examples=[
+        (
+            "/history-info",
+            "Number the interactions and their percentage of the history size",
+        ),
+    ],
+)
+def _cmd_history_info(
+    core, params, output: OutputAdapter | None = None
+) -> tuple[bool, str | None, str | None, str | None]:
+    """Summarise how the chat history is split across interactions.
+
+    Each interaction is a user message plus everything up to the next one
+    (answer, tool calls and results), and its size is the tokens it
+    contributes to the context. Percentages are shares of the live history,
+    so they add up to 100% -- which interaction is eating the window.
+
+    Entries are numbered oldest first and stamped with the moment each
+    interaction began, so the numbering cannot be mistaken for "most recent
+    first" (the two directions are indistinguishable from the sizes alone).
+    """
+    if params:
+        return False, no_params_error, None, None
+
+    info = core.memory.get_chat_history_info()
+    if not info:
+        return False, "agent memory is empty", None, None
+
+    count = len(info)
+    total = sum(size for _, size in info)
+    tokens, max_tokens, rate = core.memory.get_chat_stats()
+
+    stamps = [_short_utc(when) for when, _ in info]
+    stamp_width = max(len(s) for s in stamps)
+    number_width = len(str(count))
+    lines = []
+    for i, ((_, size), stamp) in enumerate(zip(info, stamps), start=1):
+        pct = (size * 100.0 / total) if total else 0.0
+        lines.append(
+            f"{i:>{number_width}}. {stamp:<{stamp_width}}  "
+            f"{pct:6.2f}%  ({size:,} tokens)"
+        )
+
+    plural = "" if count == 1 else "s"
+    msg = (
+        f"{count} interaction{plural} in chat history, oldest first "
+        f"({tokens}/{max_tokens} tokens, {rate:.2f}% of the window)"
+    )
+    return True, msg, "\n".join(lines), None
+
+
 @cmd(
     "/history-clear",
     "Clear the current session chat history; gets an optional integer with the number of exchanges to show",
     examples=[
-        "/history        # Clear chat memory for this sesson",
-        "/history clear 10     # Clear the 10 oldest chat exchanges of this session",
+        ("/history", "Clear chat memory for this session"),
+        ("/history clear 10", "Clear the 10 oldest chat exchanges of this session"),
     ],
 )
 def _cmd_history_clear(
@@ -551,8 +635,8 @@ def _cmd_history_clear(
     "/undo",
     "Remove the last exchange(s) from the context; optional integer count (default 1)",
     examples=[
-        "/undo        # Drop the last exchange (prompt + answer + tool calls)",
-        "/undo 3      # Drop the last three exchanges",
+        ("/undo", "Drop the last exchange (prompt + answer + tool calls)"),
+        ("/undo 3", "Drop the last three exchanges"),
     ],
 )
 def _cmd_undo(
@@ -587,8 +671,8 @@ def _cmd_undo(
     "Re-run the last prompt from scratch, optionally dropping its answer from the context",
     aliases=["/r"],
     examples=[
-        "/retry          # Re-run the last prompt, keeping the old answer in context",
-        "/retry --drop   # Re-run it and remove the old exchange first",
+        ("/retry", "Re-run the last prompt, keeping the old answer in context"),
+        ("/retry --drop", "Re-run it and remove the old exchange first"),
     ],
 )
 def _cmd_retry(
@@ -622,7 +706,7 @@ def _cmd_retry(
     "/edit",
     "Edit the last prompt in $EDITOR and re-run it, dropping its answer",
     examples=[
-        "/edit        # Open the last prompt in $EDITOR, then re-run it",
+        ("/edit", "Open the last prompt in $EDITOR, then re-run it"),
     ],
 )
 def _cmd_edit(
@@ -763,8 +847,8 @@ def _cmd_history_compact(
     "/plan-read",
     "Read a saved session plan by name",
     examples=[
-        "/plan read REFACTOR_20260626_120000   # Read a specific plan",
-        "/plan read REFACTOR                   # Read the most recent matching plan",
+        ("/plan read NEW_FEATURE", "Read a specific plan"),
+        ("/plan read REFACTOR", "Read the most recent matching plan"),
     ],
 )
 def _cmd_plan_read(
@@ -854,8 +938,8 @@ def _cmd_plan_list(
     "/plan-edit",
     "Edit a saved session plan with $EDITOR or $VISUAL",
     examples=[
-        "/plan edit REFACTOR_20260626_120000   # Edit a specific plan",
-        "/plan edit REFACTOR                    # Edit the most recent matching plan",
+        ("/plan edit REFACTOR_20260626_120000", "Edit a specific plan"),
+        ("/plan edit REFACTOR", "Edit the most recent matching plan"),
     ],
 )
 def _cmd_plan_edit(
@@ -911,8 +995,8 @@ def _cmd_plan_edit(
     "/embed",
     "Embed a document into the session vector store",
     examples=[
-        "/embed ~/documents/research_paper.pdf",
-        "/embed ./notes.md",
+        ("/embed ~/documents/research_paper.pdf", ""),
+        ("/embed ./notes.md", ""),
     ],
 )
 def _cmd_embed(
@@ -1431,8 +1515,8 @@ def _cmd_vi(
     "/attachimage",
     "Attach an image to the next prompt",
     examples=[
-        "/attachimage path/to/screenshot.png",
-        "/attachimage ~/Pictures/photo.jpg",
+        ("/attachimage path/to/screenshot.png", ""),
+        ("/attachimage ~/Pictures/photo.jpg", ""),
     ],
 )
 def _cmd_attach_image(

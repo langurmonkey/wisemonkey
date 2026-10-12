@@ -480,6 +480,15 @@ class Memory:
 
         return curr, max_tokens, fill_rate
 
+    def get_chat_history_info(self) -> list[tuple[str, int]]:
+        """Per-exchange timestamp and token size of the live chat window.
+
+        One ``(utc, size)`` pair per interaction (user message plus everything
+        up to the next user message), oldest first. See
+        :meth:`ChatMemory.exchange_info`.
+        """
+        return self._chat_history.exchange_info()
+
     def create_pasted_file(self, content):
         """Save pasted content to a file in the session's pasted directory.
 
@@ -837,73 +846,55 @@ class ChatMemory:
         """How many turns a recap of *num_exchanges* would cover."""
         return len(self.conversational_turns(num_turns=num_exchanges))
 
-    def get_formatted(
+    def exchange_info(self) -> list[tuple[str, int]]:
+        """Timestamp and token size of each exchange, oldest first.
+
+        An exchange starts at a ``user`` message and runs to the next one, so
+        a turn's tool calls and results count towards its size -- that is
+        exactly what makes one interaction cost more than another. Entries
+        before the first user message are ignored, as in
+        :meth:`_exchange_starts`.
+
+        The timestamp is the ``utc`` field of the user entry that starts the
+        exchange, i.e. when the interaction began (``""`` for an exchange
+        whose entry carries no timestamp). Sizes come from the same renderer
+        the prompt uses, so each number is the tokens the exchange actually
+        contributes to the context, not a raw character estimate. The returned
+        list is ordered like the history -- index 0 is the oldest -- and the
+        sum of the sizes approximates ``total_tokens``.
+        """
+        starts = self._exchange_starts()
+        if not starts:
+            return []
+        bounds = starts[1:] + [len(self._exchanges)]
+        info: list[tuple[str, int]] = []
+        for start, end in zip(starts, bounds):
+            rendered = self._render_history(self._exchanges[start:end], width=0)
+            when = str(self._exchanges[start].get("utc", "") or "")
+            info.append((when, count_tokens(rendered)))
+        return info
+
+    def _render_history(
         self,
-        num_exchanges: int,
+        history: list[dict],
+        *,
         timestamps: bool = False,
         collapse_tools: bool = False,
         width: int = 0,
-        roles: tuple[str, ...] | None = None,
         assistant_width: int = 0,
         mark_incomplete: bool = False,
-    ):
-        """Return chat history formatted for the system prompt.
+        last_assistant: int = -1,
+    ) -> str:
+        """Render *history* entries into the text the prompt and recaps share.
 
-        Handles all exchange roles: user, assistant, summary, tool_call,
-        and tool_result. Tool results are truncated (see
-        ``_tool_result_limit``) unless full tool results are enabled.
-
-        Parameters beyond the prompt's own use:
-
-        - roles: keep only these roles, and slice *after* filtering. The
-          default ``None`` keeps every role, which is what the system prompt
-          needs -- tool results are part of the conversation the model
-          continues. A human-facing recap is the opposite case.
-        - assistant_width: a wider truncation for assistant entries, which are
-          typically longer than the question that prompted them. 0 means "use
-          ``width``".
-        - mark_incomplete: append ``(continued)`` to the final assistant entry
-          when it looks cut off mid-sentence.
-
-        Returns:
-            Formatted string of recent exchanges, or None if empty
+        The single renderer for both the system prompt and every human-facing
+        recap, so token accounting -- which counts the rendered text -- cannot
+        drift from what the model actually sees. ``last_assistant`` is the
+        index the ``(continued)`` marker belongs on.
         """
-        if not self._exchanges:
-            return None
-
         tool_limit = _tool_result_limit()
 
         lines = []
-        # Show most recent exchanges (num_exchanges == 0 -> all)
-        if roles is None:
-            history = (
-                self._exchanges[-num_exchanges:]
-                if num_exchanges > 0
-                else self._exchanges
-            )
-        elif "user" in roles and "assistant" in roles:
-            # A human-facing recap: count *turns*, so `num_exchanges` is a
-            # number of question/answer pairs. Slicing the filtered list
-            # instead would let one turn's narration fill the whole panel --
-            # two Assistant blocks and no User, which is what the recap showed
-            # before this.
-            history = self._flatten_turns(
-                self.conversational_turns(roles=roles, num_turns=num_exchanges)
-            )
-        else:
-            filtered = [e for e in self._exchanges if e.get("role") in roles]
-            history = (
-                filtered[-num_exchanges:] if num_exchanges > 0 else filtered
-            )
-
-        # The (continued) marker belongs on the *last assistant* entry, which
-        # is not necessarily the last entry: a recap that ends with the user's
-        # pending question must not mark the question, and must not skip the
-        # marker because a user turn happens to follow the answer.
-        last_assistant = max(
-            (i for i, e in enumerate(history) if e.get("role") == "assistant"),
-            default=-1,
-        )
 
         def is_tool(turn) -> bool:
             return turn.get("role") in ("tool_call", "tool_result")
@@ -969,3 +960,78 @@ class ChatMemory:
             i += 1
 
         return "\n".join(lines)
+
+    def get_formatted(
+        self,
+        num_exchanges: int,
+        timestamps: bool = False,
+        collapse_tools: bool = False,
+        width: int = 0,
+        roles: tuple[str, ...] | None = None,
+        assistant_width: int = 0,
+        mark_incomplete: bool = False,
+    ):
+        """Return chat history formatted for the system prompt.
+
+        Handles all exchange roles: user, assistant, summary, tool_call,
+        and tool_result. Tool results are truncated (see
+        ``_tool_result_limit``) unless full tool results are enabled.
+
+        Parameters beyond the prompt's own use:
+
+        - roles: keep only these roles, and slice *after* filtering. The
+          default ``None`` keeps every role, which is what the system prompt
+          needs -- tool results are part of the conversation the model
+          continues. A human-facing recap is the opposite case.
+        - assistant_width: a wider truncation for assistant entries, which are
+          typically longer than the question that prompted them. 0 means "use
+          ``width``".
+        - mark_incomplete: append ``(continued)`` to the final assistant entry
+          when it looks cut off mid-sentence.
+
+        Returns:
+            Formatted string of recent exchanges, or None if empty
+        """
+        if not self._exchanges:
+            return None
+
+        # Show most recent exchanges (num_exchanges == 0 -> all)
+        if roles is None:
+            history = (
+                self._exchanges[-num_exchanges:]
+                if num_exchanges > 0
+                else self._exchanges
+            )
+        elif "user" in roles and "assistant" in roles:
+            # A human-facing recap: count *turns*, so `num_exchanges` is a
+            # number of question/answer pairs. Slicing the filtered list
+            # instead would let one turn's narration fill the whole panel --
+            # two Assistant blocks and no User, which is what the recap showed
+            # before this.
+            history = self._flatten_turns(
+                self.conversational_turns(roles=roles, num_turns=num_exchanges)
+            )
+        else:
+            filtered = [e for e in self._exchanges if e.get("role") in roles]
+            history = (
+                filtered[-num_exchanges:] if num_exchanges > 0 else filtered
+            )
+
+        # The (continued) marker belongs on the *last assistant* entry, which
+        # is not necessarily the last entry: a recap that ends with the user's
+        # pending question must not mark the question, and must not skip the
+        # marker because a user turn happens to follow the answer.
+        last_assistant = max(
+            (i for i, e in enumerate(history) if e.get("role") == "assistant"),
+            default=-1,
+        )
+
+        return self._render_history(
+            history,
+            timestamps=timestamps,
+            collapse_tools=collapse_tools,
+            width=width,
+            assistant_width=assistant_width,
+            mark_incomplete=mark_incomplete,
+            last_assistant=last_assistant,
+        )
