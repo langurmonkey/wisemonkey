@@ -107,5 +107,7 @@ agent:
   footer_debug_bytes: false
   # Enable vi mode input
   vi_mode: false
-  # Unsafe mode: when true, dangerous commands will NOT prompt for user confirmation
+  # Unsafe mode: when true, no user confirmation is requested -- for dangerous
+  # commands, for commands that touch paths outside the session directory, and
+  # for network tools (fetch_url, web_search). Intended for unattended runs.
   unsafe: false

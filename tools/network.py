@@ -2,16 +2,47 @@
 
 Allows the agent to access URLs and web pages on the host machine.
 Usage: fetch_url(url='https://...')
+
+Security: every request leaves the machine, so the user confirms each one
+before it is sent. Set ``agent.unsafe`` to skip the prompts for unattended runs.
 """
 
-import urllib.request
-import urllib.error
-import urllib.parse
 import html as html_lib
 import re
+import urllib.error
+import urllib.parse
+import urllib.request
 
-from agent.tools import tool
+from agent.config import get_config
 from agent.output import get_output_or_ipc
+from agent.tools import tool
+
+
+def _confirm_network(action: str, target: str, reason: str) -> bool:
+    """Ask the user to confirm an outbound network request.
+
+    Returns True when the request may proceed. ``agent.unsafe`` skips the
+    prompt entirely, so unattended runs remain possible.
+    """
+    if get_config().get("agent.unsafe", False):
+        return True
+
+    output = get_output_or_ipc()
+    output.newline()
+    output.print("🌐 [warn]Network access requires confirmation[/warn]", indent=2)
+    output.print(f"[weak]Reason[/weak]: {reason}", indent=2)
+    output.print(f"[weak]Target[/weak]: [cmd]{target}[/cmd]", indent=2)
+    output.newline()
+
+    confirmed = output.ask_confirm(f"[bold]{action}[/bold]", default=False)
+
+    if confirmed:
+        output.ok("Confirmed", indent=2)
+    else:
+        output.err("Cancelled by user", indent=2)
+
+    return confirmed
+
 
 def _strip_scripts_and_styles(html):
     html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
@@ -49,7 +80,8 @@ def _decode_response(response):
     name="fetch_url",
     description=(
         "Browse a website given a URL and return the output.\n"
-        "This tool provides access to websites via the HTTP and HTTPS protocols. The website HTML content is stripped of script and style tags."
+        "This tool provides access to websites via the HTTP and HTTPS protocols. The website HTML content is stripped of script and style tags.\n"
+        "The user is asked to confirm each request before it is sent; the tool returns an error if they decline."
     ),
     parameters={
         "type": "object",
@@ -66,6 +98,22 @@ def fetch_url_handler(args):
     url = args.get("url", "")
     if not url:
         return {"error": "No URL provided"}
+
+    if not _confirm_network(
+        "Fetch this URL?",
+        url,
+        "The agent wants to make a network request.",
+    ):
+        return {
+            "error": (
+                "fetch_url was cancelled by the user. You asked to fetch a "
+                "URL and the user declined. Explain why you need it, or ask "
+                "them to paste the content instead."
+            ),
+            "user_cancelled": True,
+            "url": url,
+        }
+
     try:
         output = get_output_or_ipc()
         output.print(f"[weak]Accessing[/weak] [link]{url}[/link]", indent=2)
@@ -141,7 +189,8 @@ def _parse_ddg_results(html: str, max_results: int) -> list[dict]:
         "Search the web using DuckDuckGo and return a list of results.\\n"
         "Each result contains a title, URL, and short snippet. Use this to find "
         "pages, then call fetch_url on any result URL to read the full content. "
-        "Useful for answering questions about current events or facts not in the model's knowledge."
+        "Useful for answering questions about current events or facts not in the model's knowledge. "
+        "The user is asked to confirm each search before it is sent; the tool returns an error if they decline."
     ),
     parameters={
         "type": "object",
@@ -167,6 +216,21 @@ def web_search_handler(args):
     except (TypeError, ValueError):
         max_results = 5
     max_results = max(1, min(max_results, 20))
+
+    if not _confirm_network(
+        "Run this search?",
+        query,
+        "The agent wants to search the web.",
+    ):
+        return {
+            "error": (
+                "web_search was cancelled by the user. You asked to search "
+                "the web and the user declined. Explain why you need it, or "
+                "ask them to answer instead."
+            ),
+            "user_cancelled": True,
+            "query": query,
+        }
 
     try:
         output = get_output_or_ipc()

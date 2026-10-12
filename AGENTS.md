@@ -252,6 +252,32 @@ Output goes to a **temp file, not a pipe**. A pipe is a fixed buffer that blocks
 
 The child gets its own **process group**, so `kill_job` signals the whole group: a shell pipeline does not leave its second half running after the first half is dead. `kill_job` returns the output produced before dying (a killed test run still says which test failed) and, with `force: true`, uses `SIGKILL` for a command that traps `SIGTERM`. A process that ignores `SIGTERM` is reported as still running rather than claimed as killed. Jobs live in the agent's process and are killed by an `atexit` hook, so a job cannot outlive the session; the last 8 finished jobs are kept (logs included) and older ones reaped.
 
+#### Confirmation policy (`tools/terminal.py`, `tools/network.py`, `tools/files.py`)
+
+A tool asks the user before it does something irreversible or that reaches
+outside the session. The prompt is always `output.ask_confirm(...)` (so it works
+identically in the REPL, the TUI and the IPC/daemon path), never a bare
+`input()`, and a decline returns a dict carrying `user_cancelled: True` plus an
+`error` that tells the model to explain itself rather than retry.
+
+- **`run_command`** prompts when `_confirmation_reasons()` returns anything:
+  a dangerous pattern, a `timeout > 60`, a redirect into a system directory, or
+  a path outside the session working directory. That last check is
+  `_outside_session_paths()` -- a static, best-effort scan (`shlex.split`, then
+  each path-like token expanded and resolved against the cwd), because no shell
+  is run to expand the command. URLs and `$VAR` tokens are skipped, `KEY=value`
+  is split, and bare names (`notes.txt`) are *not* candidates since they are
+  relative to the cwd. A missed path only means a missed prompt, never a blocked
+  command; over-flagging is deliberate, so a command that reads `/etc/hostname`
+  prompts just as one that writes there does.
+- **`fetch_url` / `web_search`** always prompt, because every call leaves the
+  machine.
+- **The opt-out is one flag**: `agent.unsafe` (`/unsafe`) skips all of these, so
+  unattended runs stay possible. `run_command` additionally honours the internal
+  `_skip_confirmation` argument, which `spawn` uses.
+- **`find_files` already prompts** for a search root outside the cwd; that is
+  the older instance of the same rule and should stay consistent with it.
+
 #### Chat memory accounting
 
 `ChatMemory` tracks `total_tokens` and triggers `/history-compact` when it exceeds `agent.max_chat_history`. `total_tokens` is computed by tokenizing the exact rendered history returned by `get_formatted(timestamps=False, width=0)`, including tool-result truncation and compact adjacent tool call/result blocks. Recount after changes to stored exchanges, loading, trimming, or clearing. Keep this accounting in sync with `get_formatted()` if its rendering changes.
