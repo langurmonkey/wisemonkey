@@ -797,16 +797,58 @@ def _cmd_last_prompt(
 @cmd(
     "/history-compact",
     "Compact the session chat history by summarizing it into a shorter form",
+    examples=[
+        ("/history-compact", "Summarize every interaction but the most recent one"),
+        ("/history-compact 5", "Summarize only the 5 oldest interactions"),
+        ("/history-compact 0", "Summarize the entire chat history"),
+    ],
 )
 def _cmd_history_compact(
     core, params, output: OutputAdapter | None = None
 ) -> tuple[bool, str | None, str | None, str | None]:
-    if params:
-        return False, no_params_error, None, None
+    """Summarize part of the chat history in place.
 
-    history_text = core.memory.get_chat_history_formatted()
-    chars_before = len(history_text) if history_text else 0
-    tks_before = count_tokens(history_text) if history_text else 0
+    With no argument every interaction except the most recent one is summarized
+    and replaced by a single briefing, so the task being worked on right now
+    stays in the live context instead of being buried in the summary. With a
+    count, only the oldest *n* interactions are summarized and replaced while
+    everything more recent is left untouched -- the way to shed the expensive
+    early part of a long session without losing what is being worked on. The
+    count is capped at the number of interactions present, so an over-large
+    value is *not* an error, it just means "all"; ``0`` summarizes everything
+    (the latest interaction included).
+    """
+    if params:
+        try:
+            num_exchanges = int(params[0])
+        except ValueError:
+            return False, f"Parameter must be integer: {params[0]}", None, None
+        if num_exchanges < 0:
+            return False, "the number of interactions must be positive", None, None
+    else:
+        # No argument: keep the latest interaction out of the summarized slice.
+        # ``num_exchanges <= 0`` means "all" in the memory layer, so the count
+        # is derived from the history instead of passed as 0 -- otherwise a
+        # single-interaction history would summarize the very exchange meant to
+        # survive.
+        total = len(core.memory.get_chat_history_info())
+        if total == 0:
+            return False, "agent memory is empty", None, None
+        if total == 1:
+            return (
+                False,
+                "nothing to compact: only the latest interaction is present",
+                None,
+                None,
+            )
+        num_exchanges = total - 1
+
+    history_text = core.memory.get_chat_history_formatted_oldest(num_exchanges)
+    if not history_text:
+        return False, "agent memory is empty", None, None
+
+    chars_before = len(history_text)
+    tks_before = count_tokens(history_text)
 
     content = (
         "You are a technical editor. Summarize and compact this conversation as a dense agent briefing. Follow these guidelines:\n"
@@ -831,11 +873,26 @@ def _cmd_history_compact(
         chars_after = len(summary)
         tks_after = count_tokens(summary)
 
-        core.memory.reset_chat_memory(content=[{"role": "summary", "content": summary}])
+        total_exchanges = len(core.memory.get_chat_history_info())
+        covered = (
+            total_exchanges
+            if num_exchanges <= 0
+            else min(num_exchanges, total_exchanges)
+        )
+        core.memory.compact_chat_history(summary, num_exchanges)
 
+        kept = total_exchanges - covered
+        kept_note = (
+            f", {kept} newer interaction{'s' if kept != 1 else ''} kept"
+            if kept > 0
+            else ""
+        )
+        plural = "" if covered == 1 else "s"
         return (
             True,
-            f"Memory compacted successfully from {chars_before} to {chars_after} chars ({tks_before} -> {tks_after} tks)",
+            f"Memory compacted successfully from {chars_before} to {chars_after} chars "
+            f"({tks_before} -> {tks_after} tks): {covered} interaction{plural} "
+            f"summarized{kept_note}",
             None,
             None,
         )

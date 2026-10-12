@@ -489,6 +489,23 @@ class Memory:
         """
         return self._chat_history.exchange_info()
 
+    def get_chat_history_formatted_oldest(self, num_exchanges: int = 0):
+        """Formatted text of the oldest *num_exchanges* exchanges (0 = all).
+
+        See :meth:`ChatMemory.get_formatted_oldest`. Pair with
+        :meth:`compact_chat_history` so the summarized text and the replaced
+        text are the same slice.
+        """
+        return self._chat_history.get_formatted_oldest(num_exchanges)
+
+    def compact_chat_history(self, summary: str, num_exchanges: int = 0) -> int:
+        """Replace the oldest *num_exchanges* exchanges with *summary*.
+
+        See :meth:`ChatMemory.replace_oldest`. Returns the number of entries
+        replaced; ``0`` means there was nothing to compact.
+        """
+        return self._chat_history.replace_oldest(num_exchanges, summary)
+
     def create_pasted_file(self, content):
         """Save pasted content to a file in the session's pasted directory.
 
@@ -685,6 +702,24 @@ class ChatMemory:
         starts = [i for i, e in enumerate(self._exchanges) if e.get("role") == "user"]
         return starts
 
+    def _oldest_cutoff(self, num_exchanges: int) -> int:
+        """Index just past the oldest *num_exchanges* exchanges.
+
+        The counterpart of the trailing slice in :meth:`get_formatted`:
+        ``num_exchanges <= 0`` (or one that covers every exchange) means
+        "everything", so a full compaction and a partial one take the same
+        code path. Any leading entries before the first ``user`` message -- a
+        summary from an earlier compaction, say -- belong to the oldest part
+        and are included, which is what keeps repeated partial compactions
+        from stacking summaries in front of each other.
+        """
+        if num_exchanges <= 0:
+            return len(self._exchanges)
+        starts = self._exchange_starts()
+        if len(starts) <= num_exchanges:
+            return len(self._exchanges)
+        return starts[num_exchanges]
+
     def _trim_to_window(self) -> int:
         """Trim to the last `window_turns` exchanges, archiving the rest.
 
@@ -873,6 +908,43 @@ class ChatMemory:
             when = str(self._exchanges[start].get("utc", "") or "")
             info.append((when, count_tokens(rendered)))
         return info
+
+    def get_formatted_oldest(self, num_exchanges: int = 0) -> str | None:
+        """Render the oldest *num_exchanges* exchanges (0 = the whole history).
+
+        The counterpart of :meth:`get_formatted`, which renders the *most
+        recent* exchanges. Compaction needs the other end: the text it
+        summarizes has to be exactly the text it then replaces, and rendering
+        both from the same cut keeps them from drifting apart. Returns ``None``
+        when there is nothing to render.
+        """
+        cutoff = self._oldest_cutoff(num_exchanges)
+        if cutoff <= 0:
+            return None
+        return self._render_history(self._exchanges[:cutoff], width=0)
+
+    def replace_oldest(self, num_exchanges: int, summary: str) -> int:
+        """Replace the oldest exchanges with a single ``summary`` entry.
+
+        Uses the same cut as :meth:`get_formatted_oldest`, so the slice that
+        was summarized is the slice that is dropped; the remaining, more recent
+        exchanges are kept in order after the summary. ``num_exchanges <= 0``
+        replaces the whole history, which is the plain ``/history-compact``.
+        Removed entries go to the archive, not into the void. Returns the
+        number of entries replaced (``0`` when there was nothing to do).
+        """
+        cutoff = self._oldest_cutoff(num_exchanges)
+        if cutoff <= 0:
+            return 0
+        dropped = self._exchanges[:cutoff]
+        self._exchanges = [
+            {"role": "summary", "content": summary},
+            *self._exchanges[cutoff:],
+        ]
+        self._recount_tokens()
+        self._archive(dropped)
+        self.save()
+        return len(dropped)
 
     def _render_history(
         self,
