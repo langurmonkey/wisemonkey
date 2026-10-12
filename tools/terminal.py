@@ -7,12 +7,12 @@ Security: commands run in the current working directory.
 User confirmation is required for dangerous commands.
 """
 
-import subprocess
 import re
+import subprocess
 
-from agent.tools import tool
-from agent.output import get_output_or_ipc
 from agent.config import get_config
+from agent.output import get_output_or_ipc
+from agent.tools import tool
 
 # ──────────────────────────────────────────────
 # Configurable danger detection

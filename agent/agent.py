@@ -410,7 +410,7 @@ class Agent:
         args_str = format_tool_args(tool_args)
         if args_str:
             info(
-                f"🛠️ [tool]{tool_name}[/tool]  [weak]({escape(args_str)})[/weak]"
+                f"🛠️ [tool]{tool_name}[/tool]  [weak]{escape(args_str)}[/weak]"
             )
         else:
             info(f"🛠️ [tool]{tool_name}[/tool]")
@@ -890,8 +890,8 @@ class Agent:
 
             # No cancel-on-empty-prompt branch here: Ctrl+C during a turn is
             # caught inside the turn handler above and sets
-            # _turn_in_progress = False before the prompt is shown again, so
-            # by the time we reach the prompt no turn is running. Cancelling
+            # _turn_in_progress = False before the prompt is shown again.
+            # By the time we reach the prompt no turn is running. Canceling
             # from here would be dead code.
 
             # Process user-invoked shell commands (`!` prefix)
@@ -1016,7 +1016,6 @@ class Agent:
                         inject_callback=self._steer_inject,
                         poll=self.emitter.poll,
                     )
-                    response = result.response
                     total_tokens = result.total_tokens
                     ntools = result.n_tools
                     total_gen_time = result.gen_time

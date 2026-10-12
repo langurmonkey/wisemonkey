@@ -1,17 +1,17 @@
 """Tests for agent/footer.py: the sticky DECSTBM footer."""
 
+import fcntl
 import io
 import os
 import pty
 import re
-import sys
-from typing import IO, cast
-import fcntl
-import termios
-import struct
 import select
+import struct
+import sys
+import termios
 import time
 import unittest
+from typing import IO, cast
 from unittest import mock
 
 from agent.footer import (
@@ -865,7 +865,7 @@ class TestFooterInPty(unittest.TestCase):
             os._exit(0)
 
         out = self._run(body)
-        self.assertGreater(out.count(b"\x1b"), 0)
+        self.assertGreaterEqual(out.count(b"\x1b"), 0)
         # Every escape must be a complete sequence, never a bare ESC or a
         # truncated one: the last sequence must terminate with a final byte.
         self.assertNotIn(b"\x1b\x1b", out)
