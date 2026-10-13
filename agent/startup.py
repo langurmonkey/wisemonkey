@@ -63,7 +63,8 @@ def startup_info(core, output: OutputAdapter):
 ██ ▄█▄ ██ ██ ▀▀▀▄▄▄ ██▄▄   ██ ▀▀ ██ ██  ██ ██ ▀▄██ ████   ██▄▄    ▀██▀  
  ▀██▀██▀  ██ █████▀ ██▄▄▄▄ ██    ██ ▀████▀ ██   ██ ██ ▀█▄ ██▄▄▄▄   ██   
         """
-    if core.config.get("agent.banner", False):
+    banner = core.config.get("agent.banner", False)
+    if banner:
         title = Align.center(f"[title]{monkee}{wisemonkey}[/title]", vertical="middle")
         output.print_rich(
             Panel(
@@ -94,17 +95,25 @@ def startup_info(core, output: OutputAdapter):
     updates_available, commit_hash, last_check = check_updates(repo_dir)
     d_check = pretty_timedelta(now - last_check) if last_check else "never"
 
-    version_str = f"[accent]Wisemonkey[/accent] [dim]v{pkg_version}[/dim]"
+    commit_str = ""
     if commit_hash:
-        version_str += f"  [dim]commit: {commit_hash}[/dim]"
+        commit_str = f"  [dim]commit: {commit_hash}[/dim]"
+
+    if not banner:
+        version_str= f"""[accent]
+  ╻ ╻╻┏━┓┏━╸┏┳┓┏━┓┏┓╻╻┏ ┏━╸╻ ╻
+  ┃╻┃┃┗━┓┣╸ ┃┃┃┃ ┃┃┗┫┣┻┓┣╸ ┗┳┛
+  ┗┻┛╹┗━┛┗━╸╹ ╹┗━┛╹ ╹╹ ╹┗━╸ ╹[/accent]   [dim]v{pkg_version}[/dim]{commit_str}"""
+    else:
+        version_str = f"[accent]Wisemonkey[/accent] [dim]v{pkg_version}[/dim]{commit_str}"
     output.print(version_str)
     if updates_available:
         output.print(
-            f"   [warn]↳ Updates available![/warn] [time](last check: {d_check})[/time]"
+            f"  [warn]↳ Updates available![/warn] [time](last check: {d_check})[/time]"
         )
         output.print("     [weak]run [accent]wmk -u[/accent] to update[/weak]")
     elif commit_hash:
-        output.print(f"   [dim]✓ Up to date[/dim] [time](last check: {d_check})[/time]")
+        output.print(f"  [dim]✓ Up to date[/dim] [time](last check: {d_check})[/time]")
 
     output.newline()
 
