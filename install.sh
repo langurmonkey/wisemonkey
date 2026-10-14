@@ -77,6 +77,20 @@ WRAPPER
 chmod +x "$BIN_DIR/wmk"
 echo "Created wrapper: $BIN_DIR/wmk"
 
+# Create the container runner, if there is a container engine to run it with.
+# The work lives in the checkout's own ./wmkc -- this wrapper only pins where
+# that checkout is, since the image is built from its Dockerfile.
+if command -v docker &>/dev/null; then
+    cat > "$BIN_DIR/wmkc" << WRAPPER
+#!/bin/bash
+WISEMONKEY_HOME="$INSTALL_DIR" exec "$INSTALL_DIR/wmkc" "\$@"
+WRAPPER
+    chmod +x "$BIN_DIR/wmkc"
+    echo "Created wrapper: $BIN_DIR/wmkc"
+else
+    echo "Docker not found: skipping wmkc (run wisemonkey in a container)."
+fi
+
 # Ensure ~/.local/bin is in PATH
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     echo ""
@@ -92,3 +106,11 @@ echo "Next steps:"
 echo "  1. Edit config: wmk --edit-config"
 echo "  2. Run: wmk"
 echo "  3. Update: wmk --update"
+if [ -x "$BIN_DIR/wmkc" ]; then
+    echo "  4. Run in a container: wmkc"
+    echo ""
+    echo "wmkc runs the agent sandboxed, with only the current directory of your"
+    echo "machine visible to it. It builds its image on first use (a few minutes);"
+    echo "your config, sessions and API keys carry over unchanged."
+    echo "Run it from the directory you want the agent to work in."
+fi

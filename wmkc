@@ -1,27 +1,163 @@
 #!/usr/bin/env bash
+#
+# wmkc -- run wisemonkey inside a container.
+#
+# The image holds the agent; the bind mounts hold everything that must outlive
+# the run or that the agent works *on*. Three mounts, three jobs:
+#
+#   1. the current directory  -- the workspace; the agent sees exactly one
+#                                directory of the host, and it is this one
+#   2. the config directory   -- config.yaml, mcp.json and any .env already in
+#                                use, so settings are not duplicated
+#   3. the data directory     -- sessions, chat history, notes, vector stores,
+#                                so conversations survive the container
+#
+# The container runs as the calling user, not as root, so files the agent
+# writes into the workspace and into the session history come out owned by you.
+#
+# Usage:
+#   cd <project> && wmkc              # arguments go straight to wmk
+#   wmkc --help
+#   WMKC_IMAGE=foo:tag wmkc           # use another image
+#   WMKC_BUILD=0 wmkc                 # never build; fail if the image is absent
+#   WMKC_REBUILD=1 wmkc               # rebuild the image even if it exists
+#   WISEMONKEY_HOME=/path wmkc        # where the Dockerfile lives (install.sh
+#                                     # bakes this into the installed wrapper)
+#
+# Note the image ships the agent, not the workshop: editing the checkout does
+# not change a container that is already built. Rebuild (WMKC_REBUILD=1) after
+# changing code if you want the container to run it.
+#
 set -euo pipefail
 
-IMAGE="wisemonkey-agent:local"
+# --- configuration ----------------------------------------------------------
+
+IMAGE="${WMKC_IMAGE:-wisemonkey-agent:local}"
+
+# `pwd -P` resolves symlinks: --workdir and --volume must not be two different
+# strings for one directory, and Docker rejects a symlinked mount source.
 PROJECT="$(pwd -P)"
+
 USER_ID="$(id -u)"
 GROUP_ID="$(id -g)"
 
-mkdir -p 
-  "${HOME}/.config/wisemonkey" 
-  "${HOME}/.local/share/wisemonkey"
+# XDG-aware like install.sh: on macOS these are not ~/.config and ~/.local/share.
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 
-exec docker run --rm -it 
-  --name "wisemonkey-$$" 
-  --init 
-  --user "${USER_ID}:${GROUP_ID}" 
-  --workdir "${PROJECT}" 
-  --volume "${PROJECT}:${PROJECT}" 
-  --volume "${HOME}/.config/wisemonkey:${HOME}/.config/wisemonkey" 
-  --volume "${HOME}/.local/share/wisemonkey:${HOME}/.local/share/wisemonkey" 
-  --env HOME="${HOME}" 
-  --env TERM="${TERM:-xterm-256color}" 
-  --cap-drop ALL 
-  --security-opt no-new-privileges:true 
-  --pids-limit 256 
-  "$IMAGE" 
-  wmk "$@"
+# Where the Dockerfile is: the installed checkout (baked in by install.sh) or,
+# for a checkout used in place, the directory this script sits in.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+BUILD_CONTEXT="${WISEMONKEY_HOME:-$SCRIPT_DIR}"
+
+# --- host directories the container will write into --------------------------
+
+# Docker creates a missing bind-mount source as root, which would leave the
+# session directory unwritable by the user inside the container. Creating them
+# here, as the user, keeps the ownership right.
+mkdir -p "$CONFIG_HOME/wisemonkey" "$DATA_HOME/wisemonkey"
+
+# --- the image ---------------------------------------------------------------
+
+# `docker buildx` is a CLI *plugin*, not part of the docker package everywhere.
+# Without it `docker build` quietly falls back to the classic builder, which
+# still works but is deprecated upstream and says so on every single build. Ask
+# for buildx when it is there, and own the fallback rather than letting docker's
+# warning stand on its own -- it reads like a fault in this image otherwise.
+use_buildx() { docker buildx version >/dev/null 2>&1; }
+
+build_image() {
+    echo "wmkc: building image '$IMAGE' from $BUILD_CONTEXT/Dockerfile ..." >&2
+    if use_buildx; then
+        docker buildx build --load -t "$IMAGE" "$BUILD_CONTEXT"
+    else
+        cat >&2 <<'NOTE'
+wmkc: note: the docker buildx plugin is not installed, so this build runs on
+wmkc: docker's legacy builder. That is deprecated upstream (and prints its own
+wmkc: warning below), but the image it produces is the same. Installing the
+wmkc: plugin -- the docker-buildx package, or a docker-buildx binary in
+wmkc: ~/.docker/cli-plugins -- switches this over to BuildKit.
+NOTE
+        docker build -t "$IMAGE" "$BUILD_CONTEXT"
+    fi
+}
+
+if [[ "${WMKC_REBUILD:-0}" == "1" ]] || ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+    if [[ "${WMKC_BUILD:-1}" != "1" ]]; then
+        echo "wmkc: image '$IMAGE' not found and WMKC_BUILD=0" >&2
+        exit 1
+    fi
+    build_image
+fi
+
+# --- environment, forwarded by name ------------------------------------------
+
+# Never `NAME=value`: a key would end up in `ps` and in the shell history.
+env_args=(
+    --env "HOME=$HOME"
+    --env "TERM=${TERM:-xterm-256color}"
+    # getpass.getuser() picks the socket path and reads these before falling
+    # back to /etc/passwd, which has no entry for a bare --user uid.
+    --env "USER=${USER:-$(id -un)}"
+    --env "LOGNAME=${LOGNAME:-$(id -un)}"
+)
+
+# Only the XDG directories that are actually set: forwarding an unset one as an
+# empty value would defeat the app's own default for it.
+#
+# XDG_RUNTIME_DIR is deliberately NOT forwarded. It points at /run/user/<uid>,
+# which does not exist inside the container, and the first thing to touch it is
+# `ipc.socket_path()` creating the daemon socket directory -- as a non-root
+# user that mkdir fails and the REPL dies at startup. Unset, the socket goes to
+# /tmp/wisemonkey-<user>, which is writable. Consequence: a server started
+# *inside* the container is private to it.
+for var in XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_STATE_HOME; do
+    [[ -n "${!var:-}" ]] && env_args+=(--env "$var")
+done
+
+# The editor for /edit and /config edit. Without it the container falls back to
+# nano, which is installed but is rarely what the user meant.
+[[ -n "${EDITOR:-}" ]] && env_args+=(--env EDITOR)
+[[ -n "${VISUAL:-}" ]] && env_args+=(--env VISUAL)
+
+# API keys. config.yaml names a variable, it never holds the key, so the host
+# environment is the only place they live (.env files under the mounts are read
+# by the app itself). Every WM_API_KEY_* is forwarded, because the namespace
+# exists precisely so that one exists per endpoint and wmkc cannot know which
+# endpoints are configured.
+while IFS= read -r name; do
+    env_args+=(--env "$name")
+done < <(compgen -e "WM_API_KEY" || true)
+for var in OPENAI_API_KEY ANTHROPIC_API_KEY; do
+    [[ -n "${!var:-}" ]] && env_args+=(--env "$var")
+done
+
+# --- mounts ------------------------------------------------------------------
+
+docker_args=(
+    --rm
+    --name "wisemonkey-$$"
+    --init
+    --user "$USER_ID:$GROUP_ID"
+    --workdir "$PROJECT"
+    --volume "$PROJECT:$PROJECT"
+    --volume "$CONFIG_HOME/wisemonkey:$CONFIG_HOME/wisemonkey"
+    --volume "$DATA_HOME/wisemonkey:$DATA_HOME/wisemonkey"
+)
+
+# git needs an identity to commit, and the agent runs git in the workspace.
+[[ -f "$HOME/.gitconfig" ]] && docker_args+=(--volume "$HOME/.gitconfig:$HOME/.gitconfig:ro")
+
+# A TTY only when there is one: `-t` against a pipe makes docker refuse to
+# start, which would break `wmkc --version | ...` and any scripting use.
+[[ -t 0 && -t 1 ]] && docker_args+=(--interactive --tty)
+
+# Sandbox: the agent runs model-chosen shell commands, so it gets no
+# capabilities, no way to gain them, and a bounded process count.
+docker_args+=(
+    --cap-drop ALL
+    --security-opt no-new-privileges:true
+    --pids-limit 256
+)
+
+exec docker run "${docker_args[@]}" "${env_args[@]}" "$IMAGE" wmk "$@"

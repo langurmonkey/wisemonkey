@@ -1,0 +1,27 @@
+# Keep the build context small and the image honest.
+#
+# A virtualenv is the important one: `COPY . .` would otherwise drop the host's
+# .venv into the image, clobbering the one the image builds for itself, with
+# interpreter paths and binaries that belong to the host.
+.venv/
+__pycache__/
+*.py[co]
+build/
+dist/
+*.egg-info/
+
+# VCS history and tooling state is not needed to run the agent.
+.git/
+.gitignore
+.hermes/
+
+# Secrets. Keys are forwarded from the environment by `wmkc`, and the app reads
+# .env from the *mounted* workspace at run time -- so baking one in would only
+# leak it into every copy of the image.
+.env
+.env.*
+!.env.example
+
+# Editor and OS noise.
+.DS_Store
+*.swp
