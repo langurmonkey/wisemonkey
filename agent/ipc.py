@@ -385,6 +385,12 @@ class ToolResultPayload:
     duration: float = 0.0
     image_base64: str = ""
     mime_type: str = ""
+    # Provenance, for results that came from somewhere other than the tool:
+    # empty for an ordinary result, or one of the ``agent.output.HOOK_*``
+    # kinds when an external hook stopped the call before it ran. ``hook``
+    # is the guard's name ("dcg"), so the UI can say who is speaking.
+    kind: str = ""
+    hook: str = ""
 
 
 @dataclass

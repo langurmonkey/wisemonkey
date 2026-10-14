@@ -200,8 +200,15 @@ class TurnEmitter:
         duration: float = 0.0,
         image_base64: str = "",
         mime_type: str = "",
+        kind: str = "",
+        hook: str = "",
     ) -> None:
-        """Callback for a finished tool execution."""
+        """Callback for a finished tool execution.
+
+        ``kind``/``hook`` carry provenance for a result an external hook
+        produced (see ``agent.output.HOOK_BLOCK_KIND``); both are empty for an
+        ordinary tool result.
+        """
         self.emit(
             Event.TOOL_RESULT,
             ToolResultPayload(
@@ -212,6 +219,8 @@ class TurnEmitter:
                 duration=duration,
                 image_base64=image_base64,
                 mime_type=mime_type,
+                kind=kind,
+                hook=hook,
             ),
         )
 

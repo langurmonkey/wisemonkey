@@ -74,6 +74,52 @@ def incomplete_message(reason: str = "") -> str:
     )
 
 
+#: Tool-result kinds that did not come from the tool itself. Two shapes reach
+#: `tool_result_callback` this way, and both need the frame below: an external
+#: hook *denying* a call, and the user *declining* after a hook asked for
+#: review. Everything else is an ordinary tool result.
+HOOK_BLOCK_KIND = "hook_block"
+HOOK_DECLINED_KIND = "hook_ask_declined"
+
+
+def hook_notice(kind: str, hook: str, tool_name: str, reason: str):
+    """A framed notice for a tool call an external hook stopped.
+
+    The frame is the point. The text inside is the *guard's*, and on a bare
+    `✗ Tool run_command failed: ...` line it read exactly like the agent
+    reporting a failure of its own -- so a refused call looked like the model
+    speaking, which is the confusion this exists to prevent. The title and the
+    first line name who spoke.
+
+    The body is built as ``Text``, not markup: a guard's reason is arbitrary
+    text and its own brackets or colour codes must not be reinterpreted as
+    Rich markup (an unknown tag is dropped silently, mangling the message).
+    """
+    from rich.panel import Panel
+    from rich.text import Text
+
+    name = hook or "a hook"
+    if kind == HOOK_DECLINED_KIND:
+        title = f"✋ Declined after {name} asked for review"
+        lead = f"{tool_name} was not run: you declined."
+        style = "warn"
+    else:
+        title = f"⛔ Blocked by {name}"
+        lead = f"{tool_name} was not run: {name} refused it."
+        style = "error"
+
+    body = Text()
+    body.append(lead + "\n", style="weak")
+    body.append(f"The text below is {name}'s own output, not the model's.\n\n", style="weak")
+    body.append(reason.strip() or "(no reason given)")
+    return Panel(
+        body,
+        title=Text(title, style=style),
+        title_align="left",
+        border_style=style,
+    )
+
+
 # ── readline-aware Rich prompts ──────────────────────────────────────────────
 #
 # Rich prints the prompt itself and then calls `input()` with an *empty*

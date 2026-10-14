@@ -22,12 +22,14 @@ from agent.hooks import (
     HookGroup,
     HookHandler,
     build_payload,
+    hook_label,
     load_hook_groups,
     matcher_matches,
     run_handler,
     run_post_hooks,
     run_pre_hooks,
 )
+from agent.output import HOOK_BLOCK_KIND, HOOK_DECLINED_KIND, hook_notice
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -168,6 +170,79 @@ class TestMatchers(unittest.TestCase):
     def test_a_broken_regex_matches_everything(self):
         """A typo in a guard's matcher must not silently disable the guard."""
         assert matcher_matches("[", "run_command") is True
+
+
+class TestHookLabel(unittest.TestCase):
+    """Naming a hook: the UI frames its output, so it has to be nameable."""
+
+    def test_a_path_becomes_its_basename(self):
+        assert hook_label("/usr/local/bin/dcg") == "dcg"
+
+    def test_an_interpreter_is_skipped(self):
+        assert hook_label("python3 /opt/guard.py") == "guard"
+        assert hook_label("/usr/bin/env bash /opt/check.sh") == "check"
+
+    def test_flags_are_not_mistaken_for_the_name(self):
+        assert hook_label("dcg --strict") == "dcg"
+
+    def test_a_name_is_configurable(self):
+        handler = HookHandler(command="/usr/local/bin/dcg", name="dcg (strict)")
+        assert handler.label == "dcg (strict)"
+
+    def test_an_unreadable_command_still_has_a_name(self):
+        assert hook_label("") == "hook"
+
+
+def _render(renderable) -> str:
+    """Render a Rich renderable to plain text at a fixed width."""
+    from io import StringIO
+
+    from rich.console import Console
+
+    from agent.console import monkee_theme
+
+    buffer = StringIO()
+    Console(
+        file=buffer, width=70, no_color=True, theme=monkee_theme
+    ).print(renderable)
+    return buffer.getvalue()
+
+
+class TestHookNotice(unittest.TestCase):
+    """The frame that stops a guard's output reading as the model speaking."""
+
+    def test_it_names_the_hook_and_keeps_the_reason(self):
+        text = _render(hook_notice(
+            HOOK_BLOCK_KIND, "dcg", "run_command",
+            "BLOCKED by dcg\nReason: destroys uncommitted work",
+        ))
+        assert "dcg" in text
+        assert "run_command" in text
+        assert "destroys uncommitted work" in text
+        # The point of the whole thing.
+        assert "not the model's" in text
+
+    def test_a_reason_is_not_reinterpreted_as_markup(self):
+        """A guard's brackets are its own text, not Rich markup.
+
+        An unknown tag is dropped silently, which would mangle the message.
+        """
+        reason = "[red]not markup[/red] [bold]either[/]"
+        text = _render(hook_notice(HOOK_BLOCK_KIND, "dcg", "run_command", reason))
+        assert "[red]not markup[/red]" in text
+
+    def test_an_empty_reason_says_so(self):
+        text = _render(hook_notice(HOOK_BLOCK_KIND, "dcg", "run_command", ""))
+        assert "no reason given" in text
+
+    def test_a_declined_review_reads_differently(self):
+        blocked = _render(hook_notice(HOOK_BLOCK_KIND, "dcg", "run_command", "no"))
+        declined = _render(hook_notice(
+            HOOK_DECLINED_KIND, "dcg", "run_command", "review me"
+        ))
+        assert "Blocked by dcg" in blocked
+        assert "Declined" in declined
+        assert "you declined" in declined
 
 
 # ── payloads ─────────────────────────────────────────────────────────────────
@@ -428,15 +503,69 @@ class TestToolCallsSeam(_HookScripts):
         core = self._core_with({"pre_tool_use": [
             {"matcher": "", "hooks": [{"command": self._script(
                 "deny", 'cat >/dev/null; echo \'{"hookSpecificOutput":'
-                        '{"permissionDecision":"deny"}}\'')}]},
+                        '{"permissionDecision":"deny",'
+                        '"permissionDecisionReason":"destroys work"}}\'')}]},
         ]})
         seen = []
         with patch("agent.core.execute_tool") as execute:
-            core._tool_calls([_tool_call()],
-                             tool_result_callback=lambda *a: seen.append(a))
+            core._tool_calls(
+                [_tool_call()],
+                tool_result_callback=lambda *a, **k: seen.append((a, k)),
+            )
         execute.assert_not_called()
         assert len(seen) == 1
-        assert seen[0][3] is True  # is_error
+        args, kwargs = seen[0]
+        assert args[3] is True  # is_error
+        # The UI gets the guard's own words and its name, so it can say who
+        # is speaking: `content` is the reason, not the model-facing message.
+        assert args[2] == "destroys work"
+        assert kwargs["kind"] == HOOK_BLOCK_KIND
+        assert kwargs["hook"] == "deny"  # the script's own basename
+
+    def test_a_deny_still_tells_the_model_what_to_do(self):
+        """The model gets instructions; the human gets the guard's reason."""
+        core = self._core_with({"pre_tool_use": [
+            {"matcher": "", "hooks": [{"command": self._script(
+                "deny", 'cat >/dev/null; echo \'{"hookSpecificOutput":'
+                        '{"permissionDecision":"deny",'
+                        '"permissionDecisionReason":"destroys work"}}\'')}]},
+        ]})
+        with patch("agent.core.execute_tool"):
+            core._tool_calls([_tool_call()])
+        message = json.loads(
+            [m for m in core.messages if m["role"] == "tool"][0]["content"]
+        )
+        assert message["blocked_by_hook"] is True
+        assert "Do not retry" in message["error"]
+        assert "destroys work" in message["error"]
+
+    def test_a_declined_ask_reports_the_decline_kind(self):
+        core = self._core_with({"pre_tool_use": [
+            {"matcher": "", "hooks": [{"command": self._script(
+                "ask", 'cat >/dev/null; echo \'{"hookSpecificOutput":'
+                       '{"permissionDecision":"ask","permissionDecisionReason":"review"}}\''
+            )}]},
+        ]})
+        seen = []
+        with patch.object(type(core), "_hook_ask", return_value=False), \
+                patch("agent.core.execute_tool"):
+            core._tool_calls(
+                [_tool_call()],
+                tool_result_callback=lambda *a, **k: seen.append(k),
+            )
+        assert seen[0]["kind"] == HOOK_DECLINED_KIND
+        assert seen[0]["hook"] == "ask"
+
+    def test_an_ordinary_result_carries_no_provenance(self):
+        """`kind`/`hook` are empty for a tool that ran: the UI's default."""
+        core = _make_core()
+        seen = []
+        with patch("agent.core.execute_tool", return_value="ran"):
+            core._tool_calls(
+                [_tool_call()],
+                tool_result_callback=lambda *a, **k: seen.append(k),
+            )
+        assert seen[0] == {}
 
     def test_a_silent_hook_lets_the_tool_run(self):
         core = self._core_with({"pre_tool_use": [

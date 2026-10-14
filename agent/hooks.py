@@ -52,6 +52,7 @@ Two policies are deliberate and pinned here rather than scattered:
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -77,6 +78,37 @@ DEFAULT_TIMEOUT = 5.0
 # that cannot start at all is handled separately (it fails open).
 PRE_TOOL_USE_FAIL_CLOSED = True
 
+# Interpreters a command may start with. They are skipped when naming a hook,
+# so `python /opt/guard.py` is "guard", not "python".
+_INTERPRETERS = {
+    "python", "python3", "pypy", "sh", "bash", "zsh", "dash", "fish",
+    "node", "bun", "deno", "ruby", "perl", "uv", "uvx", "npx", "env",
+}
+
+_SCRIPT_EXTENSIONS = ("py", "sh", "bash", "js", "ts", "rb", "pl")
+
+
+def _basename(token: str) -> str:
+    """`/usr/local/bin/dcg` -> `dcg`, `/opt/guard.py` -> `guard`."""
+    base = os.path.basename(token)
+    stem, dot, ext = base.rpartition(".")
+    if dot and ext in _SCRIPT_EXTENSIONS:
+        return stem
+    return base
+
+
+def hook_label(command: str) -> str:
+    """A short human name for a hook: ``dcg``, not its full path.
+
+    Display only -- it names the speaker on the frame that reports a block --
+    so it errs towards *something* readable rather than failing: a command it
+    cannot make sense of comes back as its first token.
+    """
+    tokens = (command or "").split()
+    while tokens and _basename(tokens[0]) in _INTERPRETERS:
+        tokens = tokens[1:]
+    return (_basename(tokens[0]) if tokens else "") or "hook"
+
 
 @dataclass
 class HookHandler:
@@ -86,6 +118,13 @@ class HookHandler:
     timeout: float = DEFAULT_TIMEOUT
     # True = skipped while `agent.unsafe` is set. False (the default) = always runs.
     honor_unsafe: bool = False
+    # Display name; defaults to the command's basename (see hook_label).
+    name: str = ""
+
+    @property
+    def label(self) -> str:
+        """How this hook is named when it reports a block."""
+        return self.name or hook_label(self.command)
     # None = use PRE_TOOL_USE_FAIL_CLOSED; True/False override the
     # timeout/unparseable-output direction for this handler.
     fail_open: bool | None = None
@@ -110,6 +149,9 @@ class HookVerdict:
 
     decision: str = "allow"
     reason: str = ""
+    # The hook that produced this verdict (its display label, e.g. "dcg").
+    # Set by run_handler; empty on the allow a caller constructs itself.
+    source: str = ""
 
 
 # ── config parsing ───────────────────────────────────────────────────────────
@@ -186,10 +228,12 @@ def _parse_handler(event: str, entry) -> HookHandler | None:
         warn(f"agent.hooks.{event}: hook has no 'command'; skipping it")
         return None
     fail_open = entry.get("fail_open")
+    name = entry.get("name")
     return HookHandler(
         command=command,
         timeout=_as_timeout(entry.get("timeout")),
         honor_unsafe=_as_bool(entry.get("honor_unsafe")),
+        name=name.strip() if isinstance(name, str) else "",
         fail_open=fail_open if isinstance(fail_open, bool) else None,
     )
 
@@ -287,7 +331,17 @@ def run_handler(handler: HookHandler, payload: dict) -> HookVerdict:
 
     Never raises: a hook is an external process, and its failure modes are
     answers too (see the module docstring for the fail-open/fail-closed split).
+
+    The verdict is stamped with the handler's ``label``, because the UI names
+    the hook that spoke when it reports a block -- a frame attributing the
+    message to "a hook" is exactly the confusion this is here to avoid.
     """
+    verdict = _run_handler(handler, payload)
+    verdict.source = verdict.source or handler.label
+    return verdict
+
+
+def _run_handler(handler: HookHandler, payload: dict) -> HookVerdict:
     body = json.dumps(payload).encode("utf-8")
     try:
         proc = subprocess.run(

@@ -1134,9 +1134,18 @@ class Core:
     def _hook_block_message(self, tool_name: str, verdict):
         """The tool error for a hook that stopped a call, or None to proceed.
 
-        None is returned only when a hook asked for review and the user
-        approved: that is the one path where a blocking verdict does not block.
+        Returns ``(message, kind)``: the dict the model receives as its tool
+        result, and which of the two UI kinds this is -- a guard *denying* the
+        call or the user *declining* after a guard asked for review. ``None``
+        means proceed, which only happens when the user approved an ``ask``.
+
+        Two audiences, two wordings. What the model is told carries
+        instructions ("do not retry, explain the block"); what the human sees
+        is the guard's own reason, framed by the REPL so it is clear who is
+        speaking (see ``agent.output.hook_notice``).
         """
+        from agent.output import HOOK_BLOCK_KIND, HOOK_DECLINED_KIND
+
         if verdict.decision == "ask":
             if self._hook_ask(tool_name, verdict):
                 return None
@@ -1147,7 +1156,7 @@ class Core:
             if verdict.reason:
                 err += f" ({verdict.reason})"
             err += ". Do not retry; ask the user how to proceed."
-            return {"error": err, "user_cancelled": True}
+            return {"error": err, "user_cancelled": True}, HOOK_DECLINED_KIND
 
         err = f"Tool call '{tool_name}' was blocked by a hook"
         if verdict.reason:
@@ -1156,7 +1165,7 @@ class Core:
             ". Do not retry the same call; explain the block to the user or "
             "use a safer approach."
         )
-        return {"error": err, "blocked_by_hook": True}
+        return {"error": err, "blocked_by_hook": True}, HOOK_BLOCK_KIND
 
     def _hook_ask(self, tool_name: str, verdict) -> bool:
         """Prompt the user after a hook asked for review. True = proceed."""
@@ -1164,11 +1173,13 @@ class Core:
         # prompt_toolkit/textual, and the core's import graph should not grow
         # for a path that only an `ask` verdict reaches.
         from agent.output import get_output_or_ipc
+        from rich.markup import escape
 
         output = get_output_or_ipc()
         output.newline()
         output.print("🔒 [warn]Tool call requires confirmation[/warn]", indent=2)
-        output.print(f"[weak]Reason[/weak]: {verdict.reason}", indent=2)
+        output.print(f"[weak]Hook[/weak]: [tool]{escape(verdict.source or 'hook')}[/tool]", indent=2)
+        output.print(f"[weak]Reason[/weak]: {escape(verdict.reason)}", indent=2)
         output.print(f"[weak]Tool[/weak]: [cmd]{tool_name}[/cmd]", indent=2)
         output.newline()
         confirmed = output.ask_confirm("[bold]Run this tool call?[/bold]", default=False)
@@ -1254,7 +1265,8 @@ class Core:
             if verdict is not None:
                 blocked = self._hook_block_message(tool_name, verdict)
                 if blocked is not None:
-                    result_str = json.dumps(blocked)
+                    message, kind = blocked
+                    result_str = json.dumps(message)
                     self.messages.append(
                         {"role": "tool", "tool_call_id": tc["id"], "content": result_str}
                     )
@@ -1263,8 +1275,13 @@ class Core:
                         tool_call_id=tc["id"],
                     )
                     if tool_result_callback:
+                        # `content` here is the guard's own reason, not the
+                        # model-facing message: the UI frames it with the
+                        # hook's name so it cannot be mistaken for the model
+                        # speaking (`kind`/`hook` carry that provenance).
                         tool_result_callback(
-                            tc["id"], tool_name, blocked["error"], True, 0.0
+                            tc["id"], tool_name, verdict.reason, True, 0.0,
+                            kind=kind, hook=verdict.source,
                         )
                     continue
 

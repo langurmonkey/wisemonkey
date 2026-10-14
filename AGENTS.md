@@ -312,6 +312,22 @@ unchanged: the config is a generic command runner, not a `dcg` integration.
   `spawn`, ...); empty or `*` means all. Shell tools are presented to the hook
   under the Claude name `Bash` with the command in `tool_input.command`, which
   is what a stock `dcg` matches on.
+- **A block is framed, and the frame is the point.** The text a guard emits is
+  *not* the model's, and on the ordinary `✗ Tool X failed: ...` error line it
+  read exactly like the agent reporting a failure of its own. So a blocked call
+  reaches the frontend as a *provenance-tagged* result: `kind` is
+  `output.HOOK_BLOCK_KIND` (`HOOK_DECLINED_KIND` when the user declined after an
+  `ask`), `hook` names the guard, and `content` is the guard's own reason
+  verbatim -- not the model-facing message, which carries instructions ("do not
+  retry, explain the block") that are meant for the model. `agent.output.hook_notice()`
+  builds the one framed `Panel`, so the title cannot drift between frontends,
+  and it builds the body as `Text` rather than markup: a guard's reason is
+  arbitrary text and its own brackets must not be reinterpreted as Rich markup
+  (an unknown tag is dropped silently, mangling the message).
+- A hook's name in that frame is its `name:` if set, otherwise the basename of
+  its command (`hook_label()`: `/usr/local/bin/dcg` -> `dcg`, skipping a leading
+  interpreter so `python3 /opt/guard.py` is `guard`). Display only, so it errs
+  towards something readable rather than failing.
 - Failure policy is pinned in `agent/hooks.py`, not scattered: a hook that
   **cannot start** fails open (a broken install warns, it does not refuse every
   call -- exit 127 is a non-blocking error per Claude's contract); a hook that

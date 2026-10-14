@@ -46,7 +46,14 @@ from agent.keys import (
     install_enter_bindings,
 )
 from agent.mdstream import MarkdownStreamRenderer
-from agent.output import RichOutputAdapter, incomplete_message, set_output
+from agent.output import (
+    HOOK_BLOCK_KIND,
+    HOOK_DECLINED_KIND,
+    RichOutputAdapter,
+    hook_notice,
+    incomplete_message,
+    set_output,
+)
 from agent.palette import PALETTE
 from agent.startup import startup_info
 from agent.utils import add_command, collapse_none_dicts, format_tool_args, term_width
@@ -262,6 +269,8 @@ class Agent:
                 payload.content,
                 payload.is_error,
                 payload.duration,
+                kind=payload.kind,
+                hook=payload.hook,
             )
 
         elif message.name == Event.INJECTED:
@@ -415,7 +424,9 @@ class Agent:
         else:
             info(f"🛠️ [tool]{tool_name}[/tool]")
 
-    def tool_result_callback(self, tool_id, tool_name, content, is_error, duration):
+    def tool_result_callback(
+        self, tool_id, tool_name, content, is_error, duration, kind="", hook=""
+    ):
         """Called after a tool finishes (event: TOOL_RESULT).
 
         A successful tool that finished fast prints nothing: its activation
@@ -423,7 +434,16 @@ class Agent:
         single call turns a fifteen-tool turn into fifteen lines of noise.
         Errors are always reported, and a tool slow enough to have made you
         wait gets its duration so it can be spotted as the culprit.
+
+        An external hook that stopped the call (``kind``) is neither of those:
+        it gets a framed notice naming the guard, because the same text on a
+        plain error line read as the agent reporting a failure of its own.
         """
+        if kind in (HOOK_BLOCK_KIND, HOOK_DECLINED_KIND):
+            self._flush_md_stream()
+            newline()
+            self.output.print_rich(hook_notice(kind, hook, tool_name, content))
+            return
         if is_error:
             self.output.err(
                 f"Tool {tool_name} failed ({duration:.1f}s): {content}")
