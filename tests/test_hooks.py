@@ -539,5 +539,92 @@ class TestToolCallsSeam(_HookScripts):
         assert core._hook_groups() == []
 
 
+# ── the real dcg binary, when one is available ───────────────────────────────
+#
+# `dcg` (destructive_command_guard) is the motivating case for the whole
+# feature, and its Claude-compatible arm is exactly what an installed binary
+# answers: a `Bash` payload with no `turn_id` returns the structured
+# `hookSpecificOutput` denial. These tests drive the genuine binary, so the
+# wire shape is pinned against it rather than against a hand-written stand-in.
+#
+# They are skipped unless a binary can be found, because dcg is an external
+# Rust project (a slow `cargo build --release`) and CI must stay hermetic. Point
+# `DCG_BIN` at one, or let the search find the usual checkout/`PATH` locations.
+
+
+def _find_dcg() -> str:
+    """Path to a real dcg binary, or "" when there is none to test against."""
+    import os
+    import shutil
+
+    explicit = os.environ.get("DCG_BIN")
+    if explicit and Path(explicit).is_file():
+        return explicit
+    checkout = Path.home() / "Projects" / "destructive_command_guard"
+    for candidate in (
+        checkout / "target" / "release" / "dcg",
+        Path(shutil.which("dcg") or ""),
+    ):
+        if candidate and candidate.is_file():
+            return str(candidate)
+    return ""
+
+
+_DCG = _find_dcg()
+
+
+@unittest.skipUnless(_DCG, "no dcg binary found (set DCG_BIN to run these)")
+class TestRealDcg(_HookScripts):
+    """The real `dcg` binary, through wisemonkey's hook runner."""
+
+    def _groups(self):
+        return [HookGroup(
+            event="pre_tool_use",
+            matcher="run_command|spawn",
+            handlers=[HookHandler(command=_DCG, timeout=15)],
+        )]
+
+    def test_a_destructive_command_is_denied(self):
+        verdict = run_pre_hooks(self._groups(), "run_command",
+                                {"command": "git reset --hard HEAD~5"})
+        assert verdict.decision == "deny"
+        # dcg's own reason text, which the model receives verbatim.
+        assert "dcg" in verdict.reason
+        assert "reset --hard" in verdict.reason
+
+    def test_a_safe_command_is_silent(self):
+        verdict = run_pre_hooks(self._groups(), "run_command", {"command": "ls -la"})
+        assert verdict.decision == "allow"
+
+    def test_a_non_shell_tool_never_reaches_dcg(self):
+        """The matcher is the only thing standing between dcg and every tool."""
+        verdict = run_pre_hooks(self._groups(), "read_file", {"path": "x"})
+        assert verdict.decision == "allow"
+
+    def test_the_seam_blocks_the_tool_call(self):
+        core = _make_core(_Config({"agent": {"hooks": {"pre_tool_use": [
+            {"matcher": "run_command|spawn",
+             "hooks": [{"command": _DCG, "timeout": 15}]},
+        ]}}}))
+        with patch("agent.core.execute_tool") as execute:
+            core._tool_calls([_tool_call(
+                args='{"command": "git reset --hard HEAD~5"}')])
+        execute.assert_not_called()
+        payload = json.loads(
+            [m for m in core.messages if m["role"] == "tool"][0]["content"]
+        )
+        assert payload["blocked_by_hook"] is True
+        assert "dcg" in payload["error"]
+
+    def test_the_seam_lets_a_safe_command_through(self):
+        core = _make_core(_Config({"agent": {"hooks": {"pre_tool_use": [
+            {"matcher": "run_command|spawn",
+             "hooks": [{"command": _DCG, "timeout": 15}]},
+        ]}}}))
+        with patch("agent.core.execute_tool", return_value="ran") as execute:
+            core._tool_calls([_tool_call(args='{"command": "ls -la"}')])
+        execute.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

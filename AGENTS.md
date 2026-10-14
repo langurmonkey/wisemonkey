@@ -326,6 +326,12 @@ unchanged: the config is a generic command runner, not a `dcg` integration.
   effect on the next tool call. `_hook_groups()` reads the cache with `getattr`
   because a `Core` built through `__new__` (tests, harnesses) never runs
   `__init__`.
+- `tests/test_hooks.py::TestRealDcg` drives the genuine `dcg` binary when one
+  is found (`DCG_BIN`, or the usual checkout/`PATH` locations) and is skipped
+  otherwise, so CI stays hermetic while the wire shape stays pinned against the
+  real thing. Verified against dcg v0.15.3: a `Bash` payload with no `turn_id`
+  is classified Claude-compatible, so a destructive command returns the
+  structured `hookSpecificOutput` denial on exit 0 and a safe one is silent.
 
 ### Chat memory accounting
 
