@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+IMAGE="wisemonkey-agent:local"
+PROJECT="$(pwd -P)"
+USER_ID="$(id -u)"
+GROUP_ID="$(id -g)"
+
+mkdir -p 
+  "${HOME}/.config/wisemonkey" 
+  "${HOME}/.local/share/wisemonkey"
+
+exec docker run --rm -it 
+  --name "wisemonkey-$$" 
+  --init 
+  --user "${USER_ID}:${GROUP_ID}" 
+  --workdir "${PROJECT}" 
+  --volume "${PROJECT}:${PROJECT}" 
+  --volume "${HOME}/.config/wisemonkey:${HOME}/.config/wisemonkey" 
+  --volume "${HOME}/.local/share/wisemonkey:${HOME}/.local/share/wisemonkey" 
+  --env HOME="${HOME}" 
+  --env TERM="${TERM:-xterm-256color}" 
+  --cap-drop ALL 
+  --security-opt no-new-privileges:true 
+  --pids-limit 256 
+  "$IMAGE" 
+  wmk "$@"
