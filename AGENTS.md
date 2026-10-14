@@ -294,7 +294,40 @@ identically in the REPL, the TUI and the IPC/daemon path), never a bare
 - **`find_files` already prompts** for a search root outside the cwd; that is
   the older instance of the same rule and should stay consistent with it.
 
-#### Chat memory accounting
+#### External tool hooks (`agent/hooks.py`, `Core._tool_calls`)
+
+`agent.hooks` shells out to guard programs around every tool call, in both REPL
+and daemon mode and covering MCP tools, because every call funnels through the
+single `Core._tool_calls` seam. The protocol is byte-compatible with Claude Code
+/ Codex (JSON on stdin, `hookSpecificOutput.permissionDecision` on stdout, exit
+codes honoured), so an installed `dcg` and any existing Claude hook script work
+unchanged: the config is a generic command runner, not a `dcg` integration.
+
+- `pre_tool_use` groups run *before* `execute_tool`; a `deny` (or an `ask` the
+  user declines) becomes a `tool` error message the model can react to, exactly
+  like malformed tool arguments, and the loop continues. `post_tool_use` groups
+  run after and are fire-and-forget: they see the result but cannot veto it, and
+  their failures are swallowed so an audit hook cannot break a finished turn.
+- A `matcher` is a regex over the **wisemonkey** tool name (`run_command`,
+  `spawn`, ...); empty or `*` means all. Shell tools are presented to the hook
+  under the Claude name `Bash` with the command in `tool_input.command`, which
+  is what a stock `dcg` matches on.
+- Failure policy is pinned in `agent/hooks.py`, not scattered: a hook that
+  **cannot start** fails open (a broken install warns, it does not refuse every
+  call -- exit 127 is a non-blocking error per Claude's contract); a hook that
+  **hangs past `timeout` or prints garbage** fails closed, because it has not
+  cleared the call. `fail_open: true` on a handler inverts the second case.
+- `agent.unsafe` silences wisemonkey's own confirmations but **not** hooks: a
+  handler runs under unsafe unless it sets `honor_unsafe: true`. The default
+  keeps a security hook from being switched off by a flag it never asked to
+  respect.
+- The group set is parsed once per session and cached; `Core.reload_config()`
+  drops the cache (`self._hooks = None`) so an edited `agent.hooks` block takes
+  effect on the next tool call. `_hook_groups()` reads the cache with `getattr`
+  because a `Core` built through `__new__` (tests, harnesses) never runs
+  `__init__`.
+
+### Chat memory accounting
 
 `ChatMemory` tracks `total_tokens` and triggers `/history-compact` when it exceeds `agent.max_chat_history`. `total_tokens` is computed by tokenizing the exact rendered history returned by `get_formatted(timestamps=False, width=0)`, including tool-result truncation and compact adjacent tool call/result blocks. Recount after changes to stored exchanges, loading, trimming, or clearing. Both `get_formatted()` and `exchange_info()` (the per-interaction timestamps and sizes behind `/history-info`) render through the one `_render_history()` helper, so keep this accounting in sync with that renderer if its output changes.
 

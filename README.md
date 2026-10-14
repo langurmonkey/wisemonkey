@@ -163,6 +163,44 @@ Wisemonkey also supports MCP. Use the following commands to manage the MCP integ
 
 MCP servers are started when the agent boots. You need to restart the agent if you add new servers.
 
+### Tool hooks (`agent.hooks`)
+
+Wisemonkey can run external guard programs around every tool call — before it
+runs (`pre_tool_use`) and after (`post_tool_use`). The protocol is compatible
+with Claude Code / Codex hooks: the hook gets JSON on stdin and answers on
+stdout, so an already-installed tool like [`dcg`](https://github.com/dcg)
+(the destructive command guard) works with no adapter.
+
+```yaml
+agent:
+  hooks:
+    pre_tool_use:
+      - matcher: "run_command|spawn"   # regex over tool names; empty or "*" = all
+        hooks:
+          - type: command
+            command: /usr/local/bin/dcg   # use an absolute path
+            timeout: 5                   # seconds
+            honor_unsafe: false          # see below
+    post_tool_use: []                    # logging/audit; output is ignored
+```
+
+- A `pre_tool_use` hook may `deny`, `ask` or `allow` via
+  `{"hookSpecificOutput": {"permissionDecision": "...", "permissionDecisionReason": "..."}}`
+  on stdout, or block with exit code 2 and the reason on stderr. Silent stdout
+  means "no opinion". A `deny` is fed back to the model as a tool error (like a
+  declined confirmation), so the turn continues and the model can adapt; an
+  `ask` turns into an ordinary wisemonkey confirmation prompt.
+- Shell tools (`run_command`, `spawn`) are presented to a hook under the Claude
+  name **`Bash`** with the command in `tool_input.command` — that is the name a
+  stock `dcg` matches on.
+- A hook that **cannot start** fails open with a warning (a broken install does
+  not refuse every call). A hook that **hangs past `timeout` or prints garbage**
+  fails closed, because it has not cleared the call; set `fail_open: true` on a
+  handler to invert that.
+- `honor_unsafe: true` makes a handler skip while `agent.unsafe` is set. The
+  default (`false`) is that hooks **always run**, so `agent.unsafe` never
+  silently disables a guard that did not ask to be switched off.
+
 ## File references (`@path`)
 
 You can attach files directly to a prompt with `@`-references: writing `@agent/agent.py` (or the backtick-quoted `@\`agent/agent.py\``) in your message inlines the file content into the context sent to the model — no extra tool-call round-trip needed.

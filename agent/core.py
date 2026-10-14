@@ -1097,11 +1097,16 @@ class Core:
         a tool pays nothing, and so the parse warnings appear next to the turn
         that first needs them.
         """
-        if self._hooks is None:
+        # `getattr` rather than `self._hooks`: a Core built through __new__
+        # (tests, tools harnesses) never runs __init__, and a missing cache
+        # must mean "parse it", not "AttributeError".
+        hooks = getattr(self, "_hooks", None)
+        if hooks is None:
             from agent.hooks import load_hook_groups
 
-            self._hooks = load_hook_groups(self.config)
-        return self._hooks
+            hooks = load_hook_groups(self.config)
+            self._hooks = hooks
+        return hooks
 
     def _unsafe(self) -> bool:
         """Whether ``agent.unsafe`` is set (hooks may opt out; see honor_unsafe)."""
