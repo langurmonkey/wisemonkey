@@ -98,6 +98,9 @@ class Core:
         self.config = get_config()
         self.config.load(config_path)
         self.session = session
+        # External tool hooks (agent.hooks), parsed lazily from the config and
+        # cached: see _hook_groups() and agent/hooks.py.
+        self._hooks = None
 
         # Initialize API router
         ok, msg = self.initialize_router()
@@ -202,6 +205,9 @@ class Core:
         for cache_name in ("_context_files_cache", "_soul_files_cache"):
             if hasattr(self, cache_name):
                 delattr(self, cache_name)
+        # The hook set is config-derived too, so an edited `agent.hooks` block
+        # takes effect on the next tool call rather than the next restart.
+        self._hooks = None
         return True, None
 
     def reset_session_state(self) -> None:
@@ -1079,6 +1085,94 @@ class Core:
                 lines.append(line)
         return lines
 
+    # ── external tool hooks (agent.hooks) ───────────────────────────────────
+    # The config block and the wire protocol live in agent/hooks.py; what is
+    # here is only the seam. Every tool call -- local, daemon and MCP alike --
+    # funnels through _tool_calls, so one pair of calls covers all frontends.
+
+    def _hook_groups(self) -> list:
+        """The configured hook groups, parsed once and cached.
+
+        Parsed lazily rather than in ``__init__`` so a session that never runs
+        a tool pays nothing, and so the parse warnings appear next to the turn
+        that first needs them.
+        """
+        if self._hooks is None:
+            from agent.hooks import load_hook_groups
+
+            self._hooks = load_hook_groups(self.config)
+        return self._hooks
+
+    def _unsafe(self) -> bool:
+        """Whether ``agent.unsafe`` is set (hooks may opt out; see honor_unsafe)."""
+        return bool(self.config.get("agent.unsafe", False))
+
+    def _run_pre_hooks(self, tool_name: str, args):
+        """Run ``agent.hooks.pre_tool_use``; return a blocking verdict or None."""
+        groups = self._hook_groups()
+        if not groups:
+            return None
+        from agent.hooks import run_pre_hooks
+
+        verdict = run_pre_hooks(groups, tool_name, args, unsafe=self._unsafe())
+        return None if verdict.decision == "allow" else verdict
+
+    def _run_post_hooks(self, tool_name: str, args, result) -> None:
+        """Run ``agent.hooks.post_tool_use``; the result is informational."""
+        groups = self._hook_groups()
+        if not groups:
+            return
+        from agent.hooks import run_post_hooks
+
+        run_post_hooks(groups, tool_name, args, result, unsafe=self._unsafe())
+
+    def _hook_block_message(self, tool_name: str, verdict):
+        """The tool error for a hook that stopped a call, or None to proceed.
+
+        None is returned only when a hook asked for review and the user
+        approved: that is the one path where a blocking verdict does not block.
+        """
+        if verdict.decision == "ask":
+            if self._hook_ask(tool_name, verdict):
+                return None
+            err = (
+                f"Tool call '{tool_name}' was not run: the user declined after a "
+                "hook requested review"
+            )
+            if verdict.reason:
+                err += f" ({verdict.reason})"
+            err += ". Do not retry; ask the user how to proceed."
+            return {"error": err, "user_cancelled": True}
+
+        err = f"Tool call '{tool_name}' was blocked by a hook"
+        if verdict.reason:
+            err += f": {verdict.reason}"
+        err += (
+            ". Do not retry the same call; explain the block to the user or "
+            "use a safer approach."
+        )
+        return {"error": err, "blocked_by_hook": True}
+
+    def _hook_ask(self, tool_name: str, verdict) -> bool:
+        """Prompt the user after a hook asked for review. True = proceed."""
+        # Imported here rather than at module scope: agent.output pulls in
+        # prompt_toolkit/textual, and the core's import graph should not grow
+        # for a path that only an `ask` verdict reaches.
+        from agent.output import get_output_or_ipc
+
+        output = get_output_or_ipc()
+        output.newline()
+        output.print("🔒 [warn]Tool call requires confirmation[/warn]", indent=2)
+        output.print(f"[weak]Reason[/weak]: {verdict.reason}", indent=2)
+        output.print(f"[weak]Tool[/weak]: [cmd]{tool_name}[/cmd]", indent=2)
+        output.newline()
+        confirmed = output.ask_confirm("[bold]Run this tool call?[/bold]", default=False)
+        if confirmed:
+            output.ok("Confirmed", indent=2)
+        else:
+            output.err("Cancelled by user", indent=2)
+        return confirmed
+
     def _tool_calls(self, tool_calls, tool_callback=None, tool_result_callback=None):
         """Handle tool calls"""
         # Append the assistant message with tool calls as plain dictionaries.
@@ -1145,6 +1239,30 @@ class Core:
                     tool_result_callback(tc["id"], tool_name, err, True, 0.0)
                 continue
 
+            # External pre-tool hooks (agent.hooks.pre_tool_use): an outside
+            # guard -- dcg today, any Claude/Codex hook tomorrow -- answers
+            # before the tool runs. A deny, or an ask the user declines, stops
+            # the call exactly the way a malformed argument does: the reason
+            # goes back to the model as a tool error and the loop continues,
+            # so the model adapts instead of the turn aborting.
+            verdict = self._run_pre_hooks(tool_name, tool_args_parsed)
+            if verdict is not None:
+                blocked = self._hook_block_message(tool_name, verdict)
+                if blocked is not None:
+                    result_str = json.dumps(blocked)
+                    self.messages.append(
+                        {"role": "tool", "tool_call_id": tc["id"], "content": result_str}
+                    )
+                    self.memory.add_chat_exchange(
+                        self, "tool_result", result_str, name=tool_name,
+                        tool_call_id=tc["id"],
+                    )
+                    if tool_result_callback:
+                        tool_result_callback(
+                            tc["id"], tool_name, blocked["error"], True, 0.0
+                        )
+                    continue
+
             try:
                 result = execute_tool(tool_name, tool_args_parsed)
             except KeyboardInterrupt:
@@ -1154,6 +1272,11 @@ class Core:
                 self._turn_cancelled = True
                 raise
             duration = time.time() - started
+
+            # External post-tool hooks (agent.hooks.post_tool_use) see the
+            # result but cannot veto it; the runner swallows their failures so
+            # an audit hook cannot break a turn that already did its work.
+            self._run_post_hooks(tool_name, tool_args_parsed, result)
 
             # `execute_tool` serializes dict results to JSON, so what comes
             # back is usually a *string* even when the handler returned a

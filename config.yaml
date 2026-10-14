@@ -107,7 +107,42 @@ agent:
   footer_debug_bytes: false
   # Enable vi mode input
   vi_mode: false
+  # External tool hooks, compatible with the Claude Code / Codex hook protocol
+  # (and therefore with `dcg`, the destructive command guard: point `command`
+  # at the installed dcg binary and it works unchanged). Hooks run around every
+  # tool call, in both REPL and daemon mode, and cover MCP tools too.
+  #
+  # A `pre_tool_use` hook may answer `deny`, `ask` or `allow` on stdout as
+  # JSON -- {"hookSpecificOutput": {"permissionDecision": "deny",
+  # "permissionDecisionReason": "..."}} -- or block with exit code 2 and the
+  # reason on stderr. Silent stdout means "no opinion" and the call proceeds.
+  #
+  # `matcher` is a regular expression over the *wisemonkey* tool names
+  # (run_command, spawn, read_file, ...); empty or "*" matches every tool.
+  # Note that shell tools are presented to a hook under the Claude name
+  # ("Bash") with the command in tool_input.command, which is what a stock
+  # dcg matches on.
+  #
+  # A hook that cannot be started fails open with a warning; one that hangs
+  # past `timeout` (seconds) or prints unparseable output fails closed, so a
+  # guard that cannot answer does not clear the call. Set `fail_open: true`
+  # on a handler to invert that.
+  #
+  # `honor_unsafe: true` makes a handler skip when `agent.unsafe` is set --
+  # i.e. that hook respects unsafe mode. The default (false) is that hooks
+  # always run, so `agent.unsafe` never silently disables a guard that did not
+  # ask to be switched off.
+  #
+  # hooks:
+  #   pre_tool_use:
+  #     - matcher: "run_command|spawn"
+  #       hooks:
+  #         - type: command
+  #           command: /usr/local/bin/dcg   # use an absolute path
+  #           timeout: 5
+  #   post_tool_use: []
   # Unsafe mode: when true, no user confirmation is requested -- for dangerous
   # commands, for commands that touch paths outside the session directory, and
   # for network tools (fetch_url, web_search). Intended for unattended runs.
+  # It does NOT disable hooks unless a hook sets `honor_unsafe: true`.
   unsafe: false
