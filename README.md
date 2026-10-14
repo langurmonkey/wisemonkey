@@ -18,6 +18,7 @@ The sections of this document are:
 
 - [Quickstart](#quickstart)
 - [Run from source](#run-from-source)
+- [Run in a container](#run-in-a-container)
 - [Configuration](#configuration)
 - [Soul file](#soul-file)
 - [Usage and commands](#usage-and-commands)
@@ -53,7 +54,7 @@ You can also install it with our script:
 ```bash
 curl -fsSL https://codeberg.org/langurmonkey/wisemonkey/raw/branch/master/install.sh | sh
 ```
-This installs wisemonkey to `~/.local/share/wisemonkey/repository`. It adds a `wmk` binary to `~/.local/bin/wmk`. If you have `~/.local/bin` in your `$PATH`, you can launch the onboarding process to configure the agent interactively:
+This installs wisemonkey to `~/.local/share/wisemonkey/repository`. It adds a `wmk` binary to `~/.local/bin/wmk`. If Docker is installed, it also adds a `wmkc` binary to `~/.local/bin/wmkc` to run the agent in a container (see [Run in a container](#run-in-a-container)). If you have `~/.local/bin` in your `$PATH`, you can launch the onboarding process to configure the agent interactively:
 
 ```bash
 wmk --onboard
@@ -146,6 +147,41 @@ export WM_API_KEY_GENERIC=your-api-key
 # Run the agent with the default session:
 uv run wmk
 ```
+
+## Run in a container
+
+The `wmkc` script runs the agent inside a container, so it needs no Python or `uv` on the host, and the agent only ever sees the directory you launch it from. On first use it builds the image from the `Dockerfile` (a few minutes) and caches it; later runs start instantly.
+
+```bash
+# From the directory you want the agent to work in:
+cd ~/my-project
+wmkc                      # same arguments as wmk
+wmkc my-project           # a named session
+wmkc --version
+```
+
+The container runs as **your** user, not root, so files it writes into the workspace and into the session history come out owned by you. Three host directories are mounted:
+
+- **the current directory** — the workspace; it is the only part of the host the agent can see and modify
+- **`$XDG_CONFIG_HOME/wisemonkey`** — `config.yaml`, `mcp.json` and any `.env` already in use
+- **`$XDG_DATA_HOME/wisemonkey`** — sessions, chat history, notes and vector stores, so conversations survive the container
+
+Your `HOME`, `USER`, `TERM`, `EDITOR`/`VISUAL`, the XDG variables and your API keys (`WM_API_KEY_*`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are forwarded from the environment. Keys are passed **by name**, never as `NAME=value`, so they do not show up in `ps` or in your shell history.
+
+The agent runs sandboxed: no Linux capabilities, no privilege escalation, and a bounded process count.
+
+| Variable | Effect |
+|-|-|
+| `WMKC_IMAGE` | Use a different image (default `wisemonkey-agent:local`) |
+| `WMKC_BUILD=0` | Never build; fail if the image is missing (for scripts) |
+| `WMKC_REBUILD=1` | Rebuild the image even if it already exists |
+| `WISEMONKEY_HOME` | Where the `Dockerfile` lives (set by the `install.sh` wrapper) |
+
+> The image ships the agent, not the checkout: editing `agent/*.py` does **not** change a container that is already built. Rebuild with `WMKC_REBUILD=1 wmkc` to run changed code.
+
+> Tool hooks (`agent.hooks`) run *inside* the container, so a guard binary installed only on the host (e.g. `~/.local/bin/dcg`) is not found there — and a hook that cannot start fails open. If you rely on a host-side guard, run `wmk` directly, or extend `wmkc` to mount the binary in.
+
+> Client/server mode also works, but a daemon started *inside* a container is private to that container: `XDG_RUNTIME_DIR` is deliberately not forwarded, so the socket goes to `/tmp/wisemonkey-<user>`.
 
 ## Configuration
 
@@ -568,6 +604,8 @@ wisemonkey/
 │   └── [...]
 ├── config.yaml             # Default config file.
 ├── README.md
+├── wmkc                    # Run the agent in a container (wrapper around docker).
+├── Dockerfile              # Container image for wmkc.
 ├── pyproject.toml
 ├── install.sh              # Installer script.
 └── .env.example
