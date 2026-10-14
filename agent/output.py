@@ -53,7 +53,28 @@ def get_output_or_ipc() -> OutputAdapter:
     return IpcOutputAdapter()
 
 
-# ── readline-aware Rich prompts ─────────────────────────────────────────────
+def incomplete_message(reason: str = "") -> str:
+    """The one wording for a fragmented answer, shared by every frontend.
+
+    ``reason`` is ``"length"`` when the provider stopped at the output-token
+    limit and ``"stream_ended"`` (or empty) when the stream ended with no
+    terminal marker at all -- a connection cut at a chunk boundary, which
+    raises nothing and so used to be shown as a finished answer. The two
+    cases need different words: one is a budget, the other a fault.
+    """
+    if reason == "length":
+        return (
+            "⚠  Response incomplete: the model hit the output token limit. "
+            "The answer is cut off; ask it to continue."
+        )
+    return (
+        "⚠  Response incomplete: the stream ended without a stop marker "
+        "(the connection was cut). The stored answer is a fragment; re-run "
+        "or ask it to continue."
+    )
+
+
+# ── readline-aware Rich prompts ──────────────────────────────────────────────
 #
 # Rich prints the prompt itself and then calls `input()` with an *empty*
 # prompt. readline therefore believes the line buffer begins at column 1, so

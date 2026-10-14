@@ -63,6 +63,14 @@ class TurnResult:
     # Set when the turn ended because agent.max_turns was exhausted, so the
     # UI can tell the user why the response stopped (like max_tool_calls).
     max_turns_reached: bool = False
+    # Set when the final answer is a fragment rather than a whole one: the
+    # provider stopped at the output-token limit, or the stream ended with no
+    # terminal marker at all (a dropped connection). The UI says so instead of
+    # presenting a half-sentence as the answer, and the stored exchange is
+    # flagged so the recap can mark it too.
+    incomplete: bool = False
+    # "length" or "stream_ended"; empty when ``incomplete`` is False.
+    incomplete_reason: str = ""
     # Prompt tokens reported by the provider, summed over the turn's LLM
     # rounds. 0 when the provider reports no usage (the UI then omits the
     # cost figure rather than showing a wrong one).
@@ -126,6 +134,12 @@ class Core:
             # is observable state rather than an exception, so that it can
             # survive a process boundary (see agent/emitter.py).
             self._turn_cancelled = False
+            # Whether the last stream ended without the provider's terminal
+            # marker (a dropped connection), and the marker when it sent one
+            # ("stop", "tool_calls", "length"). Set by
+            # ``_note_stream_completeness()``.
+            self.stream_incomplete = False
+            self.finish_reason: str | None = None
 
             # Pending image to attach to the next user prompt
             self._pending_image: dict | None = None
@@ -205,6 +219,8 @@ class Core:
         self._pending_image = None
         self.pending_prompt = None
         self._turn_cancelled = False
+        self.stream_incomplete = False
+        self.finish_reason = None
         # Reset session-specific router state
         if hasattr(self, "router"):
             self.router.session = self.session
@@ -393,6 +409,12 @@ class Core:
                         poll=None):
         self.thinking_buffer = ""
         self.response_buffer = ""
+        # Whether this round's stream ended on the provider's own terms, and
+        # which marker it sent. Reset per round (not only per turn) so the
+        # state read when the final answer is built belongs to the round that
+        # produced it. See _note_stream_completeness().
+        self.finish_reason: str | None = None
+        self.stream_incomplete = False
 
         tool_calls = {}
         first_chunk_time = None
@@ -420,10 +442,12 @@ class Core:
                     prompt_callback(Stage.STOP)
                     prompt_stopped = True
 
-                # Provider-reported token usage, when the final chunk
-                # carries it. A choices-less usage chunk (OpenAI with
-                # `include_usage`) has no delta to read, so it is checked
-                # before the delta access.
+                # Provider-reported token usage, when a chunk carries it.
+                # Recorded *before* the empty-choices guard, since OpenAI with
+                # `include_usage` puts it on a choices-less chunk -- but never
+                # *instead of* the delta: a provider that attaches usage to its
+                # last content chunk used to have that text dropped, because
+                # this branch `continue`d.
                 chunk_usage = getattr(chunk, "usage", None)
                 if chunk_usage is not None:
                     if isinstance(chunk_usage, dict):
@@ -437,13 +461,17 @@ class Core:
                             "prompt_tokens": getattr(chunk_usage, "prompt_tokens", 0) or 0,
                             "completion_tokens": getattr(chunk_usage, "completion_tokens", 0) or 0,
                         }
-                    continue
 
                 # Guard against empty choices (keepalive chunks, metadata, etc.)
                 if not getattr(chunk, "choices", None):
                     continue
 
                 delta = chunk.choices[0].delta
+                # The provider's terminal marker for this round ("stop",
+                # "tool_calls", "length"), absent from every intermediate chunk.
+                finish_reason = getattr(chunk.choices[0], "finish_reason", None)
+                if finish_reason:
+                    self.finish_reason = finish_reason
                 now = time.time()
 
                 # Track when first chunk arrives (excludes request send time)
@@ -509,7 +537,32 @@ class Core:
             # Store the error so we can still return whatever we collected.
             stream_error = e
 
+        self._note_stream_completeness(stream_error, bool(tool_calls))
+
         return (first_chunk_time, tool_calls, stream_error, usage)
+
+    def _note_stream_completeness(self, stream_error, saw_tool_calls: bool) -> None:
+        """Record whether the stream ended on the provider's own terms.
+
+        A stream that stops without ever sending a terminal ``finish_reason``
+        delivered a *prefix*, not an answer: the connection was cut at a chunk
+        boundary (a gateway timeout, a proxy closing the socket), which raises
+        no exception and so is indistinguishable from success unless the
+        absence of the marker is checked. ``length`` is a terminal marker the
+        provider did send -- the output budget ran out -- and is recorded
+        separately, because it is not a fault, only a truncated answer.
+
+        Sets ``self.stream_incomplete``; ``self.finish_reason`` (accumulated
+        by the stream loop) says which case it was.
+        """
+        if self._turn_cancelled or stream_error is not None:
+            # Cancellation is reported through its own channel, and an error
+            # is raised to the caller: neither is an incomplete *answer*.
+            return
+        if self.finish_reason == "length":
+            self.stream_incomplete = True
+        elif self.finish_reason is None and (self.response_buffer or saw_tool_calls):
+            self.stream_incomplete = True
 
     def llm_chat_raw(self,
                     messages,
@@ -692,6 +745,11 @@ class Core:
         # Reset per-turn cancellation state. Cancellation is observable state
         # (see agent/emitter.py) so that it can cross a process boundary.
         self._turn_cancelled = False
+        # Reset the stream-completeness state too: it is read when the final
+        # answer is built, and a stale True from an earlier turn would flag a
+        # complete answer as a fragment.
+        self.stream_incomplete = False
+        self.finish_reason = None
 
         # Initialize with system prompt
         system_msg = {"role": "system", "content": self._build_system_prompt()}
@@ -837,8 +895,19 @@ class Core:
                 # No tool calls - this is the final response
                 self.messages.append({"role": "assistant", "content": response_text})
 
+                # Did the provider end the stream on its own terms? A fragment
+                # is stored flagged rather than silently presented as a whole
+                # answer (see _note_stream_completeness).
+                incomplete = getattr(self, "stream_incomplete", False)
+                incomplete_reason = (
+                    (self.finish_reason or "stream_ended") if incomplete else ""
+                )
+
                 # Record the final assistant answer to chat history
-                self.memory.add_chat_exchange(self, "assistant", response_text)
+                self.memory.add_chat_exchange(
+                    self, "assistant", response_text,
+                    **({"incomplete": True} if incomplete else {}),
+                )
 
                 # Persist memory
                 self.memory.save()
@@ -885,6 +954,8 @@ class Core:
                     n_tools=n_tools,
                     gen_time=total_gen_time,
                     prompt_tokens=total_prompt_tokens,
+                    incomplete=incomplete,
+                    incomplete_reason=incomplete_reason,
                 )
 
             # Max turns reached!
@@ -974,7 +1045,12 @@ class Core:
         if self.response_buffer:
             last_exchange = history[-1] if history else None
             if not last_exchange or last_exchange.get("content") != self.response_buffer:
-                self.memory.add_chat_exchange(self, "assistant", self.response_buffer)
+                # Whatever streamed before the error is a fragment by
+                # definition, so it is stored flagged (the recap and the UI
+                # mark such an answer rather than presenting it as complete).
+                self.memory.add_chat_exchange(
+                    self, "assistant", self.response_buffer, incomplete=True
+                )
 
         self.memory.save()
 

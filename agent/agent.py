@@ -46,7 +46,7 @@ from agent.keys import (
     install_enter_bindings,
 )
 from agent.mdstream import MarkdownStreamRenderer
-from agent.output import RichOutputAdapter, set_output
+from agent.output import RichOutputAdapter, incomplete_message, set_output
 from agent.palette import PALETTE
 from agent.startup import startup_info
 from agent.utils import add_command, collapse_none_dicts, format_tool_args, term_width
@@ -498,6 +498,23 @@ class Agent:
         self.output.rule(title=title, style="status")
         # Refresh the sticky footer with the final memory stats.
         self._footer_refresh()
+
+    def _warn_incomplete(self, result) -> None:
+        """Say so when the answer is a fragment rather than a whole one.
+
+        Two shapes reach here and they need different words: the provider
+        stopped at the output-token limit (the stream was well formed, the
+        answer is simply cut), or the stream ended with no terminal marker at
+        all -- a connection cut at a chunk boundary, which raises nothing and
+        so used to be shown and stored as if it were a finished answer. The
+        stored exchange is flagged (``incomplete``) by the core either way.
+        """
+        if not getattr(result, "incomplete", False):
+            return
+        # The wording is shared with the TUI, so the two frontends cannot drift.
+        self.output.print(
+            f"  [warn]{incomplete_message(getattr(result, 'incomplete_reason', ''))}[/warn]"
+        )
 
     def _footer_status(self) -> str:
         """Build the sticky footer status line (model, session, memory).
@@ -1035,6 +1052,8 @@ class Agent:
                             "The model kept requesting tools without a final answer."
                         )
 
+                    self._warn_incomplete(result)
+
                     self._statusline(
                         total_tokens, ntools, total_gen_time,
                         prompt_tokens=result.prompt_tokens,
@@ -1170,6 +1189,7 @@ class Agent:
                 )
 
             if not result.cancelled:
+                self._warn_incomplete(result)
                 self._statusline(
                     result.total_tokens, result.n_tools, result.gen_time,
                     prompt_tokens=result.prompt_tokens,
@@ -1243,6 +1263,7 @@ class Agent:
                         f"{self.core.config.get('agent.max_turns', 50)}). "
                         "The model kept requesting tools without a final answer."
                     )
+                self._warn_incomplete(end)
                 self._statusline(
                     end.total_tokens, end.n_tools, end.gen_time,
                     prompt_tokens=end.prompt_tokens,
@@ -1418,6 +1439,7 @@ class Agent:
                                 f"{self.core.config.get('agent.max_turns', 50)}). "
                                 "The model kept requesting tools without a final answer."
                             )
+                        self._warn_incomplete(end)
                         self._statusline(
                             end.total_tokens, end.n_tools, end.gen_time,
                             prompt_tokens=end.prompt_tokens,

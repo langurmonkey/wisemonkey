@@ -193,6 +193,23 @@ class TestLifecycleEvents(unittest.TestCase):
         payload = payload_as(TurnEndPayload, peer.recv(timeout=0.1))
         assert payload.cancelled is True
 
+    def test_turn_end_carries_the_incomplete_flag(self):
+        """A fragment must survive the trip to a remote frontend."""
+        emitter, peer = _connected_emitter()
+        emitter.turn_end(
+            "half a sent", incomplete=True, incomplete_reason="stream_ended"
+        )
+        payload = payload_as(TurnEndPayload, peer.recv(timeout=0.1))
+        assert payload.incomplete is True
+        assert payload.incomplete_reason == "stream_ended"
+
+    def test_turn_end_defaults_to_complete(self):
+        emitter, peer = _connected_emitter()
+        emitter.turn_end("all done.")
+        payload = payload_as(TurnEndPayload, peer.recv(timeout=0.1))
+        assert payload.incomplete is False
+        assert payload.incomplete_reason == ""
+
     def test_status(self):
         emitter, peer = _connected_emitter()
         emitter.status(busy=True, memory_chars=100, memory_max=200)

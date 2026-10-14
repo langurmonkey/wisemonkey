@@ -47,7 +47,7 @@ from agent.ipc import (
     loopback_pair,
     payload_as,
 )
-from agent.output import TuiOutputAdapter, set_output
+from agent.output import TuiOutputAdapter, incomplete_message, set_output
 from agent.startup import startup_info
 from agent.utils import format_tool_args
 from agent.palette import PALETTE
@@ -879,6 +879,8 @@ class WisemonkeyTui(App):
                     end.gen_time,
                     end.cancelled,
                     end.prompt_tokens,
+                    end.incomplete,
+                    end.incomplete_reason,
                 )
             else:
                 result = self.core.run_turn(
@@ -900,6 +902,8 @@ class WisemonkeyTui(App):
                     result.gen_time,
                     result.cancelled,
                     result.prompt_tokens,
+                    result.incomplete,
+                    result.incomplete_reason,
                 )
         except Exception as e:
             self.output.err(f"Error: {e}")
@@ -965,6 +969,8 @@ class WisemonkeyTui(App):
         gen_time: float,
         result_cancelled: bool = False,
         prompt_tokens: int = 0,
+        incomplete: bool = False,
+        incomplete_reason: str = "",
     ) -> None:
         """Called on the main thread after a turn completes."""
         if result_cancelled:
@@ -982,6 +988,13 @@ class WisemonkeyTui(App):
 
         if result_cancelled:
             return
+
+        # A fragmented answer says so, in the same words the REPL uses: the
+        # alternative is presenting a half-sentence as the answer.
+        if incomplete:
+            self.output.print(
+                f"  [warn]{incomplete_message(incomplete_reason)}[/warn]"
+            )
 
         if self.core:
             if self.remote is not None:

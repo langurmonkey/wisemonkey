@@ -377,6 +377,8 @@ class WisemonkeyServer:
                 error=result.error,
                 max_turns_reached=result.max_turns_reached,
                 prompt_tokens=result.prompt_tokens,
+                incomplete=result.incomplete,
+                incomplete_reason=result.incomplete_reason,
             )
             self._send(
                 Message.response(
@@ -391,6 +393,8 @@ class WisemonkeyServer:
                         error=result.error,
                         max_turns_reached=result.max_turns_reached,
                         prompt_tokens=result.prompt_tokens,
+                        incomplete=result.incomplete,
+                        incomplete_reason=result.incomplete_reason,
                     ),
                 )
             )

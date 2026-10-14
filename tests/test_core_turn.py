@@ -741,3 +741,213 @@ class TestImageToolResults(unittest.TestCase):
             core.run_turn("go")
         tool_msgs = [m for m in core.messages if m["role"] == "tool"]
         self.assertEqual(tool_msgs[0]["content"], "ok")
+
+
+# ── stream completeness ──────────────────────────────────────────────────────
+#
+# Minimal stand-ins for the OpenAI SDK's chunk objects, which is what the
+# router yields (`_StreamChunk` in agent/router.py has the same shape).
+
+
+class _Delta:
+    def __init__(self, content=None, reasoning_content=None, tool_calls=None):
+        self.content = content
+        self.reasoning_content = reasoning_content
+        self.tool_calls = tool_calls
+
+
+class _Choice:
+    def __init__(self, delta=None, finish_reason=None):
+        self.delta = _Delta(**(delta or {}))
+        self.finish_reason = finish_reason
+
+
+class _Chunk:
+    def __init__(self, choices=None, usage=None):
+        self.choices = [_Choice(**c) for c in (choices or [])]
+        self.usage = usage
+        self.model = "test"
+
+
+class _UsageObject:
+    """A CompletionUsage dataclass look-alike."""
+
+    prompt_tokens = 11
+    completion_tokens = 4
+
+
+def _bare_core():
+    core = cast(Any, Core.__new__(Core))
+    core.config = _Config()
+    core._turn_cancelled = False
+    core.thinking = False
+    core.generating = False
+    return core
+
+
+class TestStreamCompleteness(unittest.TestCase):
+    """A stream that ends without a terminal marker delivered a prefix.
+
+    That marker is the only thing separating "the model finished" from "the
+    connection was cut": a socket dropped at a chunk boundary raises nothing,
+    so the fragment used to be shown and persisted as a complete answer.
+    """
+
+    def _run(self, *chunks, **kw):
+        core = _bare_core()
+        core._stream_handler(iter(chunks), **kw)
+        return core
+
+    def test_a_stop_marker_is_complete(self):
+        core = self._run(
+            _Chunk(choices=[{"delta": {"content": "done."}}]),
+            _Chunk(choices=[{"finish_reason": "stop"}]),
+        )
+        self.assertEqual(core.finish_reason, "stop")
+        self.assertFalse(core.stream_incomplete)
+
+    def test_a_length_marker_is_incomplete(self):
+        core = self._run(
+            _Chunk(choices=[{"delta": {"content": "cut short"}}]),
+            _Chunk(choices=[{"finish_reason": "length"}]),
+        )
+        self.assertEqual(core.finish_reason, "length")
+        self.assertTrue(core.stream_incomplete)
+
+    def test_a_tool_calls_marker_is_complete(self):
+        core = self._run(
+            _Chunk(choices=[{"delta": {"tool_calls": [
+                type("TC", (), {"index": 0, "id": "c1", "type": "function",
+                                "function": type("F", (), {"name": "t",
+                                                           "arguments": "{}"})()})()
+            ]}}]),
+            _Chunk(choices=[{"finish_reason": "tool_calls"}]),
+        )
+        self.assertFalse(core.stream_incomplete)
+
+    def test_no_marker_at_all_is_incomplete(self):
+        core = self._run(_Chunk(choices=[{"delta": {"content": "half a sent"}}]))
+        self.assertIsNone(core.finish_reason)
+        self.assertTrue(core.stream_incomplete)
+
+    def test_an_empty_stream_is_not_flagged(self):
+        """Nothing arrived, so there is no fragment to warn about."""
+        core = self._run(_Chunk(choices=[]))
+        self.assertFalse(core.stream_incomplete)
+
+    def test_a_cancelled_stream_is_not_flagged(self):
+        """Cancellation has its own channel; it is not a truncated answer."""
+        core = _bare_core()
+        core._stream_handler(
+            iter([_Chunk(choices=[{"delta": {"content": "partial"}}])]),
+            poll=lambda: True,
+        )
+        self.assertTrue(core._turn_cancelled)
+        self.assertFalse(core.stream_incomplete)
+
+    def test_a_stream_error_is_not_flagged(self):
+        """An error is raised to the caller; the flag is for silent cuts."""
+        def _boom():
+            yield _Chunk(choices=[{"delta": {"content": "text"}}])
+            raise ValueError("malformed SSE")
+
+        core = _bare_core()
+        _, _, stream_error, _ = core._stream_handler(_boom())
+        self.assertIsNotNone(stream_error)
+        self.assertFalse(core.stream_incomplete)
+
+    # --- the usage chunk ---
+
+    def test_a_usage_only_chunk_is_read_and_skipped(self):
+        core = _bare_core()
+        _, _, _, usage = core._stream_handler(iter([
+            _Chunk(choices=[{"delta": {"content": "x"}}]),
+            _Chunk(choices=[], usage={"prompt_tokens": 7, "completion_tokens": 3}),
+            _Chunk(choices=[{"finish_reason": "stop"}]),
+        ]))
+        self.assertEqual(usage, {"prompt_tokens": 7, "completion_tokens": 3})
+        self.assertEqual(core.response_buffer, "x")
+
+    def test_usage_does_not_swallow_a_content_delta(self):
+        """A provider may attach usage to its last *content* chunk.
+
+        The usage branch used to `continue` before the delta was read, so
+        that chunk's text was dropped.
+        """
+        core = self._run(
+            _Chunk(
+                choices=[{"delta": {"content": "the tail"},
+                          "finish_reason": "stop"}],
+                usage={"prompt_tokens": 5, "completion_tokens": 2},
+            )
+        )
+        self.assertEqual(core.response_buffer, "the tail")
+
+    def test_an_sdk_usage_object_is_understood(self):
+        core = _bare_core()
+        _, _, _, usage = core._stream_handler(iter([
+            _Chunk(choices=[{"delta": {"content": "x"}}]),
+            _Chunk(choices=[], usage=_UsageObject()),
+        ]))
+        self.assertEqual(usage, {"prompt_tokens": 11, "completion_tokens": 4})
+
+
+class TestIncompleteTurnResult(unittest.TestCase):
+    """The flag reaches the caller and the stored exchange."""
+
+    def _core(self, text, *, incomplete, reason):
+        core = make_core([{"text": text}])
+        real_send = core._send_to_llm
+
+        def _send(*args, **kwargs):
+            result = real_send(*args, **kwargs)
+            # Mirror the real _stream_handler, which records this on the core.
+            core.stream_incomplete = incomplete
+            core.finish_reason = reason
+            return result
+
+        core._send_to_llm = _send
+        return core
+
+    def test_a_complete_turn_is_not_flagged(self):
+        core = self._core("all done.", incomplete=False, reason="stop")
+        result = core.run_turn("q")
+        self.assertFalse(result.incomplete)
+        self.assertEqual(result.incomplete_reason, "")
+        self.assertNotIn("incomplete", core.memory.exchanges[-1])
+
+    def test_a_length_cut_is_reported(self):
+        core = self._core("cut off here", incomplete=True, reason="length")
+        result = core.run_turn("q")
+        self.assertTrue(result.incomplete)
+        self.assertEqual(result.incomplete_reason, "length")
+
+    def test_a_dropped_stream_is_reported(self):
+        core = self._core("half a sent", incomplete=True, reason=None)
+        result = core.run_turn("q")
+        self.assertTrue(result.incomplete)
+        self.assertEqual(result.incomplete_reason, "stream_ended")
+
+    def test_the_stored_answer_is_flagged(self):
+        core = self._core("half a sent", incomplete=True, reason=None)
+        core.run_turn("q")
+        self.assertTrue(core.memory.exchanges[-1].get("incomplete"))
+
+    def test_the_flag_is_cleared_between_turns(self):
+        """A stale flag must not mark a later, complete answer."""
+        core = make_core([{"text": "first"}, {"text": "second"}])
+        core.stream_incomplete = True
+        result = core.run_turn("q")
+        self.assertFalse(result.incomplete)
+
+
+class TestPersistedPointer(unittest.TestCase):
+    """The partial-response path also flags what it stores."""
+
+    def test_a_partial_response_is_flagged(self):
+        core = make_core([])
+        core.messages = []
+        core.response_buffer = "streamed half a sen"
+        core._persist_partial_turn("q")
+        stored = [e for e in core.memory.exchanges if e["role"] == "assistant"]
+        self.assertTrue(stored[-1].get("incomplete"))

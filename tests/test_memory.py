@@ -930,6 +930,29 @@ class TestConversationalRecap(BaseTest):
         )
         assert "(continued)" in self._recap(cm, 2)
 
+    def test_a_stored_incomplete_flag_is_marked(self):
+        """The core's own verdict beats the punctuation heuristic.
+
+        A dropped connection leaves an answer that *looks* finished -- it can
+        end in a full stop at a sentence boundary and still be a fragment --
+        so the flag recorded at storage time is what the recap trusts.
+        """
+        cm = self._cm(
+            ("user", "q", {}),
+            ("assistant", "The answer looked finished but was not.", {"incomplete": True}),
+        )
+        assert "(continued)" in self._recap(cm, 2)
+
+    def test_the_incomplete_flag_does_not_leak_into_the_prompt(self):
+        """The flag is metadata: the content the model sees is untouched."""
+        cm = self._cm(
+            ("user", "q", {}),
+            ("assistant", "A fragment, cut mid-", {"incomplete": True}),
+        )
+        prompt = cm.get_formatted(0, timestamps=False, width=0)
+        assert "A fragment, cut mid-" in prompt
+        assert "(continued)" not in prompt
+
     def test_a_complete_answer_is_not_marked(self):
         cm = self._cm(("user", "q", {}), ("assistant", "All done.", {}))
         assert "(continued)" not in self._recap(cm, 2)

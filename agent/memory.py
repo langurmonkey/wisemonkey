@@ -1070,12 +1070,15 @@ class ChatMemory:
                 if limit > 0 and len(content) > limit:
                     content = shorten(content, width=limit)
                     truncated = True
-                # Mark the tail when the last answer was cut off -- either by
-                # this truncation or because the session ended mid-sentence.
-                # A recap that ends in a full stop is honest about being
-                # complete; one that does not needs saying so.
+                # Mark the tail when the last answer was cut off -- by this
+                # truncation, because the session ended mid-sentence, or
+                # because the core recorded the stream itself as incomplete
+                # (a dropped connection or the output-token limit; the flag
+                # is set at storage time by Core.run_turn). A recap that ends
+                # in a full stop is honest about being complete; one that
+                # does not needs saying so.
                 if mark_incomplete and role == "assistant" and i == last_assistant:
-                    if truncated or _ends_mid_sentence(content):
+                    if truncated or turn.get("incomplete") or _ends_mid_sentence(content):
                         content += " (continued)"
                 lines.append(f"## {role.capitalize()}:\n{t}\n{content}\n\n")
             i += 1

@@ -324,6 +324,12 @@ class TurnEndPayload:
     error: str = ""
     # True when the turn ended because agent.max_turns was exhausted.
     max_turns_reached: bool = False
+    # True when the response is a fragment: the provider stopped at the
+    # output-token limit, or the stream ended with no terminal marker (a
+    # dropped connection). ``incomplete_reason`` says which ("length" or
+    # "stream_ended"), and is empty when this is False.
+    incomplete: bool = False
+    incomplete_reason: str = ""
     # Provider-reported prompt tokens for the turn (0 when the provider
     # reports no usage; clients then omit the cost figure).
     prompt_tokens: int = 0

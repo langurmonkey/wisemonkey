@@ -106,6 +106,22 @@ Cancellation is **observable state, not an exception**: `_stream_handler()` sets
 
 Frontends must not print a line per successful tool. The `TOOL_CALL` event ("Activating tool: X") already says the tool ran, so a "finished in 0.0s" line under every call is pure noise: `Agent.tool_result_callback` and `Tui._append_tool_result` stay silent below `agent.tool_slow_threshold` (default `1.0` s, inclusive) and print the duration only above it. Errors are always reported. The tool's own result text is still streamed to the model and stored in chat history; this is only about what the human sees.
 
+### Incomplete streams (`agent/core.py`)
+
+A truncated answer used to be indistinguishable from a finished one. The provider's terminal `finish_reason` is the only thing that separates "the model finished" from "the connection was cut": a gateway or proxy that closes the socket at a chunk boundary raises **nothing**, so the fragment was streamed, shown and persisted exactly like a whole answer (the reported symptom: the last sentence of an answer missing a few words, in both the display and `chat_history.json` — one string, so one bug).
+
+`_stream_handler()` accumulates `self.finish_reason` from the chunks and then `_note_stream_completeness()` decides:
+
+- `finish_reason == "length"` → `stream_incomplete = True`; a terminal marker the provider *did* send, so it is a budget, not a fault.
+- `finish_reason is None` with content or tool calls → `stream_incomplete = True`; no terminal marker ever arrived, which is what a cut looks like. All three adapters in `agent/router.py` emit one ("stop" for Anthropic and Ollama, the server's own for generic/OpenAI), so the absence is genuinely abnormal.
+- cancelled or errored → not flagged: neither is an incomplete *answer* (one has its own channel, the other is raised).
+
+`run_turn()` builds `TurnResult.incomplete` / `.incomplete_reason` (`"length"` or `"stream_ended"`), flags the stored exchange (`incomplete: True`) and reports it. The flag is metadata: the content the model sees is untouched, and `_render_history()` honours it when `mark_incomplete` is on, so the startup recap says `(continued)` for a fragment that happens to *look* finished — the punctuation heuristic `_ends_mid_sentence()` cannot. `_persist_partial_turn()` flags what it stores too: whatever streamed before an error is a fragment by definition.
+
+The payload field mirrors `max_turns_reached` end to end (`TurnEndPayload` → `TurnEmitter.turn_end` → `server.py` → the TUI), and the wording lives in one place, `output.incomplete_message()`, so the REPL and the TUI cannot drift.
+
+**Do not read a usage-bearing chunk and `continue`.** OpenAI's `include_usage` puts usage on a choices-less chunk, but a provider that attaches it to its last *content* chunk would have that text silently dropped — the usage branch used to `continue` before the delta was read. Record usage, then fall through to the empty-choices guard.
+
 ### Modified Enter (`agent/keys.py`)
 
 A terminal sends the *same* byte (`0x0D`) for Enter, Shift+Enter and Ctrl+Enter, so "Shift+Enter inserts a newline" is only possible when the terminal sends something distinguishable. Two mechanisms do that, and both decode to `c-m` — the raw sequence survives in `event.data`, which is what the bindings test:
