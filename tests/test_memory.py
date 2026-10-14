@@ -6,6 +6,7 @@ from pathlib import Path
 
 from tests.conftest import BaseTest
 from agent.memory import (
+    CONVERSATIONAL_ROLES,
     ChatMemory,
     Memory,
     is_valid_session_name,
@@ -969,3 +970,188 @@ class TestConversationalRecap(BaseTest):
     def test_marker_costs_nothing_on_an_empty_history(self):
         cm = self._cm(("user", "q", {}))
         assert self._recap(cm, 5).strip() != ""
+
+
+# A two-turn history whose second turn ran tools, i.e. the shape that made
+# `/history 3` print two tool calls and an answer with no question.
+_TOOL_HEAVY_TURNS = (
+    ("user", "prompt 1", {}),
+    ("assistant", "assistant 1", {}),
+    ("user", "prompt 2", {}),
+    ("tool_call", "", {"name": "read_file", "arguments": "{}"}),
+    ("tool_result", "file body", {"name": "read_file"}),
+    ("tool_call", "", {"name": "run_command", "arguments": "{}"}),
+    ("tool_result", "a b c", {"name": "run_command"}),
+    ("assistant", "assistant 2", {}),
+)
+
+
+class _HistoryBase(BaseTest):
+    """Shared history builder for the slicing tests below."""
+
+    def _cm(self, *entries, max_tokens=10**6):
+        cm = ChatMemory(self._tmpdir / self._testMethodName, max_tokens=max_tokens)
+        for role, content, extra in entries:
+            cm.add_exchange(None, role, content, **extra)
+        return cm
+
+
+class TestExchangeSlicing(_HistoryBase):
+    """`num_exchanges` counts exchanges on both ends of the history.
+
+    The system prompt asks for everything (`0`), but a caller asking for the
+    last few means *turns*. Slicing stored entries took whatever happened to
+    be at the tail -- a tool call is an entry too -- so the count and the
+    parameter name disagreed.
+    """
+
+    def test_one_exchange_is_whole(self):
+        cm = self._cm(*_TOOL_HEAVY_TURNS)
+        out = cm.get_formatted(1, timestamps=False, width=0)
+        assert "prompt 2" in out and "assistant 2" in out
+        assert "prompt 1" not in out and "assistant 1" not in out
+
+    def test_a_tool_heavy_turn_is_not_split(self):
+        """The tool call and its result go with the question that caused them."""
+        cm = self._cm(*_TOOL_HEAVY_TURNS)
+        out = cm.get_formatted(1, timestamps=False, width=0)
+        assert "read_file" in out and "file body" in out
+
+    def test_zero_means_everything(self):
+        cm = self._cm(*_TOOL_HEAVY_TURNS)
+        out = cm.get_formatted(0, timestamps=False, width=0)
+        assert "prompt 1" in out and "prompt 2" in out
+
+    def test_a_count_past_the_oldest_exchange_means_everything(self):
+        cm = self._cm(*_TOOL_HEAVY_TURNS)
+        for n in (2, 3, 99):
+            assert cm.get_formatted(n, timestamps=False, width=0) == cm.get_formatted(
+                0, timestamps=False, width=0
+            )
+
+    def test_an_entry_count_is_not_what_it_used_to_be(self):
+        """Three entries used to land inside turn two and show no question."""
+        cm = self._cm(*_TOOL_HEAVY_TURNS)
+        out = cm.get_formatted(3, timestamps=False, width=0)
+        assert "prompt 1" in out
+
+    def test_the_two_cutoffs_share_the_middle_boundary(self):
+        cm = self._cm(*_TOOL_HEAVY_TURNS)
+        # Two exchanges, starting at entries 0 and 2: the boundary between
+        # them is the same index found from the front or from the back.
+        assert cm._oldest_cutoff(1) == cm._newest_cutoff(1) == 2
+        # "Everything" is spelled per side: the oldest cut runs to the end of
+        # the history, the newest one starts at its head.
+        assert cm._oldest_cutoff(0) == len(cm._exchanges) == 8
+        assert cm._newest_cutoff(0) == cm._newest_cutoff(9) == 0
+
+    def test_a_history_without_a_user_message_still_renders(self):
+        """No exchange starts anywhere, so every count means "everything"."""
+        cm = self._cm(("assistant", "an opening line", {}))
+        out = cm.get_formatted(1, timestamps=False, width=0)
+        assert "an opening line" in out
+
+
+class TestConversationalPreamble(_HistoryBase):
+    """A summary in front of the first question is not a turn, but is shown.
+
+    `/history-compact` leaves its summary at the head of the history, where no
+    question introduced it. A recap that drops it hides the very context the
+    compaction was meant to preserve -- but a slice that starts *inside* the
+    history has not asked for it either.
+    """
+
+    ENTRIES = (("summary", "earlier: we discussed rivers", {}), *_TOOL_HEAVY_TURNS)
+
+    def _recap(self, cm, n):
+        return cm.get_formatted(
+            n, timestamps=False, width=0, roles=CONVERSATIONAL_ROLES
+        )
+
+    def test_the_preamble_travels_with_a_whole_history_recap(self):
+        cm = self._cm(*self.ENTRIES)
+        assert "earlier: we discussed rivers" in self._recap(cm, 0)
+        assert "earlier: we discussed rivers" in self._recap(cm, 2)
+
+    def test_a_slice_inside_the_history_leaves_the_preamble_behind(self):
+        cm = self._cm(*self.ENTRIES)
+        out = self._recap(cm, 1)
+        assert "earlier: we discussed rivers" not in out
+        assert "prompt 2" in out
+
+    def test_the_preamble_is_not_counted_as_a_turn(self):
+        cm = self._cm(*self.ENTRIES)
+        assert cm.conversational_count(0) == 2
+        assert cm.conversational_count(1) == 1
+
+    def test_the_preamble_is_flattened_first(self):
+        cm = self._cm(*self.ENTRIES)
+        contents = [e["content"] for e in cm.conversational_entries(0)]
+        assert contents[0] == "earlier: we discussed rivers"
+        assert contents[1:] == ["prompt 1", "assistant 1", "prompt 2", "assistant 2"]
+
+    def test_a_preamble_only_history_is_still_shown(self):
+        """Everything in the window was compacted, so there is no question."""
+        cm = self._cm(("summary", "a briefing with no question", {}))
+        assert "a briefing with no question" in self._recap(cm, 0)
+        assert cm.conversational_count(0) == 0
+
+
+class TestHistoryCommand(_HistoryBase):
+    """`/history N` prints N turns: prompt plus final answer, no machinery."""
+
+    def _run(self, *params):
+        from types import SimpleNamespace
+
+        from agent.commands import registry
+
+        command, parsed = registry.lookup(["/history", *params])
+        assert command is not None
+        core = SimpleNamespace(memory=self.memory)
+        return command.handler(core, parsed)
+
+    def setUp(self):
+        super().setUp()
+        # The real `Memory` facade, so the test exercises the method the
+        # command actually calls rather than a stand-in that happens to match.
+        import agent.memory as memory_mod
+
+        sessions = self._tmpdir / "sessions"
+        sessions.mkdir()
+        root = memory_mod.SESSIONS_DIR
+        memory_mod.SESSIONS_DIR = sessions
+        self.addCleanup(setattr, memory_mod, "SESSIONS_DIR", root)
+
+        self.memory = Memory(session="history")
+        for role, content, extra in _TOOL_HEAVY_TURNS:
+            self.memory.add_chat_exchange(None, role, content, **extra)
+
+    def test_the_count_is_turns(self):
+        ok, _, _, markdown = self._run("3")
+        assert ok
+        for text in ("prompt 1", "assistant 1", "prompt 2", "assistant 2"):
+            assert text in markdown
+
+    def test_one_turn_is_the_last_one(self):
+        _, _, _, markdown = self._run("1")
+        assert "prompt 2" in markdown and "assistant 2" in markdown
+        assert "prompt 1" not in markdown
+
+    def test_tool_machinery_stays_out_of_the_panel(self):
+        _, _, _, markdown = self._run("2")
+        for noise in ("read_file", "run_command", "file body", "Tool"):
+            assert noise not in markdown
+
+    def test_no_argument_prints_everything(self):
+        _, _, _, markdown = self._run()
+        assert "prompt 1" in markdown and "prompt 2" in markdown
+
+    def test_the_stats_are_reported(self):
+        ok, msg, _, _ = self._run("1")
+        assert ok
+        assert "Memory status:" in msg
+
+    def test_a_non_integer_is_rejected(self):
+        ok, msg, _, _ = self._run("two")
+        assert not ok
+        assert "must be integer" in msg

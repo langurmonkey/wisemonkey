@@ -450,6 +450,7 @@ In addition to persistent memory, the agent maintains a **chat history** of rece
 - The user can trigger the compaction any time with `/history compact`
 - Chat memory is attached to the system prompt on each turn, as the **last section** (after identity, workspace instructions, memory, and skills) so the static prompt prefix stays stable and provider prompt caches are not invalidated on every turn
 - The agent displays the last 10 exchanges, with long messages truncated
+- `/history` prints the whole session chat history; `/history n` prints only the last **n turns** (a prompt plus its final answer, with tool calls and results left out, like every other count in the `/history-*` commands)
 - Tool results are truncated in the formatted history unless `chat_history_full_tool_results` is enabled (see below)
 - Large file reads can be limited with the `read_file` tool's `max_lines` parameter (like `head`), or read as a window with `offset` (a 1-based start line, like `tail -n +N`)
 - Targeted edits use `patch_file`, which can match text (whitespace-tolerant, exact-match required) or patch by line range with `start_line`/`end_line`

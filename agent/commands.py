@@ -512,15 +512,27 @@ def _cmd_session_agent(
 
 @cmd(
     "/history",
-    "Show the session chat history contents",
+    "Show the session chat history contents, one turn per interaction",
     examples=[
-        ("/history", "Print entire session chat history"),
-        ("/history 2", "Print last 2 interactions"),
+        ("/history", "Print the entire session chat history"),
+        ("/history 2", "Print the last 2 turns (prompt + answer)"),
     ],
 )
 def _cmd_history(
     core, params, output: OutputAdapter | None = None
 ) -> tuple[bool, str | None, str | None, str | None]:
+    """Print the last *n* turns of the chat history (0 = all).
+
+    The count is a number of *turns* -- a prompt plus everything up to the
+    next prompt -- like ``/history-compact`` and ``/history-info``, not a
+    number of stored entries: an entry count lands in the middle of a turn,
+    so asking for three of them can show two tool calls and an answer with no
+    question in sight. The recap roles are what keeps the machinery out of the
+    panel: tool calls and results carry nothing a human wants to re-read, and
+    the turn is summarized by its final answer.
+    """
+    from agent.memory import CONVERSATIONAL_ROLES
+
     n = 0
     if params:
         try:
@@ -529,7 +541,7 @@ def _cmd_history(
             return False, f"Parameter must be integer: {params[0]}", None, None
 
     mem = core.memory.get_chat_history_formatted(
-        num_exchanges=n, timestamps=True, collapse_tools=True
+        num_exchanges=n, timestamps=True, roles=CONVERSATIONAL_ROLES
     )
     tokens, max, rate = core.memory.get_chat_stats()
     stats = f"Memory status: {tokens}/{max} tokens ({rate:.2f}%)"

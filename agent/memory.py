@@ -720,6 +720,25 @@ class ChatMemory:
             return len(self._exchanges)
         return starts[num_exchanges]
 
+    def _newest_cutoff(self, num_exchanges: int) -> int:
+        """Index where the last *num_exchanges* exchanges begin.
+
+        The mirror of :meth:`_oldest_cutoff`, and the reason ``num_exchanges``
+        can mean "exchanges" on both ends of the history. ``num_exchanges <= 0``
+        (or one that reaches past the oldest exchange) means "everything", so
+        any entries before the first ``user`` message -- a summary left by an
+        earlier compaction, say -- come with the oldest part rather than being
+        sliced off on their own. Slicing stored entries instead would let one
+        tool-heavy turn fill the whole slice, which is what the parameter name
+        promised it would not do.
+        """
+        if num_exchanges <= 0:
+            return 0
+        starts = self._exchange_starts()
+        if len(starts) <= num_exchanges:
+            return 0
+        return starts[-num_exchanges]
+
     def _trim_to_window(self) -> int:
         """Trim to the last `window_turns` exchanges, archiving the rest.
 
@@ -832,8 +851,12 @@ class ChatMemory:
         asked for one exchange shows two ``Assistant:`` blocks and no ``User:``
         -- the same machinery noise as the tool results, one level up.
 
-        Entries before the first ``user`` message are dropped: there is no
-        question to attach them to.
+        Entries before the first ``user`` message -- a summary left by an
+        earlier compaction, say -- belong to no turn, but they are still part
+        of the conversation: they travel in a ``leading`` bucket whenever the
+        slice reaches back to the oldest exchange, and are dropped as soon as
+        it starts inside the history, because they are not part of the turn it
+        asked for.
         """
         if "user" not in roles or "assistant" not in roles:
             # Grouping is defined by the user/assistant alternation; without
@@ -841,6 +864,7 @@ class ChatMemory:
             return []
 
         turns: list[dict] = []
+        leading: list[dict] = []
         current: dict | None = None
         for entry in self._exchanges:
             role = entry.get("role")
@@ -849,7 +873,13 @@ class ChatMemory:
                     turns.append(current)
                 current = {"user": entry, "summary": None, "assistant": None}
                 continue
-            if current is None or role not in roles:
+            if current is None:
+                # No question has been asked yet, so this cannot belong to a
+                # turn; it is the (compactable) preamble of the history.
+                if role in roles:
+                    leading.append(entry)
+                continue
+            if role not in roles:
                 continue
             # Narration emitted before a tool call is stored as its own
             # assistant message. Only the last one is the answer.
@@ -857,13 +887,23 @@ class ChatMemory:
         if current is not None:
             turns.append(current)
 
-        return turns[-num_turns:] if num_turns > 0 else turns
+        if 0 < num_turns < len(turns):
+            return turns[-num_turns:]
+        if leading:
+            # The slice covers every turn, so it also covers the preamble.
+            turns.insert(
+                0,
+                {"user": None, "summary": None, "assistant": None, "leading": leading},
+            )
+        return turns
 
     @staticmethod
     def _flatten_turns(turns: list[dict]) -> list[dict]:
         """Turn dicts back to a flat entry list, in reading order."""
         flat: list[dict] = []
         for turn in turns:
+            # A preamble entry precedes its turn's question.
+            flat.extend(turn.get("leading") or [])
             for key in ("user", "summary", "assistant"):
                 if turn.get(key) is not None:
                     flat.append(turn[key])
@@ -878,8 +918,17 @@ class ChatMemory:
         return self._flatten_turns(self.conversational_turns(num_turns=num_exchanges))
 
     def conversational_count(self, num_exchanges: int = 0) -> int:
-        """How many turns a recap of *num_exchanges* would cover."""
-        return len(self.conversational_turns(num_turns=num_exchanges))
+        """How many turns a recap of *num_exchanges* would cover.
+
+        Counts questions, not buckets: the preamble that may travel with the
+        turns is not a turn, so a heading does not claim one more interaction
+        than the history holds.
+        """
+        return sum(
+            1
+            for turn in self.conversational_turns(num_turns=num_exchanges)
+            if turn.get("user") is not None
+        )
 
     def exchange_info(self) -> list[tuple[str, int]]:
         """Timestamp and token size of each exchange, oldest first.
@@ -1067,13 +1116,10 @@ class ChatMemory:
         if not self._exchanges:
             return None
 
-        # Show most recent exchanges (num_exchanges == 0 -> all)
+        # Show most recent exchanges (num_exchanges == 0 -> all). The slice is
+        # by *exchanges* here too: `num_exchanges` never meant "entries".
         if roles is None:
-            history = (
-                self._exchanges[-num_exchanges:]
-                if num_exchanges > 0
-                else self._exchanges
-            )
+            history = self._exchanges[self._newest_cutoff(num_exchanges):]
         elif "user" in roles and "assistant" in roles:
             # A human-facing recap: count *turns*, so `num_exchanges` is a
             # number of question/answer pairs. Slicing the filtered list
