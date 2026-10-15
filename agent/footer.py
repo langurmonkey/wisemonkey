@@ -90,6 +90,13 @@ _WHITE = _SGR["text"]
 _KEY = _SGR["key"]
 _BAR_BG = _SGR["bar_bg"]
 
+# One block-cursor cell: the cursor colour painted on a space, with its own
+# reset, so it is exactly one visible column wherever it is spliced in. The
+# steering row (drawn by the frontend, not here) appends it to mark where the
+# next typed character lands -- the terminal's own cursor cannot be used,
+# because it has to stay where the streamed answer is being written.
+_CURSOR = f"{_SGR['cursor']} {_SGR['reset']}"
+
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 # Serializes every write to stdout while the footer is armed. Module level so
@@ -425,9 +432,13 @@ class Footer:
                 self._frame = 0
                 # Force a redraw: the hints row may currently hold a spinner
                 # frame that has just gone away. `_redraw` no-ops with nothing
-                # animating, so the clearing redraw is issued explicitly.
-                self._input_text = _UNSET
-                self.update_status(self._status_text, "", force=True)
+                # animating, so the clearing redraw is issued explicitly. The
+                # transient row is re-rendered with *the content it already
+                # has*: passing "" here would wipe a half-typed steering line
+                # (or its marker and cursor) off the row the user is typing on.
+                self.update_status(
+                    self._status_text, self._transient(), force=True
+                )
                 return
             if self._active and self._spinner_thread is None:
                 self._start_spinner_thread()
@@ -541,14 +552,15 @@ class Footer:
 
             ────...──── separator
             ⇒ model | session:x | Mem…    status
-            ⤷ what you are typing          steering input / queued follow-up
+            ⟩ what you are typing █        steering input / queued follow-up
             Ctrl+C: cancel turn | …       key hints  ⠋ ⏳ stage… ⠋ 💡 Thinking…
 
         The third row is the transient one: it shows *input_line* when the
-        caller supplied one (a partially typed steering line, or a queued
-        follow-up), and is blank otherwise. The stage spinner and the
-        reasoning indicator live on the right of the key-hints row instead,
-        so an animation frame never competes with what the user is typing.
+        caller supplied one (a partially typed steering line, marked with a
+        prompt and a block cursor, or a queued follow-up), and is blank
+        otherwise. The stage spinner and the reasoning indicator live on the
+        right of the key-hints row instead, so an animation frame never
+        competes with what the user is typing.
 
         The terminal size is re-read on every redraw so a resize mid-turn
         cannot leave stale geometry behind. The cursor position is saved

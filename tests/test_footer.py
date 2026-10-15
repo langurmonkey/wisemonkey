@@ -549,6 +549,21 @@ class TestFooterSpinner(unittest.TestCase):
             thread.is_alive(), "spinner thread outlived set_spinner('')"
         )
 
+    def test_clearing_keeps_the_steering_row(self):
+        """`set_spinner('')` redraws, but only the *hints* row changes.
+
+        The clearing redraw exists so the hints row loses its last frame. The
+        transient row belongs to the user: blanking it there would erase a
+        half-typed steering line mid-keystroke -- and, now that the row also
+        carries the prompt marker and the caret, the input field itself.
+        """
+        self.footer.set_spinner("working")
+        self.footer.update_status("status", "❯ half typed")
+        self._clear()
+        self.footer.set_spinner("")
+        transient = self._row(self.tty.getvalue(), 23)
+        self.assertIn("half typed", transient)
+
     def test_stop_joins_the_thread(self):
         """stop() must not leave a writer redrawing into a torn-down footer."""
         self.footer.set_spinner("working")

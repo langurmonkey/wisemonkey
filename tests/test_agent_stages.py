@@ -10,7 +10,10 @@ from typing import Any, Callable, cast
 from unittest import mock
 
 from agent.agent import Agent
+from agent.footer import _CURSOR, visible_len
 from agent.ipc import Event, Message, ReasoningPayload, StageKind
+from agent.palette import PALETTE
+from agent.utils import term_width
 
 
 class _FakeFooterOutput:
@@ -281,6 +284,9 @@ class _RecordingOutput:
     def steer_pending(self) -> str | None:
         return None
 
+    def steer_active(self) -> bool:
+        return False
+
 
 class _ToolResultAgent(Agent):
     """An Agent with just enough state for `tool_result_callback`."""
@@ -358,6 +364,92 @@ class TestSteerInjection(unittest.TestCase):
         agent = _SteerAgent([])
         self.assertEqual(agent._steer_inject(), [])
         self.assertEqual(agent.refreshes, 1)
+
+
+class _InputRowOutput:
+    """OutputAdapter stand-in for the steering input row."""
+
+    def __init__(
+        self, line: str = "", queued: str | None = None, armed: bool = True
+    ) -> None:
+        self.line = line
+        self.queued = queued
+        self.armed = armed
+
+    def steer_line(self) -> str:
+        return self.line
+
+    def steer_pending(self) -> str | None:
+        return self.queued
+
+    def steer_active(self) -> bool:
+        return self.armed
+
+
+class _InputRowAgent(Agent):
+    """Just enough Agent state for `_footer_input`."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.output: Any = _InputRowOutput(**kwargs)
+        self._turn_in_progress = True
+
+
+class TestSteeringInputRow(unittest.TestCase):
+    """The steering row is an input field, even while it is empty.
+
+    An empty row gave no hint that a keystroke would go anywhere, and with no
+    caret there was nothing to say *where* the next character would land. Both
+    are the frontend's job: the terminal's own cursor has to stay on the
+    streamed answer, so the caret is drawn into the row instead.
+    """
+
+    def _row(self, **kwargs: Any) -> str:
+        return _InputRowAgent(**kwargs)._footer_input()
+
+    def test_idle_row_shows_a_marker_and_a_cursor(self):
+        row = self._row()
+        self.assertIn("❯", row)
+        self.assertIn(_CURSOR, row)
+
+    def test_typed_text_sits_before_the_cursor(self):
+        row = self._row(line="use pandas")
+        self.assertIn("use pandas", row)
+        self.assertLess(row.index("use pandas"), row.index(_CURSOR))
+
+    def test_cursor_is_a_one_column_block_from_the_palette(self):
+        """The caret must come from the shared palette, not a stray colour."""
+        self.assertIn(PALETTE.footer_sgr()["cursor"], _CURSOR)
+        self.assertEqual(visible_len(_CURSOR), 1)
+
+    def test_queued_line_keeps_its_own_marker(self):
+        row = self._row(queued="wait, use polars")
+        self.assertIn("queued: wait, use polars", row)
+        self.assertIn("↳", row)
+
+    def test_typed_line_takes_precedence_over_the_queue(self):
+        row = self._row(line="typing now", queued="older line")
+        self.assertIn("typing now", row)
+        self.assertNotIn("older line", row)
+
+    def test_no_row_while_steering_is_paused(self):
+        """A paused reader (an ask_*, a subprocess) must not invite typing."""
+        self.assertEqual(self._row(armed=False), "")
+
+    def test_paused_row_keeps_the_text_but_drops_the_caret(self):
+        row = self._row(line="half typed", armed=False)
+        self.assertIn("half typed", row)
+        self.assertNotIn(_CURSOR, row)
+
+    def test_row_is_blank_outside_a_turn(self):
+        agent = _InputRowAgent()
+        agent._turn_in_progress = False
+        self.assertEqual(agent._footer_input(), "")
+
+    def test_a_long_line_still_ends_with_the_cursor(self):
+        row = self._row(line="x" * 500)
+        self.assertIn("…", row)
+        self.assertLessEqual(visible_len(row), term_width())
+        self.assertTrue(row.endswith(_CURSOR), row[-20:])
 
 
 class TestToolResultLine(unittest.TestCase):

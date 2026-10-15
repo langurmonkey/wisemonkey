@@ -21,7 +21,7 @@ from agent.completion import SmartPathCompleter
 from agent.console import err, info, newline, print
 from agent.core import Core
 from agent.emitter import TurnEmitter
-from agent.footer import _ACCENT, _DIM, _LABEL, _RESET
+from agent.footer import _ACCENT, _CURSOR, _DIM, _LABEL, _RESET
 from agent.history import PromptHistory
 from agent.ipc import (
     ContentPayload,
@@ -566,22 +566,33 @@ class Agent:
     def _footer_input(self) -> str:
         """Build the steering input row shown under the status line.
 
-        Priority: what is being typed, then the oldest queued follow-up.
-        Empty when there is nothing to show, which is the common case. The
-        footer's own spinner animation lives on the key-hints row (see
-        :meth:`Footer.set_spinner`), never on this one, so a partially typed
-        line is never overwritten by an animation frame.
+        The row is an input field, so it always carries a prompt marker
+        while a turn is running: an empty row gives no hint that typing
+        there does anything, which is the one thing it has to convey. A
+        block cursor is appended while the reader is actually capturing
+        keystrokes (``steer_active``) -- the terminal's own cursor cannot be
+        used here, because it has to stay where the streamed answer is being
+        written.
+
+        Priority for the text itself: what is being typed, then the oldest
+        queued follow-up. The footer's own spinner animation lives on the
+        key-hints row (see :meth:`Footer.set_spinner`), never on this one, so
+        a partially typed line is never overwritten by an animation frame.
         """
         if not self._turn_in_progress:
             return ""
         line = self.output.steer_line()
         queued = self.output.steer_pending()
+        # The caret is a promise: it says a keystroke now would land here. It
+        # is dropped while the reader is paused (an ``ask_*`` question, an
+        # editor owning the tty), because then nothing would happen.
+        cursor = _CURSOR if self.output.steer_active() else ""
         if line:
             # Show the tail of a long line, so the caret stays visible.
             room = max(20, term_width() - 8)
             if len(line) > room:
                 line = "…" + line[-(room - 1) :]
-            return f" {_ACCENT}⤷{_RESET} {_LABEL}{line}{_RESET}"
+            return f" {_ACCENT}❯{_RESET} {_LABEL}{line}{_RESET}{cursor}"
         if queued:
             # A submitted line is handed to the running turn at its next tool
             # seam; if the turn ends before another tool call, the main loop
@@ -590,10 +601,13 @@ class Agent:
                 f" {_ACCENT}↳{_RESET} {_LABEL}queued: {queued}{_RESET}"
                 f"  {_DIM}(next tool result){_RESET}"
             )
-        # No typed text and nothing queued: the row stays blank. Stage
-        # spinners and the thinking indicator are drawn on the key-hints
-        # row instead.
-        return ""
+        if not cursor:
+            # Nothing typed, nothing queued, and steering is off (or paused):
+            # the row has nothing to advertise, so leave it blank rather than
+            # inviting keystrokes into a buffer nobody is reading.
+            return ""
+        # Nothing typed yet: the marker and the caret *are* the message.
+        return f" {_ACCENT}❯{_RESET} {cursor}"
 
     # ── mid-turn steering ───────────────────────────────────────────────────
 
@@ -657,8 +671,8 @@ class Agent:
         # _handle_injected; doing it here as well is what keeps local mode
         # from leaving "queued: ..." on screen after the line was delivered
         # (and printed in blue on stdout). Redrawing when nothing was drained
-        # is harmless -- _footer_input() returns "" and the footer falls back
-        # to its own spinner on that row.
+        # is harmless -- the row is rebuilt from the current state, which is
+        # the input marker and cursor (or nothing, while steering is off).
         self._footer_refresh()
         return lines
 
@@ -1021,7 +1035,6 @@ class Agent:
                 self.output.footer_start()
                 self._turn_start_mem = self.core.memory.get_chat_stats()[0]
                 self._live_chars = 0
-                self._footer_refresh()
                 # No newline here: footer_start() leaves the cursor at the
                 # bottom of the scroll region, so \r\n would advance the cursor
                 # onto the first footer row and overwrite the separator.
@@ -1033,6 +1046,12 @@ class Agent:
                     self._md_stream_start()
                     # Capture mid-turn keystrokes so the user can steer.
                     self._steer_start()
+                    # Draw the footer last: the steering row (prompt marker +
+                    # block cursor) is rendered only while a turn is running
+                    # *and* the reader is armed, so refreshing before either
+                    # is set would leave the row blank until the next
+                    # keystroke or streamed chunk.
+                    self._footer_refresh()
                     # Expand @file references into attached context (model
                     # sees the content; the typed text stays as-is on screen).
                     max_at = self.core.config.get("agent.at_file_max_chars", 8000)
@@ -1437,7 +1456,6 @@ class Agent:
                 self.output.footer_start()
                 self._turn_start_mem = remote.memory_stats()[0]
                 self._live_chars = 0
-                self._footer_refresh()
                 # No newline here: footer_start() leaves the cursor at the
                 # bottom of the scroll region, so \r\n would advance the cursor
                 # onto the first footer row and overwrite the separator.
@@ -1445,6 +1463,9 @@ class Agent:
                 self._md_stream_start()
                 # Capture mid-turn keystrokes so the user can steer.
                 self._steer_start()
+                # Same ordering as the local path: the steering row needs the
+                # turn flag and an armed reader to render.
+                self._footer_refresh()
                 try:
                     end = remote.prompt(text=user_input, on_event=self._handle_event)
                     # Flush the streaming renderer before the statusline so

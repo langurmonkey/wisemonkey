@@ -220,6 +220,14 @@ class Palette:
             "text": fg(self.text),
             "key": f"\x1b[1m{fg(self.kbd)}",
             "bar_bg": bg(self.bar_bg),
+            # The steering row's block cursor: a *background* colour, because
+            # the cell it paints has no glyph of its own to tint. White, not
+            # the accent blue: a caret is a pointing device, not a signal, and
+            # at one cell wide a coloured block reads as a marked character
+            # rather than as the insertion point. `text` is the palette's
+            # whitest neutral, so this is one colour among the others rather
+            # than a literal `#ffffff` the theme does not know about.
+            "cursor": bg(self.text),
         }
 
     def textual_theme(self) -> Any:
@@ -249,6 +257,13 @@ class Palette:
             variables={
                 "footer-key-foreground": self.kbd,
                 "footer-background": self.bar_bg,
+                # The TUI's block cursor is left as it was: Textual fills that
+                # cursor with the theme's `primary` (= `blue`) and draws the
+                # character it covers in this foreground, so keeping the two
+                # equal is what makes the block *solid*. Setting it to `text`
+                # here would punch a white letter through the block. The
+                # footer has no such mechanism -- it paints an empty cell --
+                # so its white caret is a background colour, above.
                 "block-cursor-foreground": self.blue,
             },
         )

@@ -30,6 +30,7 @@ from unittest.mock import patch
 from tests.conftest import BaseTest
 from agent.output import OutputAdapter, set_output
 from agent.tools import discover_tools, get_registry
+from tools.files import contractuser
 from tools.terminal import (
     _candidate_paths,
     _confirmation_reasons,
@@ -412,7 +413,13 @@ class TestFileToolConfirmation(BaseTest):
     def test_reading_outside_the_session_prompts_and_names_the_file(self):
         output, result = self._call("read_file", {"path": str(self.outside)})
         assert len(output.confirmations) == 1
-        assert any(str(self.outside) in line for line in output.lines)
+        # The prompt shows the *contracted* path (``contractuser``, the same
+        # shortening the REPL and the TUI use), so the home prefix reads as
+        # ``~``. Comparing against the raw absolute path only matched while the
+        # temp directory happened to sit outside $HOME -- and ``mkdtemp``
+        # honours $TMPDIR, which the agent points at its own scratch dir inside
+        # the home tree. Compare the form the user actually sees.
+        assert any(contractuser(str(self.outside)) in line for line in output.lines)
         assert result["user_cancelled"] is True
 
     def test_a_confirmed_read_returns_the_content(self):

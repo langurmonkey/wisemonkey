@@ -273,6 +273,16 @@ class OutputAdapter(Protocol):
         """Return the steering line currently being typed."""
         return ""
 
+    def steer_active(self) -> bool:
+        """Whether mid-turn keystrokes are being captured *right now*.
+
+        False where steering is unavailable (no tty, disabled by config) and
+        while the reader is paused -- an ``ask_*`` question or a subprocess
+        owning the terminal. That is what lets a frontend tell a row that
+        accepts typing from one that would swallow it.
+        """
+        return False
+
     def steer_pending(self) -> "str | None":
         """Return the oldest queued steering line without consuming it."""
         return None
@@ -380,6 +390,10 @@ class RichOutputAdapter(OutputAdapter):
     def steer_line(self) -> str:
         """Return the steering line currently being typed."""
         return self._steer.line() if self._steer else ""
+
+    def steer_active(self) -> bool:
+        """Whether the reader thread is capturing keystrokes right now."""
+        return bool(self._steer is not None and self._steer.armed)
 
     def steer_pending(self) -> "str | None":
         """Return the oldest queued steering line without consuming it."""

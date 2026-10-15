@@ -134,11 +134,29 @@ class TestPromptToolkitStyle(TestCase):
 
 
 class TestFooterSgr(TestCase):
-    def test_all_seven_footer_slots_are_present(self):
+    def test_all_eight_footer_slots_are_present(self):
         """footer.py reads these by name; a rename there breaks the footer."""
         assert set(PALETTE.footer_sgr()) == {
-            "dim", "reset", "accent", "label", "text", "key", "bar_bg",
+            "dim", "reset", "accent", "label", "text", "key", "bar_bg", "cursor",
         }
+
+    def test_cursor_is_a_white_background_block(self):
+        """The steering row's caret paints an empty cell, so it can only be a
+        *background* colour -- a foreground one would colour nothing. White
+        (`text`), not the accent: at one cell wide a coloured block reads as a
+        marked character rather than as the insertion point."""
+        r, g, b = (int(PALETTE.text[i:i + 2], 16) for i in (1, 3, 5))
+        assert PALETTE.footer_sgr()["cursor"] == f"\x1b[48;2;{r};{g};{b}m"
+
+
+class TestTextualCursor(TestCase):
+    def test_block_cursor_stays_solid(self):
+        """Textual fills its cursor with `primary` and draws the underlying
+        character in `block-cursor-foreground`, so the two being *equal* is
+        what makes the block solid. Making this white would punch a letter
+        through it -- the footer's white caret is a different mechanism."""
+        variables = PALETTE.textual_theme().variables
+        assert variables["block-cursor-foreground"] == PALETTE.blue
 
     def test_footer_colours_come_from_the_palette(self):
         """The SGR carries 24-bit RGB components, not the hex text, so the
