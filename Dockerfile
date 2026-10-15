@@ -30,7 +30,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.13.0 /uv /uvx /usr/local/bin/
 # without `ca-certificates` every TLS request the agent makes fails.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates git less nano ripgrep \
+        ca-certificates curl git less nano ripgrep xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # uv must not fetch its own Python (this image is the interpreter), must not
@@ -76,6 +76,18 @@ RUN mkdir -p "$TIKTOKEN_CACHE_DIR" \
     && "$UV_PROJECT_ENVIRONMENT/bin/python" -c \
         "import tiktoken; [tiktoken.get_encoding(n) for n in ('cl100k_base', 'o200k_base')]" \
     && chmod -R a+rX "$TIKTOKEN_CACHE_DIR"
+
+# Install dangerous command guard (dcg). The build runs as root, so an
+# installer that defaults to ~/.local/bin lands the binary in /root/.local/bin,
+# which is on nobody's PATH at run time (`wmkc` runs as the calling user and
+# forwards the host's HOME, and only ~/.gitconfig is bind-mounted from home).
+# So place it on PATH and fail the build if it did not arrive.
+RUN curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/destructive_command_guard/main/install.sh?$(date +%s)" \
+      | bash -s -- --easy-mode \
+    && D="$(find /root /usr/local /opt -type f -name dcg -perm -u+x 2>/dev/null | head -1)" \
+    && test -n "$D" \
+    && install -m 0755 "$D" /usr/local/bin/dcg \
+    && dcg --version
 
 # `wmk` (and the deprecated `wisemonkey` alias) on PATH.
 ENV PATH="/opt/wisemonkey/.venv/bin:$PATH"
