@@ -131,6 +131,32 @@ class TestSteerInputBuffer(unittest.TestCase):
         self.assertEqual(steer.line(), "")
         self.assertEqual(steer.pending(), "queued line")
 
+    def test_suspend_keeps_the_partial_line_its_caret_and_the_queue(self):
+        """An interruption is not a submit -- nor the end of a turn."""
+        self._steer("queued line")
+        self._type("half typed")
+        steer = self.steer
+        steer._handle_byte(0x01)  # Ctrl+A: caret to the start
+        steer._armed = True
+        steer.suspend()
+        self.assertFalse(steer.armed)
+        self.assertEqual(steer.line(), "half typed")
+        self.assertEqual(steer.caret(), 0)
+        self.assertEqual(steer.pending(), "queued line")
+
+    def test_suspend_then_resume_is_lossless(self):
+        """The caller's contract: resume() hands back what suspend() took."""
+        self._type("use pandas")
+        steer = self.steer
+        steer._armed = True
+        steer.suspend()
+        # No tty here, so `start()` cannot arm the reader -- but it must not
+        # touch the buffer either way.
+        steer.resume()
+        self.assertEqual(steer.line(), "use pandas")
+        steer.stop()
+        self.assertEqual(steer.line(), "")
+
 
 class TestSteerLineEditing(unittest.TestCase):
     """The caret moves, and the text is edited around it.
@@ -755,10 +781,14 @@ class TestSteerQueue(unittest.TestCase):
 class _FakeSteer:
     """A SteerInput stand-in that records lifecycle calls."""
 
-    def __init__(self, armed: bool = False) -> None:
+    def __init__(self, armed: bool = False, line: str = "") -> None:
         self._armed = armed
         self.starts = 0
         self.stops = 0
+        self.suspends = 0
+        self.resumes = 0
+        # The partial line, so a policy test can see whether it survived.
+        self.typed = line
 
     @property
     def armed(self) -> bool:
@@ -770,8 +800,20 @@ class _FakeSteer:
         return True
 
     def stop(self) -> None:
+        """The end of a turn: the partial line has nowhere left to go."""
         self.stops += 1
         self._armed = False
+        self.typed = ""
+
+    def suspend(self) -> None:
+        """A pause: the line is mid-sentence and must survive."""
+        self.suspends += 1
+        self._armed = False
+
+    def resume(self) -> bool:
+        self.resumes += 1
+        self._armed = True
+        return True
 
 
 class TestSteerPausedArmsOnlyIfAlreadyArmed(unittest.TestCase):
@@ -785,13 +827,13 @@ class TestSteerPausedArmsOnlyIfAlreadyArmed(unittest.TestCase):
     most keys vanished into the discarded steering buffer.
     """
 
-    def _adapter(self, armed: bool) -> Any:
+    def _adapter(self, armed: bool, line: str = "") -> Any:
         from agent.output import RichOutputAdapter
 
         out = RichOutputAdapter.__new__(RichOutputAdapter)
         # A stand-in is what we are testing the *policy* against; the real
         # reader needs a tty, which this test deliberately does not assume.
-        out._steer = cast(Any, _FakeSteer(armed))
+        out._steer = cast(Any, _FakeSteer(armed, line))
         return out
 
     @staticmethod
@@ -802,8 +844,9 @@ class TestSteerPausedArmsOnlyIfAlreadyArmed(unittest.TestCase):
         """The real case: /config edit and /edit run between turns."""
         out = self._adapter(armed=False)
         with out.steer_paused():
-            self.assertEqual(self._fake(out).stops, 1)
+            self.assertEqual(self._fake(out).suspends, 1)
         self.assertEqual(self._fake(out).starts, 0)
+        self.assertEqual(self._fake(out).resumes, 0)
         self.assertFalse(self._fake(out).armed)
 
     def test_armed_reader_is_rearmed(self):
@@ -811,8 +854,8 @@ class TestSteerPausedArmsOnlyIfAlreadyArmed(unittest.TestCase):
         out = self._adapter(armed=True)
         with out.steer_paused():
             self.assertFalse(self._fake(out).armed)
-        self.assertEqual(self._fake(out).stops, 1)
-        self.assertEqual(self._fake(out).starts, 1)
+        self.assertEqual(self._fake(out).suspends, 1)
+        self.assertEqual(self._fake(out).resumes, 1)
         self.assertTrue(self._fake(out).armed)
 
     def test_reader_is_stopped_even_if_the_body_raises(self):
@@ -820,13 +863,77 @@ class TestSteerPausedArmsOnlyIfAlreadyArmed(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             with out.steer_paused():
                 raise RuntimeError("editor exploded")
-        self.assertEqual(self._fake(out).starts, 1)
+        self.assertEqual(self._fake(out).resumes, 1)
 
     def test_no_reader_is_a_no_op(self):
         out = self._adapter(armed=False)
         out._steer = None
         with out.steer_paused():
             pass
+
+
+class TestSteerPausedKeepsTheTypedLine(unittest.TestCase):
+    """A pause is not a submit.
+
+    The reported bug: a tool asked for confirmation while a steering line was
+    half written, the question took the terminal, the tool ran -- and the line
+    was gone. ``steer_paused`` was calling ``stop()``, which is the *end of a
+    turn* (it drops the partial line on purpose), so the one call that must
+    preserve everything was the one that discarded it.
+    """
+
+    def _adapter(self, line: str) -> Any:
+        from agent.output import RichOutputAdapter
+
+        out = RichOutputAdapter.__new__(RichOutputAdapter)
+        out._steer = cast(Any, _FakeSteer(armed=True, line=line))
+        return out
+
+    def test_the_line_survives_a_question(self):
+        out = self._adapter("use pandas")
+        with out.steer_paused():
+            pass
+        self.assertEqual(cast(_FakeSteer, out._steer).typed, "use pandas")
+
+    def test_the_line_survives_an_aborted_pause(self):
+        out = self._adapter("use pandas")
+        with self.assertRaises(RuntimeError):
+            with out.steer_paused():
+                raise RuntimeError("the tool blew up")
+        self.assertEqual(cast(_FakeSteer, out._steer).typed, "use pandas")
+
+    def test_a_real_reader_keeps_its_buffer_across_a_pause(self):
+        """The same invariant against SteerInput itself, not the stand-in."""
+        from agent.steer import SteerInput
+
+        steer = SteerInput()
+        for char in "use pandas":
+            steer._handle_byte(ord(char))
+        steer._armed = True  # pretend a tty was there
+        steer.suspend()
+        self.assertEqual(steer.line(), "use pandas")
+        self.assertEqual(steer.caret(), len("use pandas"))
+        steer._armed = True
+        steer.stop()
+        self.assertEqual(steer.line(), "")
+
+    def test_the_row_is_redrawn_when_the_reader_comes_back(self):
+        """The caret is dropped while paused, so re-arming must redraw it."""
+        out = self._adapter("half typed")
+        redraws: list[int] = []
+        out._steer_on_change = lambda: redraws.append(1)
+        with out.steer_paused():
+            self.assertEqual(redraws, [])  # nothing to redraw on the way in
+        self.assertEqual(len(redraws), 1)
+
+    def test_no_redraw_when_the_reader_was_never_armed(self):
+        out = self._adapter("half typed")
+        cast(_FakeSteer, out._steer)._armed = False
+        redraws: list[int] = []
+        out._steer_on_change = lambda: redraws.append(1)
+        with out.steer_paused():
+            pass
+        self.assertEqual(redraws, [])
 
 
 def _pty_state_after_run_subprocess() -> str:

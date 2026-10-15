@@ -322,6 +322,7 @@ class RichOutputAdapter(OutputAdapter):
         self._footer = Footer(debug_bytes=debug)
         self._console = Console(theme=monkee_theme, color_system="truecolor")
         self._steer: SteerInput | None = None
+        self._steer_on_change: "Callable[[], None] | None" = None
         self._footer_status_cache: tuple[str, str] = ("", "")
 
     # ── sticky footer (active only during an assistant turn) ────────────
@@ -370,6 +371,9 @@ class RichOutputAdapter(OutputAdapter):
         """
         self.steer_stop()
         self._steer = SteerInput(on_submit, on_change)
+        # Kept separately so `steer_paused` can redraw the row when it re-arms
+        # (see below); the reader thread is gone by then.
+        self._steer_on_change = on_change
         return self._steer.start()
 
     def steer_stop(self) -> None:
@@ -416,8 +420,14 @@ class RichOutputAdapter(OutputAdapter):
     def steer_paused(self):
         """Temporarily hand the tty back (agent questions, subprocesses).
 
-        The reader thread is stopped so the cooked tty the ask_*/run_subprocess
-        helpers expect works. Queued steering lines are kept.
+        The reader thread is *suspended* so the cooked tty the ask_*/
+        run_subprocess helpers expect works. Nothing the user has typed is
+        discarded, and that is the point: a tool asking for confirmation --
+        or an editor, or a subprocess -- used to clear the half-written
+        steering line, which then reappeared empty once the tool had run.
+        Enter submits and Ctrl+U clears; a question asked mid-turn does
+        neither, so the line, its caret and the queued follow-ups all come
+        back on :meth:`resume`.
 
         It is re-armed **only if it was armed when we entered**. Between turns
         the agent calls :meth:`steer_stop`, so at the moment the user runs
@@ -433,12 +443,19 @@ class RichOutputAdapter(OutputAdapter):
             yield
             return
         was_armed = steer.armed
-        steer.stop()
+        steer.suspend()
         try:
             yield
         finally:
             if was_armed:
-                steer.start()
+                steer.resume()
+                # The row drops its caret while the reader is suspended (it
+                # would be a lie -- keystrokes were going to the question).
+                # Redraw so it reappears now, rather than at the next
+                # streamed chunk.
+                on_change = getattr(self, "_steer_on_change", None)
+                if on_change is not None:
+                    on_change()
 
     def print(self, text: str, end='\n', indent: int = 0) -> None:
         self._console.print(f"{' ' * indent}{text}", end=end)

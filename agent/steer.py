@@ -331,8 +331,14 @@ class SteerInput:
         self._thread.start()
         return True
 
-    def stop(self) -> None:
-        """Disarm the reader, restore the tty, and drop the partial line."""
+    def _disarm(self) -> None:
+        """Stop the reader thread and restore the tty, keeping what is typed.
+
+        The read loop reads one fd in cbreak mode, so anything that wants the
+        tty back (an ``ask_*`` question, a subprocess) has to disarm it first.
+        Nothing is discarded here: the buffer, its caret and the queue are the
+        user's, not the reader's.
+        """
         if not self._armed:
             return
         self._armed = False
@@ -343,17 +349,34 @@ class SteerInput:
         self._thread = None
         self._restore_tty()
         self._fd = None
+
+    def stop(self) -> None:
+        """Disarm the reader, restore the tty, and drop the partial line."""
+        self._disarm()
         with self._lock:
             self._buffer.clear()
             self._pos = 0
 
-    # Steered turns can be interrupted by the agent itself asking a question
-    # (ask_confirm/ask_string) or by a subprocess taking over the terminal.
-    # Those need the tty in its normal state, hence the aliases.
-    suspend = stop
+    def suspend(self) -> None:
+        """Disarm temporarily, keeping the partial line exactly as it is.
+
+        A steered turn can be interrupted by the agent itself asking a
+        question (``ask_confirm``/``ask_string``) or by a subprocess taking
+        over the terminal. Those need the tty in its normal state, so the
+        reader has to go -- but the user is *mid-sentence*, not finished.
+        Discarding the line here is what made steering input vanish when a
+        tool asked for confirmation: the buffer was dropped on the way in and
+        the row came back empty once the tool had run. Only Enter submits and
+        only Ctrl+U clears; an interruption is neither.
+
+        Paired with :meth:`resume`. :meth:`stop` is the other half of that
+        distinction: it is for the end of a turn, when the prompt owns the
+        terminal again and the partial line has no home left.
+        """
+        self._disarm()
 
     def resume(self) -> bool:
-        """Re-arm after a :meth:`suspend`, keeping the queued lines."""
+        """Re-arm after a :meth:`suspend`, keeping the line and the queue."""
         return self.start()
 
     # ── tty handling ──────────────────────────────────────────────────────
