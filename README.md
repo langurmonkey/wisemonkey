@@ -496,6 +496,11 @@ Persistent memory follows XDG Base Directory spec in `~/.local/share/wisemonkey/
 
 - `user_profile.json`---User information
 - `notes.json`---Persistent notes (added via `save_note` tool)
+- `tmp/`---Scratch space for tool subprocesses (see below)
+
+Every command the agent runs (`run_command`, `spawn`) gets `TMPDIR` pointed at `<session_dir>/tmp`, created `0700` on first use. Anything a command leaves in the temp directory---`mktemp`, Python's `tempfile`, a compiler's intermediates---therefore stays in the session instead of the shared, world-readable `/tmp`, and is cleaned up with the session. Writing there needs no confirmation, because the agent already owns it; a path that is literally `/tmp` still prompts.
+
+That scratch directory and the working directory you launched the agent in are the whole of "the session". Every tool that would reach past them asks you first --- the shell tools (`run_command`, `spawn`) and the file tools (`read_file`, `write_file`, `patch_file`, `list_dir`, `find_files`, `search_content`) alike, so reaching an outside path is an explicit decision whichever tool names it. `/unsafe` turns those prompts off for unattended runs.
 
 **Lifecycle:**
 - Memory is loaded into the system prompt each turn

@@ -2,6 +2,12 @@
 
 Allows the agent to operate with files and directories in the file system,
 including searching by name and content.
+
+Security: the session is two directories -- the working directory it was
+started in, and the session's own scratch directory (``<session_dir>/tmp``).
+A tool that would reach anything else asks the user first, on the same rule
+``run_command`` applies to shell commands, so an outside path is an explicit
+decision whichever tool names it rather than only when it goes through a shell.
 """
 
 import difflib
@@ -11,21 +17,75 @@ import re
 import tempfile
 from pathlib import Path
 
+from agent.config import get_config
 from agent.output import get_output_or_ipc
 from agent.tools import tool
 from agent.utils import contractuser
+from tools.terminal import _is_within_session
+
+# ───────────────────────────────────────────────────────────────────────────
+# The session boundary
+# ───────────────────────────────────────────────────────────────────────────
 
 
-def _prompt_user(command: str, reason: str) -> bool:
-    """Ask the user to confirm (or reject) a search."""
+def _needs_path_confirmation(path: str | Path) -> bool:
+    """Whether *path* lies outside the session and must be confirmed.
+
+    ``agent.unsafe`` (``/unsafe``) skips the prompt, like every other
+    confirmation the agent asks: one flag turns them all off, or unattended
+    runs would not be possible at all.
+    """
+    if get_config().get("agent.unsafe", False):
+        return False
+    return not _is_within_session(path)
+
+
+def _guard_outside_session(tool_name: str, action: str, path: str | Path) -> dict | None:
+    """Ask before *tool_name* reaches *path* outside the session.
+
+    Returns ``None`` when the tool may proceed -- the path is inside the
+    session, unsafe mode is on, or the user confirmed -- or a
+    ``user_cancelled`` error dict when they declined.
+
+    A decline is never silent, and never an error the model can retry its way
+    past: the message says the ask was refused, by whom, and what to do
+    instead, so the model can work inside the session or explain why the file
+    has to be reached rather than looping on the same call.
+    """
+    if not _needs_path_confirmation(path):
+        return None
+
+    resolved = Path(os.path.expanduser(str(path)))
+    showed = contractuser(str(resolved))
+    if _prompt_user(
+        f"{tool_name} {showed}",
+        f"Target is outside the session: {showed}",
+        f"Allow this {action}?",
+    ):
+        return None
+
+    return {
+        "error": (
+            f"'{tool_name}' was cancelled by the user. Its target, {showed}, "
+            f"is outside the session working directory, and the user "
+            f"declined. Use a path inside the working directory, or explain "
+            f"why this one has to be reached."
+        ),
+        "user_cancelled": True,
+        "path": str(resolved),
+    }
+
+
+def _prompt_user(command: str, reason: str, question: str = "Allow this operation?") -> bool:
+    """Ask the user to confirm (or reject) a tool call that leaves the session."""
     output = get_output_or_ipc()
     output.newline()
-    output.print("⚠️ [warn]Search outside cwd requires confirmation[/warn]", indent=2)
+    output.print("⚠️ [warn]Access outside the session requires confirmation[/warn]", indent=2)
     output.print(f"[weak]Reason[/weak]: {reason}", indent=2)
     output.print(f"[cmd]{command}[/cmd]", indent=2)
     output.newline()
 
-    confirmed = output.ask_confirm("[bold]Accept this search?[/bold]", default=False)
+    confirmed = output.ask_confirm(f"[bold]{question}[/bold]", default=False)
 
     if confirmed:
         output.ok("Confirmed", indent=2)
@@ -48,7 +108,9 @@ def _prompt_user(command: str, reason: str) -> bool:
         "region of a big file can be read directly instead of shelling out to "
         "'sed'. Combine it with 'max_lines' to read a window; line numbers and "
         "the 'start_line'/'end_line' metadata always refer to real positions in "
-        "the file, not to the window."
+        "the file, not to the window. "
+        "Reading a file outside the session working directory requires the "
+        "user's confirmation before it happens."
     ),
     parameters={
         "type": "object",
@@ -108,6 +170,10 @@ def read_file_handler(args):
     if not os.path.isfile(path):
         output.err(f"Path is not a file: {path}")
         return {"error": f"The path exists but does not point to a file: {contractuser(path)}"}
+
+    refused = _guard_outside_session("read_file", "read", path)
+    if refused:
+        return refused
 
     max_lines = _as_int(max_lines)
     offset = _as_int(offset)
@@ -198,7 +264,9 @@ def read_file_handler(args):
         "Use this when the "
         "user asks to see what's in a folder, list directory contents, or "
         "explore a directory structure. Takes a 'path' argument (absolute or "
-        "relative path to the directory)."
+        "relative path to the directory). "
+        "Listing a directory outside the session working directory requires "
+        "the user's confirmation before it happens."
     ),
     parameters={
         "type": "object",
@@ -231,6 +299,11 @@ def list_dir_handler(args):
     if os.path.isfile(path):
         output.err(f"Path must be a directory: {path}")
         return {"error": f"The path exists but does not point to a directory: {contractuser(path)}"}
+
+    refused = _guard_outside_session("list_dir", "listing", path)
+    if refused:
+        return refused
+
     output.print(f"[weak]Listing[/weak] [path]{contractuser(path)}[/path]",
                  indent=2)
 
@@ -262,7 +335,9 @@ def list_dir_handler(args):
         "Write or completely overwrite a file with new content.\n"
         "Creates parent directories if they don't exist. "
         "Use this when creating a new file or rewriting an entire file.\n"
-        "For targeted edits, use 'patch_file' instead."
+        "For targeted edits, use 'patch_file' instead. "
+        "Writing a file outside the session working directory requires the "
+        "user's confirmation before it happens."
     ),
     parameters={
         "type": "object",
@@ -291,6 +366,12 @@ def write_file_handler(args):
 
     path = os.path.expanduser(path)
     path = os.path.abspath(path)
+
+    # Before the parent directories are created: a declined write must leave
+    # no trace, and `makedirs` is already a side effect.
+    refused = _guard_outside_session("write_file", "write", path)
+    if refused:
+        return refused
 
     parent = os.path.dirname(path)
     if parent and not os.path.exists(parent):
@@ -440,7 +521,8 @@ def _diff_lines(
         "Use this for surgical edits like changing a variable name, fixing a "
         "bug, or updating a function body. For large changes, prefer "
         "'write_file'. Both modes write atomically and report the line numbers "
-        "they changed."
+        "they changed. Editing a file outside the session working directory "
+        "requires the user's confirmation before it happens."
     ),
     parameters={
         "type": "object",
@@ -507,6 +589,10 @@ def patch_file_handler(args):
     if not os.path.isfile(path):
         output.err(f"Path is not a file: {path}")
         return {"error": f"The path is not a file: {contractuser(path)}"}
+
+    refused = _guard_outside_session("patch_file", "patch", path)
+    if refused:
+        return refused
 
     with open(path, "r") as f:
         file_content = f.read()
@@ -694,7 +780,9 @@ def patch_file_handler(args):
         "Recursively searches a directory for files whose names match the given pattern. "
         "Use this instead of the shell 'find' command. "
         "Examples: '*.py' finds all Python files, '*.md' finds all Markdown files. "
-        "Returns file paths relative to the search root."
+        "Returns file paths relative to the search root. "
+        "A search root outside the session working directory requires the "
+        "user's confirmation before it happens."
     ),
     parameters={
         "type": "object",
@@ -736,23 +824,11 @@ def find_files_handler(args):
         output.err(f"Directory does not exist: {contractuser(root)}")
         return {"error": f"Directory does not exist: {contractuser(root)}"}
 
-    # Ask for confirmation if not in cwd
-    cwd = Path(os.getcwd())
-    target = Path(root)
-    if not os.path.samefile(cwd, target) and cwd not in target.parents:
-        command = f"find_files {pattern} {target}"
-        confirmed = _prompt_user(command, "Target not in current working directory")
-        if not confirmed:
-            return {
-                "error": (
-                    "'find_files' was cancelled by the user. "
-                    "You asked to search for files outside the current working directory "
-                    "and the user declined. The file you are trying to find is "
-                    "probably in the current working directory. Try that instead."
-                ),
-                "user_cancelled": True,
-                "command": command,
-            }
+    # The same rule ``run_command`` applies, from the same helper, so the two
+    # cannot drift.
+    refused = _guard_outside_session("find_files", "search", root)
+    if refused:
+        return refused
 
     output.print(f"[weak]Searching for[/weak] [path]{pattern}[/path] [weak]in[/weak] [path]{contractuser(root)}[/path]",
                  indent=2)
@@ -813,7 +889,9 @@ def find_files_handler(args):
         "Regexes are applied per line with multiline anchors active, so '^' "
         "and '$' match the start and end of a line rather than the file. Set "
         "'multiline': true to match across newlines (for a pattern that spans "
-        "lines), at the cost of holding the whole file in memory."
+        "lines), at the cost of holding the whole file in memory. "
+        "A search root outside the session working directory requires the "
+        "user's confirmation before it happens."
     ),
     parameters={
         "type": "object",
@@ -889,6 +967,10 @@ def search_content_handler(args):
 
     if not os.path.isdir(root):
         return {"error": f"Directory does not exist: {contractuser(root)}"}
+
+    refused = _guard_outside_session("search_content", "search", root)
+    if refused:
+        return refused
 
     pattern: re.Pattern[str] | None = None
     if use_regex:

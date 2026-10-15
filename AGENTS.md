@@ -278,21 +278,44 @@ identically in the REPL, the TUI and the IPC/daemon path), never a bare
 
 - **`run_command`** prompts when `_confirmation_reasons()` returns anything:
   a dangerous pattern, a `timeout > 60`, a redirect into a system directory, or
-  a path outside the session working directory. That last check is
-  `_outside_session_paths()` -- a static, best-effort scan (`shlex.split`, then
-  each path-like token expanded and resolved against the cwd), because no shell
-  is run to expand the command. URLs and `$VAR` tokens are skipped, `KEY=value`
-  is split, and bare names (`notes.txt`) are *not* candidates since they are
-  relative to the cwd. A missed path only means a missed prompt, never a blocked
-  command; over-flagging is deliberate, so a command that reads `/etc/hostname`
-  prompts just as one that writes there does.
+  a path outside the session. That last check is `_outside_session_paths()` --
+  a static, best-effort scan (`shlex.split`, then each path-like token expanded
+  and resolved against the cwd), because no shell is run to expand the command.
+  URLs and `$VAR` tokens are skipped, `KEY=value` is split, and bare names
+  (`notes.txt`) are *not* candidates since they are relative to the cwd. A
+  missed path only means a missed prompt, never a blocked command;
+  over-flagging is deliberate, so a command that reads `/etc/hostname` prompts
+  just as one that writes there does.
+- **Scratch space is inside the session.** Every tool subprocess gets
+  `TMPDIR=<session_dir>/tmp` (`tools.terminal._tool_env()`, used by both
+  `run_command` and `spawn`), created `0700` on first use. A command that writes
+  to `$TMPDIR` -- anything using `mktemp` or `tempfile` -- therefore lands in
+  the session rather than in the shared, world-readable `/tmp`. That directory
+  is the *second* thing `_is_within_session()` counts as inside (the other being
+  the working directory), so a literal path under it needs no prompt, while a
+  literal `/tmp` path still asks. It is derived from the session and never a
+  hard-coded literal: the check stays one rule rather than a list of trusted
+  locations to which `/var/tmp`, `~/Downloads` and the rest would be appended
+  one at a time. A scratch directory that cannot be created is not a reason to
+  refuse the command -- the child keeps the inherited `TMPDIR`.
 - **`fetch_url` / `web_search`** always prompt, because every call leaves the
   machine.
 - **The opt-out is one flag**: `agent.unsafe` (`/unsafe`) skips all of these, so
   unattended runs stay possible. `run_command` additionally honours the internal
   `_skip_confirmation` argument, which `spawn` uses.
-- **`find_files` already prompts** for a search root outside the cwd; that is
-  the older instance of the same rule and should stay consistent with it.
+- **The file tools ask on the same boundary.** `read_file`, `write_file`,
+  `patch_file`, `list_dir`, `find_files` and `search_content` each go through
+  `_guard_outside_session()` (`tools/files.py`) -- one resolved check
+  (`_is_within_session()`, symlinks included) rather than six hand-rolled
+  `samefile`/`parents` tests that drift apart. A path outside the session asks
+  once, naming it; a decline returns `user_cancelled` with a message telling the
+  model to work inside the session or explain itself, never a bare failure it
+  can retry past. The check sits *after* the tool's own argument and existence
+  validation -- a typo still reports "does not exist" instead of asking about a
+  file that is not there -- and *before* any side effect: `write_file` asks
+  before `makedirs`, so a declined write leaves no directory behind. Reaching an
+  outside path is therefore an explicit decision whichever tool names it;
+  `run_command` was only ever the first tool able to reach one.
 
 #### External tool hooks (`agent/hooks.py`, `Core._tool_calls`)
 
@@ -447,6 +470,7 @@ Skills are `.md` files with YAML frontmatter (`name`, `description`). The body i
 - **User profile** (`user_profile.json`) — set via `set_user_profile` tool
 - **Notes** (`notes.json`) — added via `save_note` tool
 - **Chat history** (`chat_history.json`) — rolling window of recent exchanges
+- **Scratch space** (`tmp/`) — the `TMPDIR` every tool subprocess gets, created on first use
 - All stored per-session under `~/.local/share/wisemonkey/sessions/$SESSION_NAME/`
 
 ### Sessions

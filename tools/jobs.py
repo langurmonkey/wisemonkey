@@ -37,7 +37,7 @@ from agent.tools import tool
 from agent.output import get_output_or_ipc
 from agent.utils import contractuser
 
-from tools.terminal import _is_dangerous, _prompt_user
+from tools.terminal import _is_dangerous, _prompt_user, _tool_env
 
 # How much output a single poll returns. A build can print megabytes, and a
 # poll that returns all of it defeats the purpose of polling: the cap is what
@@ -204,7 +204,9 @@ def _job_result(job: _Job, max_chars: int = POLL_MAX_CHARS, include_all: bool = 
         "outlast the turn. Dangerous commands prompt the user first, exactly "
         "as with 'run_command'. The command runs in its own process group, so "
         "'kill_job' takes its children with it, and it is killed when the "
-        "agent exits -- a job cannot outlive the session."
+        "agent exits -- a job cannot outlive the session.\n"
+        "Use $TMPDIR for scratch files: it points at a private per-session "
+        "temp directory."
     ),
     parameters={
         "type": "object",
@@ -265,6 +267,9 @@ def spawn_handler(args):
                 # Its own process group, so kill can signal the whole pipeline
                 # rather than just the shell that started it.
                 start_new_session=True,
+                # The same session-private TMPDIR a foreground command gets, so
+                # a background job's scratch work stays inside the session too.
+                env=_tool_env(),
             )
     except Exception as exc:
         try:

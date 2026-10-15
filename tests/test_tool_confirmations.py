@@ -7,6 +7,15 @@ Two rules are pinned here:
    pre-existing "matches a dangerous pattern" rule.
 2. ``fetch_url`` and ``web_search`` always ask before a request leaves the
    machine.
+3. The session is two directories -- the working directory and the session's
+   own scratch directory (``<session_dir>/tmp``), which tool subprocesses get
+   as ``TMPDIR``. The second one is inside, derived from the session rather
+   than hard-coded, so the boundary stays one rule instead of a growing list
+   of trusted locations.
+4. The file tools (``read_file``, ``write_file``, ``patch_file``, ``list_dir``,
+   ``find_files``, ``search_content``) ask on the same boundary: reaching a
+   path outside the session is an explicit decision whichever tool names it,
+   and going through a shell was only ever the older way to reach one.
 
 A declined prompt has to actually stop the work, so the tests assert both
 that the user was asked (and about what) and that nothing ran when they said
@@ -24,7 +33,9 @@ from agent.tools import discover_tools, get_registry
 from tools.terminal import (
     _candidate_paths,
     _confirmation_reasons,
+    _is_within_session,
     _outside_session_paths,
+    _tool_env,
 )
 
 
@@ -143,12 +154,22 @@ class TestRunCommandPathConfirmation(BaseTest):
         # object from the ``tools.terminal`` imported above. Patch through
         # ``__globals__`` to hit the copy the handler actually reads.
         self.globals = self.handler.__globals__
+        # The session's scratch directory, as the handler will see it. Every
+        # run gets one, so the tests exercise the real environment path
+        # instead of whatever the host happens to have.
+        self.session_temp = self._tmpdir / "session-tmp"
 
     def _run(self, command, answer=False, unsafe=False, **args):
         output = _RecordingOutput(answer=answer)
         set_output(cast(OutputAdapter, output))
         self.addCleanup(set_output, None)
-        with patch.dict(self.globals, {"get_config": lambda: _Config(unsafe)}):
+        with patch.dict(
+            self.globals,
+            {
+                "get_config": lambda: _Config(unsafe),
+                "_session_temp_dir": lambda: self.session_temp,
+            },
+        ):
             with patch("subprocess.run") as run:
                 run.return_value = SimpleNamespace(
                     stdout="ok", stderr="", returncode=0
@@ -211,6 +232,282 @@ class TestRunCommandPathConfirmation(BaseTest):
         output, _, run = self._run("cat /etc/hostname", _skip_confirmation=True)
         assert output.confirmations == []
         assert run.call_count == 1
+
+    def test_the_session_temp_dir_runs_without_a_prompt(self):
+        output, result, run = self._run(f"cat {self.session_temp}/scratch.txt")
+        assert output.confirmations == []
+        assert run.call_count == 1
+        assert result["success"] is True
+
+    def test_the_subprocess_gets_the_session_temp_dir_as_TMPDIR(self):
+        _, _, run = self._run("python plot.py")
+        assert run.call_args.kwargs["env"]["TMPDIR"] == str(self.session_temp)
+
+    def test_the_shared_tmp_still_prompts(self):
+        """The carve-out is the session's own directory, not ``/tmp`` itself:
+        that one is world-readable and full of other programs' state."""
+        output, _, run = self._run("cat /tmp/other-process.state")
+        assert len(output.confirmations) == 1
+        assert run.call_count == 0
+
+
+class TestSessionTempDir(BaseTest):
+    """Tool subprocesses run with a private ``TMPDIR`` inside the session.
+
+    Keeping the scratch directory *inside* the session is what lets a command
+    use a temp directory without prompting for it -- and without landing in
+    the shared, world-readable ``/tmp`` that the boundary check exists to ask
+    about in the first place.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.temp = self._tmpdir / "session-tmp"
+
+    def _patch_temp(self):
+        return patch("tools.terminal._session_temp_dir", return_value=self.temp)
+
+    def test_tool_env_points_TMPDIR_at_the_session_temp_dir(self):
+        with self._patch_temp():
+            env = _tool_env()
+        assert env["TMPDIR"] == str(self.temp)
+
+    def test_tool_env_creates_the_directory_privately(self):
+        with self._patch_temp():
+            _tool_env()
+        assert self.temp.is_dir()
+        assert (self.temp.stat().st_mode & 0o777) == 0o700
+
+    def test_tool_env_carries_the_rest_of_the_environment_over(self):
+        """``env=`` replaces the child's environment, so it must not be a
+        fresh dict: PATH and the API keys have to survive."""
+        with patch.dict("os.environ", {"WM_API_KEY": "secret"}, clear=True):
+            with self._patch_temp():
+                env = _tool_env()
+        assert env["WM_API_KEY"] == "secret"
+
+    def test_tool_env_leaves_an_inherited_temp_dir_alone_without_a_session(self):
+        with patch.dict("os.environ", {"TMPDIR": "/inherited/tmp"}, clear=True):
+            with patch("tools.terminal._session_temp_dir", return_value=None):
+                env = _tool_env()
+        assert env["TMPDIR"] == "/inherited/tmp"
+
+    def test_an_unwritable_scratch_directory_does_not_block_the_command(self):
+        """A missing scratch directory is never a reason to refuse to run."""
+        with patch.dict("os.environ", {"TMPDIR": "/inherited/tmp"}, clear=True):
+            with self._patch_temp():
+                with patch("pathlib.Path.mkdir", side_effect=OSError("read-only")):
+                    env = _tool_env()
+        assert env["TMPDIR"] == "/inherited/tmp"
+
+    def test_the_session_temp_dir_is_inside_the_session(self):
+        with self._patch_temp():
+            assert _is_within_session(self.temp)
+            assert _is_within_session(self.temp / "run-1" / "out.txt")
+
+    def test_the_shared_tmp_is_not_inside_the_session(self):
+        with self._patch_temp():
+            assert not _is_within_session("/tmp")
+            assert not _is_within_session("/tmp/wisemonkey-scratch.txt")
+
+    def test_a_sibling_of_the_temp_dir_is_outside(self):
+        """It is the scratch directory that is trusted, not the session
+        directory around it: the chat history and the notes live there."""
+        with self._patch_temp():
+            assert not _is_within_session(self._tmpdir / "notes.json")
+
+    def test_writing_to_the_session_temp_dir_is_not_an_outside_path(self):
+        with self._patch_temp():
+            assert _outside_session_paths(f"python plot.py --out {self.temp}/p.png") == []
+
+    def test_writing_to_the_shared_tmp_is_still_an_outside_path(self):
+        assert _outside_session_paths("python plot.py --out /tmp/p.png") == ["/tmp/p.png"]
+
+
+class TestFindFilesConfirmation(BaseTest):
+    """``find_files`` asks on the same rule, from the same helper."""
+
+    def setUp(self):
+        super().setUp()
+        discover_tools()
+        self.find = get_registry()["find_files"]["handler"]
+        self.output = _RecordingOutput(answer=False)
+        set_output(cast(OutputAdapter, self.output))
+        self.addCleanup(set_output, None)
+        self.temp = self._tmpdir / "session-tmp"
+
+    def _find(self, root):
+        with patch("tools.terminal._session_temp_dir", return_value=self.temp):
+            return self.find({"root": str(root), "pattern": "*.txt"})
+
+    def test_the_session_temp_dir_does_not_prompt(self):
+        self.temp.mkdir(parents=True, exist_ok=True)
+        result = self._find(self.temp)
+        assert self.output.confirmations == []
+        assert "error" not in result
+
+    def test_a_relative_subdirectory_of_the_working_directory_does_not_prompt(self):
+        result = self._find("tests")
+        assert self.output.confirmations == []
+        assert "error" not in result
+
+    def test_a_directory_outside_the_session_prompts(self):
+        elsewhere = self._tmpdir / "elsewhere"
+        elsewhere.mkdir()
+        result = self._find(elsewhere)
+        assert len(self.output.confirmations) == 1
+        assert result["user_cancelled"] is True
+
+
+class TestFileToolConfirmation(BaseTest):
+    """The file tools ask on the same boundary the shell tools use.
+
+    A path outside the session is an explicit decision whichever tool names
+    it: ``run_command`` was the first tool to reach one, not the only one.
+    ``agent.unsafe`` silences these prompts like every other.
+    """
+
+    def setUp(self):
+        super().setUp()
+        discover_tools()
+        self.handlers = {
+            name: get_registry()[name]["handler"]
+            for name in (
+                "read_file",
+                "write_file",
+                "patch_file",
+                "list_dir",
+                "search_content",
+            )
+        }
+        # The file tools all come out of one module, so one globals dict
+        # carries their ``get_config``.
+        self.globals = self.handlers["read_file"].__globals__
+        self.temp = self._tmpdir / "session-tmp"
+        self.outside = self._write_file("outside.txt", "outside content\n")
+
+    def _call(self, tool, args, answer=False, unsafe=False):
+        output = _RecordingOutput(answer=answer)
+        set_output(cast(OutputAdapter, output))
+        self.addCleanup(set_output, None)
+        with patch.dict(self.globals, {"get_config": lambda: _Config(unsafe)}):
+            with patch("tools.terminal._session_temp_dir", return_value=self.temp):
+                result = self.handlers[tool](args)
+        return output, result
+
+    def test_a_file_in_the_working_directory_does_not_prompt(self):
+        output, result = self._call("read_file", {"path": "tests/conftest.py"})
+        assert output.confirmations == []
+        assert "content" in result
+
+    def test_a_file_in_the_session_temp_dir_does_not_prompt(self):
+        self.temp.mkdir(parents=True, exist_ok=True)
+        (self.temp / "scratch.txt").write_text("scratch\n")
+        output, result = self._call(
+            "read_file", {"path": str(self.temp / "scratch.txt")}
+        )
+        assert output.confirmations == []
+        assert result["content"] == "scratch\n"
+
+    def test_reading_outside_the_session_prompts_and_names_the_file(self):
+        output, result = self._call("read_file", {"path": str(self.outside)})
+        assert len(output.confirmations) == 1
+        assert any(str(self.outside) in line for line in output.lines)
+        assert result["user_cancelled"] is True
+
+    def test_a_confirmed_read_returns_the_content(self):
+        output, result = self._call(
+            "read_file", {"path": str(self.outside)}, answer=True
+        )
+        assert len(output.confirmations) == 1
+        assert result["content"] == "outside content\n"
+
+    def test_a_missing_file_reports_missing_rather_than_asking(self):
+        """Existence is checked first: asking about a typo would be noise,
+        and the answer would not change the outcome."""
+        output, result = self._call("read_file", {"path": str(self._tmpdir / "nope.txt")})
+        assert output.confirmations == []
+        assert "does not exist" in result["error"]
+
+    def test_writing_outside_the_session_prompts_and_writes_nothing(self):
+        target = self._tmpdir / "new.txt"
+        output, result = self._call("write_file", {"path": str(target), "content": "x"})
+        assert len(output.confirmations) == 1
+        assert result["user_cancelled"] is True
+        assert not target.exists()
+
+    def test_a_declined_write_creates_no_parent_directories(self):
+        target = self._tmpdir / "nested" / "new.txt"
+        result = self._call("write_file", {"path": str(target), "content": "x"})[1]
+        assert result["user_cancelled"] is True
+        assert not target.parent.exists()
+
+    def test_a_confirmed_write_lands(self):
+        target = self._tmpdir / "new.txt"
+        self._call("write_file", {"path": str(target), "content": "x"}, answer=True)
+        assert target.read_text() == "x"
+
+    def test_patching_outside_the_session_prompts_and_leaves_the_file_alone(self):
+        output, result = self._call(
+            "patch_file",
+            {
+                "path": str(self.outside),
+                "old_string": "outside content",
+                "new_string": "inside content",
+            },
+        )
+        assert len(output.confirmations) == 1
+        assert result["user_cancelled"] is True
+        assert self.outside.read_text() == "outside content\n"
+
+    def test_a_confirmed_patch_lands(self):
+        self._call(
+            "patch_file",
+            {
+                "path": str(self.outside),
+                "old_string": "outside content",
+                "new_string": "inside content",
+            },
+            answer=True,
+        )
+        assert self.outside.read_text() == "inside content\n"
+
+    def test_listing_outside_the_session_prompts(self):
+        output, result = self._call("list_dir", {"path": str(self._tmpdir)})
+        assert len(output.confirmations) == 1
+        assert result["user_cancelled"] is True
+
+    def test_searching_outside_the_session_prompts(self):
+        output, result = self._call(
+            "search_content", {"root": str(self._tmpdir), "query": "outside"}
+        )
+        assert len(output.confirmations) == 1
+        assert result["user_cancelled"] is True
+
+    def test_searching_the_session_temp_dir_does_not_prompt(self):
+        self.temp.mkdir(parents=True, exist_ok=True)
+        (self.temp / "scratch.txt").write_text("needle\n")
+        output, result = self._call(
+            "search_content", {"root": str(self.temp), "query": "needle"}
+        )
+        assert output.confirmations == []
+        assert result["count"] == 1
+
+    def test_the_session_directory_around_the_scratch_dir_is_still_outside(self):
+        """The scratch directory is trusted; the session directory holding it
+        (chat history, notes) is not."""
+        self.temp.mkdir(parents=True, exist_ok=True)
+        notes = self._write_file("notes.json", "{}")
+        output, result = self._call("read_file", {"path": str(notes)})
+        assert len(output.confirmations) == 1
+        assert result["user_cancelled"] is True
+
+    def test_unsafe_mode_skips_the_file_prompts(self):
+        output, result = self._call(
+            "read_file", {"path": str(self.outside)}, unsafe=True
+        )
+        assert output.confirmations == []
+        assert result["content"] == "outside content\n"
 
 
 class TestNetworkConfirmation(BaseTest):

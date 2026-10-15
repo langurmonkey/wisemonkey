@@ -14,6 +14,7 @@ import os
 import subprocess
 import time
 from typing import cast
+from unittest.mock import patch
 
 from tests.conftest import BaseTest
 from agent.tools import discover_tools, get_registry
@@ -99,6 +100,17 @@ class TestJobs(BaseTest):
     def test_spawn_returns_immediately_even_for_a_fast_command(self):
         job = self._start("true")
         assert self._wait(job)["exit_code"] == 0
+
+    def test_a_job_runs_with_the_session_temp_dir_as_TMPDIR(self):
+        """A background job's scratch space is the session's, exactly like a
+        foreground command's -- not the shared ``/tmp``."""
+        temp = self._tmpdir / "session-tmp"
+        with patch("agent.memory.current_session_temp_dir", return_value=temp):
+            job = self._start("printf '%s' \"$TMPDIR\"")
+            result = self._wait(job)
+        assert result["exit_code"] == 0
+        assert result["output"] == str(temp)
+        assert temp.is_dir()
 
     # --- poll ---
 

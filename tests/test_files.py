@@ -10,6 +10,10 @@ from agent.output import set_output, OutputAdapter
 class _FakeOutput:
     """Minimal OutputAdapter stub that swallows all output."""
 
+    def __init__(self, answer: bool = True):
+        self.answer = answer
+        self.confirmations: list[str] = []
+
     def print(self, *args, **kwargs):
         pass
 
@@ -21,6 +25,13 @@ class _FakeOutput:
 
     def newline(self, *args, **kwargs):
         pass
+
+    def ask_confirm(self, message, default=False):
+        # Auto-confirms: these tests exercise the handlers, not the boundary
+        # policy. Which paths prompt, and what a decline does, is pinned in
+        # tests/test_tool_confirmations.py.
+        self.confirmations.append(message)
+        return self.answer
 
 
 class TestReadFile(BaseTest):
@@ -733,6 +744,7 @@ class _CapturingOutput(_FakeOutput):
     """Records every printed line instead of discarding it."""
 
     def __init__(self):
+        super().__init__()
         self.lines: list[str] = []
 
     def print(self, *args, **kwargs):

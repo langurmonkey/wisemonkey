@@ -6,8 +6,14 @@ Usage: run_command(command="ls -la", timeout=30)
 Security: commands run in the current working directory. User confirmation
 is required for dangerous commands and for any command that references a
 file or directory outside the session working directory.
+
+The session is two directories, not one: the working directory, and the
+session's own scratch directory (``<session_dir>/tmp``), which every command
+gets as ``TMPDIR``. Scratch work therefore stays inside the session instead of
+the shared ``/tmp``, and writing there is not an outside path.
 """
 
+import os
 import re
 import shlex
 import subprocess
@@ -166,22 +172,93 @@ def _candidate_paths(command: str) -> list[str]:
     return paths
 
 
+def _session_temp_dir() -> Path | None:
+    """The current session's scratch directory, or ``None``.
+
+    Lazy import: ``agent.memory`` builds the session layout on first use, and
+    this module must stay importable without touching the user's data
+    directory.
+    """
+    from agent.memory import current_session_temp_dir
+
+    return current_session_temp_dir()
+
+
+def _tool_env() -> dict[str, str]:
+    """The environment for a tool subprocess, with a session-private ``TMPDIR``.
+
+    ``TMPDIR`` points inside the session, so anything a command leaves in the
+    temp directory -- ``mktemp``, Python's ``tempfile``, a compiler's
+    intermediates -- lands where the agent already owns the files instead of in
+    the shared, world-readable ``/tmp``. It is the same directory
+    :func:`_is_within_session` treats as inside, which is why writing to
+    ``$TMPDIR`` needs no confirmation while a literal ``/tmp`` path still asks.
+    """
+    env = os.environ.copy()
+    temp = _session_temp_dir()
+    if temp is None:
+        return env
+    try:
+        temp.mkdir(parents=True, exist_ok=True)
+        temp.chmod(0o700)
+    except OSError:
+        # An unwritable scratch directory is not a reason to refuse a command:
+        # the child simply keeps the inherited temp directory.
+        return env
+    env["TMPDIR"] = str(temp)
+    return env
+
+
+def _session_roots() -> list[Path]:
+    """The directories that count as *inside* the session.
+
+    The working directory, plus the session's own scratch directory. That
+    second one is derived from the session, never a hard-coded literal: the
+    point of the check is that it is one rule (the session) rather than a list
+    of trusted locations someone will keep appending to.
+    """
+    roots: list[Path] = []
+    try:
+        roots.append(Path.cwd().resolve())
+    except OSError:
+        pass
+    temp = _session_temp_dir()
+    if temp is not None:
+        try:
+            roots.append(temp.resolve())
+        except (OSError, RuntimeError):
+            pass
+    return roots
+
+
+def _is_within_session(path: Path | str) -> bool:
+    """Whether *path* is the working directory or the session's scratch dir.
+
+    A path that cannot be resolved counts as *outside*: the check exists to ask
+    about what it cannot vouch for, and a needless prompt costs one keystroke
+    while a missed one costs whatever the command did.
+    """
+    try:
+        resolved = Path(path).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return any(
+        resolved == root or root in resolved.parents for root in _session_roots()
+    )
+
+
 def _outside_session_paths(command: str) -> list[str]:
-    """Return the command's path tokens that resolve outside the cwd.
+    """Return the command's path tokens that resolve outside the session.
 
     Each token is expanded (``~``) and resolved against the working directory,
     so ``../sibling`` and ``/etc/passwd`` are reported while ``src/app.py`` is
     not. Symlinks are resolved, so a link pointing out of the session counts as
-    outside it.
+    outside it, and the session's own scratch directory (``$TMPDIR``) counts as
+    inside, because the agent owns it.
     """
-    cwd = Path.cwd().resolve()
     outside: list[str] = []
     for raw in _candidate_paths(command):
-        try:
-            resolved = Path(raw).expanduser().resolve()
-        except (OSError, RuntimeError, ValueError):
-            continue
-        if resolved == cwd or cwd in resolved.parents:
+        if _is_within_session(raw):
             continue
         if raw not in outside:
             outside.append(raw)
@@ -243,7 +320,9 @@ def _prompt_user(command: str, reason: str) -> bool:
         "Dangerous commands, and commands that touch files or directories "
         "outside the session working directory, will prompt the "
         "user for confirmation before running. The tool returns an error "
-        "if the user declines."
+        "if the user declines.\n"
+        "Use $TMPDIR for scratch files: it points at a private per-session "
+        "temp directory, where writing needs no confirmation."
     ),
     parameters={
         "type": "object",
@@ -269,8 +348,8 @@ def run_command_handler(args):
 
     Before execution, collects the reasons the command needs approval
     (dangerous patterns, a long timeout, a system-directory redirect, a path
-    outside the session working directory). If there are any, the user is
-    asked to confirm; a decline runs nothing.
+    outside the session). If there are any, the user is asked to confirm; a
+    decline runs nothing.
     """
     command = args.get("command", "")
     timeout = args.get("timeout", 30)
@@ -317,6 +396,9 @@ def run_command_handler(args):
             capture_output=True,
             text=True,
             timeout=timeout,
+            # A session-private TMPDIR, so scratch work stays inside the
+            # session (see _tool_env).
+            env=_tool_env(),
         )
         output = {
             "stdout": result.stdout,

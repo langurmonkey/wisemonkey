@@ -56,6 +56,25 @@ def _load_vectorstore(session_dir):
 
 SESSIONS_DIR = xdg_data_home() / "wisemonkey" / "sessions"
 SESSION_METADATA_FILE = ".session-metadata"
+# Scratch space for the session's tool subprocesses. It lives *inside* the
+# session directory rather than in the shared /tmp: the agent owns it, so a
+# command writing there is not asking for anything the agent does not already
+# hold, and a session's leftovers are cleaned up with the session.
+SESSION_TEMP_DIRNAME = "tmp"
+
+
+def current_session_temp_dir() -> Path | None:
+    """The current session's scratch directory, or ``None`` if unavailable.
+
+    ``None`` means "this process has no session to speak of" -- a ``Core``
+    built through ``__new__`` in a test, or a data directory that cannot be
+    written to. Callers fall back to the inherited environment rather than
+    failing; a missing scratch directory is never a reason to refuse work.
+    """
+    try:
+        return Memory().temp_dir
+    except Exception:
+        return None
 
 
 def is_valid_session_name(name: str) -> bool:
@@ -287,6 +306,16 @@ class Memory:
         # Load session-specific config, falling back to global
         from agent.config import get_config
         get_config().load_for_session(session)
+
+    @property
+    def temp_dir(self) -> Path:
+        """Scratch directory this session's tool subprocesses write into.
+
+        Deliberately *not* created on access: a session that never runs a
+        command has no reason to own one, and the caller that needs it (see
+        ``tools.terminal._tool_env``) creates it and locks it down.
+        """
+        return self.session_dir / SESSION_TEMP_DIRNAME
 
     def switch_session(
         self,
