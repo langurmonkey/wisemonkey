@@ -21,7 +21,7 @@ from agent.completion import SmartPathCompleter
 from agent.console import err, info, newline, print
 from agent.core import Core
 from agent.emitter import TurnEmitter
-from agent.footer import _ACCENT, _CURSOR, _DIM, _LABEL, _RESET
+from agent.footer import _ACCENT, _CURSOR, _DIM, _LABEL, _RESET, steer_window
 from agent.history import PromptHistory
 from agent.ipc import (
     ContentPayload,
@@ -568,11 +568,11 @@ class Agent:
 
         The row is an input field, so it always carries a prompt marker
         while a turn is running: an empty row gives no hint that typing
-        there does anything, which is the one thing it has to convey. A
-        block cursor is appended while the reader is actually capturing
-        keystrokes (``steer_active``) -- the terminal's own cursor cannot be
-        used here, because it has to stay where the streamed answer is being
-        written.
+        there does anything, which is the one thing it has to convey. The
+        block cursor is drawn at the caret's actual position while the
+        reader is capturing keystrokes (``steer_active``) -- the terminal's
+        own cursor cannot be used for it, because that one has to stay where
+        the streamed answer is being written.
 
         Priority for the text itself: what is being typed, then the oldest
         queued follow-up. The footer's own spinner animation lives on the
@@ -587,12 +587,20 @@ class Agent:
         # is dropped while the reader is paused (an ``ask_*`` question, an
         # editor owning the tty), because then nothing would happen.
         cursor = _CURSOR if self.output.steer_active() else ""
-        if line:
-            # Show the tail of a long line, so the caret stays visible.
-            room = max(20, term_width() - 8)
-            if len(line) > room:
-                line = "…" + line[-(room - 1) :]
-            return f" {_ACCENT}❯{_RESET} {_LABEL}{line}{_RESET}{cursor}"
+        # Priority: what is being typed, then the queued follow-up, then the
+        # bare input marker. A queued line outranks the caret, because an
+        # empty field would hide the text that is about to be delivered.
+        if line or (cursor and not queued):
+            # `steer_window` reserves the caret's own column, so the text it
+            # returns plus the caret never exceeds the budget and the row
+            # cannot wrap. Four columns go to the marker and the margins.
+            text, caret = steer_window(
+                line, self.output.steer_caret(), max(20, term_width() - 4)
+            )
+            return (
+                f" {_ACCENT}❯{_RESET} {_LABEL}{text[:caret]}{_RESET}"
+                f"{cursor}{_LABEL}{text[caret:]}{_RESET}"
+            )
         if queued:
             # A submitted line is handed to the running turn at its next tool
             # seam; if the turn ends before another tool call, the main loop
@@ -632,7 +640,7 @@ class Agent:
         self._footer_refresh()
 
     def _steer_refresh(self) -> None:
-        """Redraw the footer when the steering line changes (reader thread)."""
+        """Redraw the footer when the steering line or caret moves (reader)."""
         if self._turn_in_progress:
             self._footer_refresh()
 

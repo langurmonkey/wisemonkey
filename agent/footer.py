@@ -92,9 +92,10 @@ _BAR_BG = _SGR["bar_bg"]
 
 # One block-cursor cell: the cursor colour painted on a space, with its own
 # reset, so it is exactly one visible column wherever it is spliced in. The
-# steering row (drawn by the frontend, not here) appends it to mark where the
-# next typed character lands -- the terminal's own cursor cannot be used,
-# because it has to stay where the streamed answer is being written.
+# steering row (drawn by the frontend, not here) splices it into the text at
+# the caret's index to mark where the next typed character lands -- the
+# terminal's own cursor cannot be used, because it has to stay where the
+# streamed answer is being written.
 _CURSOR = f"{_SGR['cursor']} {_SGR['reset']}"
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -139,6 +140,43 @@ def clip_ansi(text: str, width: int, ellipsis: str = "…") -> str:
     out.append(ellipsis)
     out.append(_RESET if styled else "")
     return "".join(out)
+
+
+def steer_window(line: str, caret: int, avail: int) -> tuple[str, int]:
+    """Clip *line* to *avail* columns, keeping the caret at *caret* in view.
+
+    The steering row is an input field, so its caret can sit anywhere in the
+    line -- the "show the tail, caret last" rule stopped being right the
+    moment arrow keys could move it. Returns the visible text together with
+    the caret's index *within* that text (the caller splices the caret cell in
+    at that index), so text, its ``…`` markers and the caret together occupy
+    at most *avail* columns.
+
+    The window keeps as much as it can *before* the caret -- that is the part
+    being edited -- and only scrolls once the caret would otherwise fall off
+    the right edge.
+    """
+    if avail <= 0:
+        return "", 0
+    caret = max(0, min(caret, len(line)))
+    # One column of `avail` belongs to the caret cell itself, so the line fits
+    # untouched only up to one short of the budget.
+    if len(line) <= avail - 1:
+        return line, caret
+
+    # Two columns are reserved here for the "…" markers and one for the
+    # caret: deliberately conservative, so the window this computes can never
+    # cut the caret off. The real markers are then measured against the
+    # budget below.
+    room = max(1, avail - 3)
+    start = 0 if caret <= room else caret - room
+    lead = 1 if start > 0 else 0
+    end = min(len(line), start + avail - 1 - lead)
+    trail = 1 if end < len(line) else 0
+    if trail:
+        end -= 1
+    text = ("…" if lead else "") + line[start:end] + ("…" if trail else "")
+    return text, lead + caret - start
 
 
 class _LockedWriter:

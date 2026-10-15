@@ -273,6 +273,15 @@ class OutputAdapter(Protocol):
         """Return the steering line currently being typed."""
         return ""
 
+    def steer_caret(self) -> int:
+        """Return the caret's index within :meth:`steer_line`.
+
+        Separate from the line because the frontend draws a block cursor
+        *inside* the text rather than always at its end: an arrow key moves
+        the caret, and the row has to follow it.
+        """
+        return 0
+
     def steer_active(self) -> bool:
         """Whether mid-turn keystrokes are being captured *right now*.
 
@@ -390,6 +399,10 @@ class RichOutputAdapter(OutputAdapter):
     def steer_line(self) -> str:
         """Return the steering line currently being typed."""
         return self._steer.line() if self._steer else ""
+
+    def steer_caret(self) -> int:
+        """Return the caret's index within :meth:`steer_line`."""
+        return self._steer.caret() if self._steer else 0
 
     def steer_active(self) -> bool:
         """Whether the reader thread is capturing keystrokes right now."""

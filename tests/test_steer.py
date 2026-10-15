@@ -132,6 +132,240 @@ class TestSteerInputBuffer(unittest.TestCase):
         self.assertEqual(steer.pending(), "queued line")
 
 
+class TestSteerLineEditing(unittest.TestCase):
+    """The caret moves, and the text is edited around it.
+
+    Two encodings are live at once -- the legacy one, and the kitty
+    protocol's, which is pushed at REPL start and *stays* pushed -- so both
+    are driven through the same byte reader. A decoder that only knows one of
+    them silently does nothing on half the terminals.
+    """
+
+    # Legacy spellings.
+    LEFT = b"\x1b[D"
+    RIGHT = b"\x1b[C"
+    HOME = b"\x1b[H"
+    END = b"\x1b[F"
+    # SS3 (application cursor mode) writes them this way.
+    SS3_HOME = b"\x1bOH"
+    SS3_END = b"\x1bOF"
+    # The protocol's spellings: same key, with a modifier field (129 is
+    # num_lock, which is what a real keyboard reports).
+    KITTY_LEFT = b"\x1b[1;129D"
+    KITTY_RIGHT = b"\x1b[1;129C"
+    KITTY_HOME = b"\x1b[1;129H"
+    KITTY_END = b"\x1b[1;129F"
+    # The tilde and CSI-u forms of Home/End/Delete.
+    TILDE_HOME = b"\x1b[1~"
+    TILDE_END = b"\x1b[4~"
+    TILDE_DELETE = b"\x1b[3~"
+    U_DELETE = b"\x1b[3;129u"
+    # Ctrl+Left/Right move by word.
+    CTRL_LEFT = b"\x1b[1;5D"
+    CTRL_RIGHT = b"\x1b[1;5C"
+
+    def setUp(self) -> None:
+        self.changes = 0
+        self.steer = SteerInput(on_change=self._change)
+
+    def _change(self) -> None:
+        self.changes += 1
+
+    def _type(self, text: str) -> None:
+        for char in text:
+            self.steer._handle_byte(ord(char))
+
+    def _send(self, data: bytes) -> None:
+        for byte in data:
+            self.steer._handle_byte(byte)
+
+    def _key(self, key: bytes) -> None:
+        self._send(key)
+
+    # caret movement
+
+    def test_left_and_right_move_the_caret(self):
+        self._type("abc")
+        for _ in range(3):
+            self._key(self.LEFT)
+        self.assertEqual(self.steer.caret(), 0)
+        self.assertEqual(self.steer.line(), "abc")  # moving changes no text
+        self._key(self.RIGHT)
+        self.assertEqual(self.steer.caret(), 1)
+
+    def test_every_encoding_of_left_and_right_works(self):
+        for left, right in (
+            (self.LEFT, self.RIGHT),
+            (self.KITTY_LEFT, self.KITTY_RIGHT),
+            (b"\x1bOD", b"\x1bOC"),
+        ):
+            with self.subTest(left=left):
+                steer = SteerInput()
+                for char in "ab":
+                    steer._handle_byte(ord(char))
+                for byte in left:
+                    steer._handle_byte(byte)
+                assert steer.caret() == 1, (left, steer.caret())
+                for byte in right:
+                    steer._handle_byte(byte)
+                assert steer.caret() == 2, (right, steer.caret())
+
+    def test_home_and_end_in_every_encoding(self):
+        for home in (self.HOME, self.SS3_HOME, self.KITTY_HOME, self.TILDE_HOME):
+            for end in (self.END, self.SS3_END, self.KITTY_END, self.TILDE_END):
+                with self.subTest(home=home, end=end):
+                    steer = SteerInput()
+                    for char in "abc":
+                        steer._handle_byte(ord(char))
+                    for byte in home:
+                        steer._handle_byte(byte)
+                    assert steer.caret() == 0, home
+                    for byte in end:
+                        steer._handle_byte(byte)
+                    assert steer.caret() == 3, end
+
+    def test_ctrl_arrows_move_by_word(self):
+        self._type("use pandas instead")
+        self._send(self.CTRL_LEFT)
+        self.assertEqual(self.steer.caret(), 11)
+        self._send(self.CTRL_LEFT)
+        self.assertEqual(self.steer.caret(), 4)
+        self._send(self.CTRL_RIGHT)
+        self.assertEqual(self.steer.caret(), 11)
+
+    def test_readline_control_letters_move_the_caret(self):
+        self._type("abc")
+        self.steer._handle_byte(0x01)  # Ctrl+A
+        self.assertEqual(self.steer.caret(), 0)
+        self.steer._handle_byte(0x06)  # Ctrl+F
+        self.assertEqual(self.steer.caret(), 1)
+        self.steer._handle_byte(0x05)  # Ctrl+E
+        self.assertEqual(self.steer.caret(), 3)
+        self.steer._handle_byte(0x02)  # Ctrl+B
+        self.assertEqual(self.steer.caret(), 2)
+
+    def test_a_move_that_changes_nothing_does_not_notify(self):
+        """Held-down keys must not redraw the footer row for nothing."""
+        self._type("ab")
+        before = self.changes
+        self._key(self.LEFT)  # from the end: this one moves
+        self.assertEqual(self.changes, before + 1)
+        self._key(self.RIGHT)
+        self._key(self.RIGHT)  # already at the end
+        self.assertTrue(self.steer.caret() == 2)
+        self.assertEqual(self.changes, before + 2)
+
+    # editing at the caret
+
+    def test_typing_inserts_at_the_caret(self):
+        self._type("ac")
+        self._key(self.LEFT)
+        self._type("b")
+        self.assertEqual(self.steer.line(), "abc")
+        self.assertEqual(self.steer.caret(), 2)
+
+    def test_backspace_deletes_before_the_caret(self):
+        self._type("abc")
+        self._key(self.LEFT)
+        self.steer._handle_byte(0x7F)
+        self.assertEqual(self.steer.line(), "ac")
+        self.assertEqual(self.steer.caret(), 1)
+
+    def test_backspace_at_the_start_of_the_line_is_a_noop(self):
+        self._type("ab")
+        self._key(self.LEFT)
+        self._key(self.LEFT)
+        before = self.changes
+        self.steer._handle_byte(0x7F)
+        self.assertEqual(self.steer.line(), "ab")
+        self.assertEqual(self.changes, before)
+
+    def test_delete_removes_the_character_under_the_caret(self):
+        self._type("abc")
+        self._key(self.LEFT)
+        for keys in (self.TILDE_DELETE, self.U_DELETE):
+            with self.subTest(keys=keys):
+                steer = SteerInput()
+                for char in "abc":
+                    steer._handle_byte(ord(char))
+                for byte in self.LEFT:
+                    steer._handle_byte(byte)
+                for byte in keys:
+                    steer._handle_byte(byte)
+                assert steer.line() == "ab", (keys, steer.line())
+                assert steer.caret() == 2, keys
+
+    def test_ctrl_d_deletes_forwards(self):
+        self._type("abc")
+        self._key(self.LEFT)
+        self._key(self.LEFT)
+        self.steer._handle_byte(0x04)
+        self.assertEqual(self.steer.line(), "ac")
+        self.assertEqual(self.steer.caret(), 1)
+
+    def test_ctrl_k_kills_to_the_end(self):
+        self._type("hello world")
+        for _ in range(6):
+            self._key(self.LEFT)
+        self.steer._handle_byte(0x0B)
+        self.assertEqual(self.steer.line(), "hello")
+        self.assertEqual(self.steer.caret(), 5)
+
+    def test_ctrl_w_kills_the_word_before_the_caret(self):
+        self._type("use pandas")
+        self.steer._handle_byte(0x17)
+        self.assertEqual(self.steer.line(), "use ")
+        self.steer._handle_byte(0x17)
+        self.assertEqual(self.steer.line(), "")
+        self.assertEqual(self.steer.caret(), 0)
+
+    def test_ctrl_u_clears_the_line_and_the_caret(self):
+        self._type("discard me")
+        self._key(self.LEFT)
+        self.steer._handle_byte(0x15)
+        self.assertEqual(self.steer.line(), "")
+        self.assertEqual(self.steer.caret(), 0)
+
+    def test_enter_submits_and_resets_the_caret(self):
+        self._type("hello")
+        self._key(self.LEFT)
+        self._key(self.LEFT)
+        self.steer._handle_byte(0x0D)
+        self.assertEqual(self.steer.line(), "")
+        self.assertEqual(self.steer.caret(), 0)
+
+    def test_a_navigation_key_never_leaks_into_the_line(self):
+        """A decoded sequence moves the caret; it does not print itself."""
+        self._type("ab")
+        for keys in (self.LEFT, self.KITTY_LEFT, self.HOME, self.KITTY_END):
+            self._key(keys)
+            self.assertEqual(self.steer.line(), "ab", keys)
+        # And the reader is ready for ordinary input again.
+        self._type("c")
+        self.assertTrue(self.steer.line() in ("cab", "abc"))
+
+    def test_an_unbound_sequence_still_moves_nothing(self):
+        """PageUp, F-keys and the keypad are swallowed, as before."""
+        self._type("ab")
+        for keys in (b"\x1b[5~", b"\x1b[15~", b"\x1b[57414;129u"):
+            self._key(keys)
+            self.assertEqual(self.steer.line(), "ab", keys)
+            self.assertEqual(self.steer.caret(), 2)
+
+    def test_a_lone_escape_does_not_swallow_the_next_key(self):
+        """An Escape that starts nothing must not eat the character after it."""
+        self.steer._handle_byte(0x1B)
+        self._type("x")
+        self.assertEqual(self.steer.line(), "x")
+
+    def test_stop_resets_the_caret(self):
+        self._type("half typed")
+        self._key(self.LEFT)
+        self.steer._armed = True
+        self.steer.stop()
+        self.assertEqual(self.steer.caret(), 0)
+
+
 def _cooked_attrs(attrs):
     """Return *attrs* with the tty forced back to cooked, echoing mode."""
     import termios

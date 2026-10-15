@@ -11,8 +11,14 @@ rows, so a queued follow-up can be collected with very little machinery:
   Nothing is echoed to the terminal \u2014 the partial line lives only in the
   buffer and is surfaced in the footer status line, so there is no second
   writer on stdout and no cursor management to get wrong.
-* Printable bytes append to the line; ``Backspace``/``Ctrl+H`` delete,
-  ``Ctrl+U`` clears, ``Enter`` submits. Ctrl+C is not a line-editing key:
+* Printable bytes insert at the caret; the line editor is small but real:
+  arrow keys and Home/End move it, ``Backspace``/``Ctrl+H`` and ``Delete``/
+  ``Ctrl+D`` delete around it, ``Ctrl+A``/``Ctrl+E``/``Ctrl+B``/``Ctrl+F`` are
+  their readline aliases, ``Ctrl+W`` and ``Ctrl+Left``/``Ctrl+Right`` move by
+  word, ``Ctrl+K`` kills to the end, ``Ctrl+U`` clears everything, and
+  ``Enter`` submits. The caret position is published with the line
+  (:meth:`caret`) so the frontend can draw it where it actually is.
+  Ctrl+C is not a line-editing key:
   normally ``ISIG`` makes the kernel raise ``KeyboardInterrupt`` in the main
   thread, which is what the turn already knows how to unwind. When the kitty
   keyboard protocol is enabled (see :mod:`agent.keys`) the terminal reports
@@ -22,10 +28,10 @@ rows, so a queued follow-up can be collected with very little machinery:
   turn ends, so they go through the exact same ``@``-expansion, command
   dispatch and turn path as a typed prompt.
 
-This is deliberately *not* a line editor: no history, no completion, no
-prompt_toolkit. It exists to steer a running turn ("actually, use pandas"),
-and it degrades to a no-op whenever the terminal is not interactive or the
-tty cannot be put into cbreak mode.
+It is deliberately *not* prompt_toolkit: no history, no completion, no
+key-binding framework. It exists to steer a running turn ("actually, use
+pandas"), and it degrades to a no-op whenever the terminal is not interactive
+or the tty cannot be put into cbreak mode.
 
 The reader thread is also the reason :class:`agent.footer.Footer` serializes
 its writes with a lock: status updates now come from two threads.
@@ -41,7 +47,7 @@ import termios
 import threading
 from collections.abc import Callable
 
-from agent.keys import is_ctrl_c_sequence
+from agent.keys import LOCK_MODIFIER_BITS, is_ctrl_c_sequence
 
 # Bytes that terminate a CSI/SS3 escape sequence (we swallow them whole so
 # arrow keys and friends do not leak into the line buffer).
@@ -57,6 +63,146 @@ from agent.keys import is_ctrl_c_sequence
 # (``CSI 57414;129u``). Treating ``5`` as a final would cut that sequence in
 # half and leave the tail to leak into the line as text.
 _CSI_FINAL = frozenset(range(0x40, 0x7F))
+
+
+# --------------------------------------------------------------------------
+# Navigation keys
+# --------------------------------------------------------------------------
+#
+# The reader swallows escape sequences, and it has to *decode* the handful
+# that move the caret rather than dropping them. Two encodings are live at
+# once and a decoder written against either alone is silently wrong on half
+# the terminals:
+#
+# - the **legacy** one (``CSI D``, ``CSI 1~``, ``ESC O H``) -- what a terminal
+#   that ignores the kitty protocol sends, and what prompt_toolkit's table
+#   covers;
+# - the **kitty protocol** one, which is pushed at REPL start and *stays*
+#   pushed (see :func:`agent.keys.enable_kitty_keyboard`). It keeps arrows in
+#   the letter form but adds a modifier field, so a plain Left arrives as
+#   ``CSI 1;129D`` once num_lock is on -- the very case that made
+#   prompt_toolkit type escape codes into its own prompt.
+#
+# The final letter and the number in the tilde/``u`` forms are the spec's own
+# tables (mirrored from ``agent.keys``), not a hand-picked set.
+
+# ``CSI <letter>`` -- the functional keys that keep this form under the
+# protocol. Up/Down are deliberately absent: this is a one-line field, so
+# they mean nothing here and are swallowed like any other unbound key.
+_NAV_LETTERS = {
+    "C": "right",
+    "D": "left",
+    "F": "end",
+    "H": "home",
+}
+
+# ``CSI <number> ~``
+_NAV_TILDES = {
+    1: "home",
+    3: "delete",
+    4: "end",
+    7: "home",
+    8: "end",
+}
+
+# ``CSI <codepoint> u`` -- only the codepoints with a caret meaning. The
+# keypad's own navigation codes (``57423`` Home and friends) are left out on
+# purpose: they are a separate table with no modifiers, and treating a keypad
+# digit as Home would be worse than ignoring it.
+_NAV_CODEPOINTS = {
+    3: "delete",
+    7: "home",
+    8: "end",
+}
+
+# Modifier bits that turn a plain move into a word move, as readline's
+# Alt+B/Alt+F and most terminals' Ctrl+Left/Right do. Alt is included
+# because that is the spelling that works everywhere; a terminal that sends
+# Esc-prefixed keys gets ``ESC b``, which the reader does not decode (it
+# drops the prefix and inserts the letter).
+_WORD_MODIFIER_BITS = 2 | 4  # alt | ctrl
+
+
+def _nav_action(sequence: str) -> str | None:
+    """The editing action an escape *sequence* names, or None.
+
+    *sequence* is the whole thing including the leading ``ESC``. Everything
+    the reader does not bind -- function keys, PageUp, the ``modifyOtherKeys``
+    spellings -- returns None and is swallowed as before, which is what keeps
+    an unknown key from leaking its bytes into the line.
+    """
+    if not sequence.startswith("\x1b"):
+        return None
+    body = sequence[1:]
+    if body[:1] == "O":
+        # SS3 (application cursor mode): ``ESC O H``. One key, no parameters,
+        # so a modifier would have to arrive as a separate encoding.
+        return _NAV_LETTERS.get(body[1:])
+    if body[:1] != "[" or not body:
+        return None
+    body = body[1:]
+    if not body:
+        return None
+
+    final = body[-1]
+    if not final.isalpha() and final != "~":
+        return None
+    params = body[:-1].split(";") if body[:-1] else []
+
+    def bits() -> int:
+        """The held modifiers, with the lock bits stripped.
+
+        Lock modifiers describe the keyboard's state, not a key the user is
+        holding, so ``CSI 1;129D`` is plain Left -- not some shifted variant
+        of it.
+        """
+        if len(params) < 2:
+            return 0
+        try:
+            return (int(params[1]) - 1) & ~LOCK_MODIFIER_BITS
+        except ValueError:
+            return 0
+
+    action: str | None = None
+    if final in _NAV_LETTERS:
+        action = _NAV_LETTERS[final]
+    elif final == "~":
+        try:
+            action = _NAV_TILDES.get(int(params[0]))
+        except (ValueError, IndexError):
+            return None
+    elif final == "u":
+        try:
+            action = _NAV_CODEPOINTS.get(int(params[0]))
+        except (ValueError, IndexError):
+            return None
+    else:
+        return None
+
+    if action in ("left", "right") and bits() & _WORD_MODIFIER_BITS:
+        return f"word-{action}"
+    return action
+
+
+def _word_left(buffer: list[str], pos: int) -> int:
+    """Caret position after a backwards word move: skip spaces, then a word."""
+    index = pos
+    while index > 0 and buffer[index - 1].isspace():
+        index -= 1
+    while index > 0 and not buffer[index - 1].isspace():
+        index -= 1
+    return index
+
+
+def _word_right(buffer: list[str], pos: int) -> int:
+    """Caret position after a forwards word move: skip a word, then spaces."""
+    index = pos
+    length = len(buffer)
+    while index < length and not buffer[index].isspace():
+        index += 1
+    while index < length and buffer[index].isspace():
+        index += 1
+    return index
 
 
 class SteerInput:
@@ -87,6 +233,9 @@ class SteerInput:
 
         self._lock = threading.Lock()
         self._buffer: list[str] = []
+        # Caret index into ``_buffer``: the position the next character is
+        # inserted at, and what the frontend draws the block cursor over.
+        self._pos = 0
         self._queue: list[str] = []
 
         self._esc_mode = 0
@@ -151,6 +300,16 @@ class SteerInput:
         with self._lock:
             return "".join(self._buffer)
 
+    def caret(self) -> int:
+        """Return the caret's index within :meth:`line` (0 .. ``len(line)``).
+
+        Published alongside the line because the two describe one thing: the
+        frontend splices its block cursor into the text at this index, so a
+        caret that moved left is drawn *there* rather than always at the end.
+        """
+        with self._lock:
+            return self._pos
+
     # ── lifecycle ─────────────────────────────────────────────────────────
 
     def start(self) -> bool:
@@ -186,6 +345,7 @@ class SteerInput:
         self._fd = None
         with self._lock:
             self._buffer.clear()
+            self._pos = 0
 
     # Steered turns can be interrupted by the agent itself asking a question
     # (ask_confirm/ask_string) or by a subprocess taking over the terminal.
@@ -279,6 +439,13 @@ class SteerInput:
             except (OSError, ValueError):
                 break
             if not ready:
+                # A lone Escape is indistinguishable from the start of a
+                # sequence until something follows it. Nothing has for a whole
+                # timeout, so it was the key itself: end the sequence, rather
+                # than swallowing the next keystroke an arbitrary time later.
+                if self._esc_mode:
+                    self._esc_mode = 0
+                    self._esc_buf = b""
                 continue
             try:
                 data = os.read(fd, 64)
@@ -294,28 +461,39 @@ class SteerInput:
     def _handle_byte(self, byte: int) -> None:
         """Apply a single input byte to the line buffer.
 
-        Escape sequences (arrow keys, function keys) are swallowed whole so
-        they never leak into the line as stray characters.
+        Escape sequences are consumed whole, so an arrow key or a function key
+        never leaks its bytes into the line as stray characters. The few that
+        name a caret movement are decoded rather than dropped
+        (:func:`_nav_action`); everything else -- F-keys, PageUp, any unknown
+        sequence -- is swallowed exactly as before.
         """
         if self._esc_mode:
-            # Swallow the remainder of an escape sequence.
             if self._esc_mode == 1:
-                if byte not in (ord("["), ord("O")):
-                    self._esc_mode = 0
-                    self._esc_buf = b""
-                else:
+                if byte in (ord("["), ord("O")):
                     self._esc_mode = 2
                     self._esc_buf = bytes([byte])
-            else:
-                self._esc_buf += bytes([byte])
-                if byte not in _CSI_FINAL:
-                    self._esc_mode = 2
-                    return
-                self._esc_mode = 0
-                sequence = b"\x1b" + self._esc_buf
-                self._esc_buf = b""
-                if is_ctrl_c_sequence(sequence.decode("ascii", "replace")):
-                    self._interrupt()
+                else:
+                    # Not a sequence after all: ``ESC <key>``, or a lone
+                    # Escape the read loop has not timed out yet. Drop the
+                    # ESC and let the byte do its ordinary job -- treating it
+                    # as part of an escape swallowed whatever character
+                    # followed a stray Escape press.
+                    self._esc_mode = 0
+                    self._esc_buf = b""
+                    self._handle_byte(byte)
+                return
+            self._esc_buf += bytes([byte])
+            if byte not in _CSI_FINAL:
+                return
+            sequence = (b"\x1b" + self._esc_buf).decode("ascii", "replace")
+            self._esc_mode = 0
+            self._esc_buf = b""
+            if is_ctrl_c_sequence(sequence):
+                self._interrupt()
+                return
+            action = _nav_action(sequence)
+            if action is not None:
+                self._edit(action)
             return
         if byte == 0x1B:
             self._esc_mode = 1
@@ -324,34 +502,40 @@ class SteerInput:
             text = self.line().strip()
             with self._lock:
                 self._buffer.clear()
+                self._pos = 0
                 if text:
                     self._queue.append(text)
             self._changed()
             if text:
                 self._safe(self._on_submit, text)
             return
-        if byte in (0x03, 0x04, 0x1A, 0x1C):
-            # Ctrl+C / Ctrl+D / Ctrl+\ / Ctrl+Z. ISIG is left enabled, so the
-            # kernel turns Ctrl+C into SIGINT (and Ctrl+\ into SIGQUIT)
-            # before these bytes ever reach us; the rest of the control
-            # characters are ignored. Never buffer them.
+        if byte in (0x03, 0x1A, 0x1C):
+            # Ctrl+C / Ctrl+\ / Ctrl+Z. ISIG is left enabled, so the kernel
+            # turns Ctrl+C into SIGINT (and Ctrl+\ into SIGQUIT) before these
+            # bytes ever reach us. Never buffer them.
             return
-        if byte in (0x7F, 0x08):  # Backspace
-            with self._lock:
-                if self._buffer:
-                    self._buffer.pop()
-                    changed = True
-                else:
-                    changed = False
-            if changed:
-                self._changed()
+        # Line editing, in the readline spelling where one exists. All of it
+        # goes through `_edit` so that "did anything move" is decided in one
+        # place -- a no-op must not redraw the footer row.
+        if byte in (0x7F, 0x08):  # Backspace / Ctrl+H
+            self._edit("backspace")
+            return
+        if byte == 0x04:  # Ctrl+D: delete forwards
+            self._edit("delete")
             return
         if byte == 0x15:  # Ctrl+U: clear the line
-            with self._lock:
-                had = bool(self._buffer)
-                self._buffer.clear()
-            if had:
-                self._changed()
+            self._edit("clear")
+            return
+        if byte == 0x0B:  # Ctrl+K: kill to the end
+            self._edit("kill-to-end")
+            return
+        if byte == 0x17:  # Ctrl+W: kill the word before the caret
+            self._edit("kill-word")
+            return
+        if byte in (0x01, 0x02, 0x05, 0x06):  # Ctrl+A/B/E/F: readline motion
+            self._edit(
+                {0x01: "home", 0x02: "left", 0x05: "end", 0x06: "right"}[byte]
+            )
             return
         if byte < 0x20 or byte == 0x7F:
             return  # other control characters: ignore
@@ -363,12 +547,62 @@ class SteerInput:
             return
         with self._lock:
             if sum(len(c) for c in self._buffer) < self._max_len:
-                self._buffer.append(char)
+                self._buffer.insert(self._pos, char)
+                self._pos += 1
                 changed = True
             else:
                 changed = False
         if changed:
             self._changed()
+
+    # ── line editing ─────────────────────────────────────────────────────
+
+    def _edit(self, action: str) -> None:
+        """Apply a line-editing *action*, notifying only if something moved.
+
+        The notification is what redraws the footer row, and that row shows
+        the caret as well as the text -- so a pure caret move notifies too.
+        A genuine no-op (Left at the start of the line, Backspace on an empty
+        one) does not, which is what keeps a held-down key from redrawing the
+        row a few hundred times a second for nothing.
+        """
+        with self._lock:
+            before = ("".join(self._buffer), self._pos)
+            self._apply(action)
+            moved = ("".join(self._buffer), self._pos) != before
+        if moved:
+            self._changed()
+
+    def _apply(self, action: str) -> None:
+        """Mutate the buffer for *action*. Call with ``_lock`` held."""
+        buf = self._buffer
+        if action == "left":
+            self._pos = max(0, self._pos - 1)
+        elif action == "right":
+            self._pos = min(len(buf), self._pos + 1)
+        elif action == "home":
+            self._pos = 0
+        elif action == "end":
+            self._pos = len(buf)
+        elif action == "backspace":
+            if self._pos > 0:
+                del buf[self._pos - 1]
+                self._pos -= 1
+        elif action == "delete":
+            if self._pos < len(buf):
+                del buf[self._pos]
+        elif action == "word-left":
+            self._pos = _word_left(buf, self._pos)
+        elif action == "word-right":
+            self._pos = _word_right(buf, self._pos)
+        elif action == "kill-to-end":
+            del buf[self._pos:]
+        elif action == "kill-word":
+            self._pos = _word_left(buf, self._pos)
+            del buf[self._pos:]
+        elif action == "clear":
+            buf.clear()
+            self._pos = 0
 
     def _interrupt(self) -> None:
         """Raise SIGINT in the main thread, on behalf of Ctrl+C.
@@ -391,7 +625,11 @@ class SteerInput:
             pass
 
     def _changed(self) -> None:
-        """Notify the caller that the buffered line changed."""
+        """Notify the caller that the line or the caret moved.
+
+        The two are published together, and the frontend draws both, so a
+        caret move is as much a change to the row as an inserted character.
+        """
         if self._on_change is not None:
             self._safe(self._on_change)
 

@@ -24,6 +24,7 @@ from agent.footer import (
     _LockedWriter,
     clip_ansi,
     real_stream,
+    steer_window,
     visible_len,
 )
 
@@ -66,6 +67,88 @@ class TestClipAnsi(unittest.TestCase):
     def test_styled_text_within_width_is_returned_as_is(self):
         styled = f"{_BOLD}hi{_RESET}"
         self.assertEqual(clip_ansi(styled, 10), styled)
+
+
+class TestSteerWindow(unittest.TestCase):
+    """Clipping the steering row without losing the caret.
+
+    The row is an input field, so the caret can be anywhere in the line. The
+    window that shows it must reserve a column for the caret cell and for any
+    ``…`` it adds, or the row overflows the terminal -- and it must never cut
+    the caret off, which a plain tail-anchored clip does as soon as the caret
+    moves left.
+    """
+
+    def _cells(self) -> int:
+        """Columns the caret cell occupies."""
+        return 1
+
+    def test_a_short_line_is_returned_untouched(self):
+        text, caret = steer_window("use pandas", 3, 40)
+        self.assertEqual((text, caret), ("use pandas", 3))
+
+    def test_the_caret_index_moves_with_the_text(self):
+        text, caret = steer_window("use pandas", 10, 40)
+        self.assertEqual(text[:caret] + "|" + text[caret:], "use pandas|")
+
+    def test_nothing_to_show(self):
+        self.assertEqual(steer_window("", 0, 0), ("", 0))
+
+    def test_an_empty_line_still_reserves_the_caret_column(self):
+        self.assertEqual(steer_window("", 0, 20), ("", 0))
+
+    def test_the_caret_never_falls_outside_the_window(self):
+        """The invariant, swept over every position on a long line."""
+        line = "".join(str(i % 10) for i in range(120))
+        for avail in (6, 10, 20, 41, 80):
+            for caret in range(len(line) + 1):
+                text, index = steer_window(line, caret, avail)
+                self.assertLessEqual(
+                    visible_len(text) + self._cells(),
+                    avail,
+                    f"avail={avail} caret={caret} text={text!r}",
+                )
+                self.assertGreaterEqual(index, 0, caret)
+                self.assertLessEqual(index, len(text), (avail, caret, text))
+                # What the caret sits on is what it was pointing at: the
+                # character index the window kept, offsets included.
+                offset = 1 if text.startswith("…") else 0
+                if index < len(text) and not text[index:].startswith("…"):
+                    self.assertEqual(text[index], line[caret], (avail, caret))
+
+    def test_the_text_before_the_caret_is_what_survives(self):
+        """A caret in the middle keeps its context, not the end of the line."""
+        line = "a" * 50 + "CARET" + "b" * 50
+        text, caret = steer_window(line, 53, 20)
+        self.assertTrue(text.startswith("…"))
+        self.assertTrue(text.endswith("…"))
+        self.assertIn("CAR", text[:caret])  # the text immediately before it
+        self.assertNotIn("b", text)  # what a tail-anchored clip would keep
+
+    def test_a_caret_at_the_end_keeps_the_tail(self):
+        line = "x" * 200
+        text, caret = steer_window(line, 200, 20)
+        self.assertTrue(text.startswith("…"))
+        self.assertEqual(caret, len(text))
+        self.assertLessEqual(visible_len(text) + 1, 20)
+
+    def test_a_caret_at_the_start_keeps_the_head(self):
+        line = "y" * 200
+        text, caret = steer_window(line, 0, 20)
+        self.assertFalse(text.startswith("…"), "nothing was cut at the front")
+        self.assertTrue(text.endswith("…"))
+        self.assertEqual(caret, 0)
+        self.assertEqual(visible_len(text) + 1, 20)
+
+    def test_a_short_window_still_works(self):
+        text, caret = steer_window("abcdefghij", 5, 4)
+        self.assertLessEqual(visible_len(text) + 1, 4)
+        self.assertGreaterEqual(caret, 0)
+
+    def test_a_caret_past_the_end_is_clamped(self):
+        """A stale index (the line shrank under it) must not slice wildly."""
+        text, caret = steer_window("abc", 99, 20)
+        self.assertEqual((text, caret), ("abc", 3))
 
 
 class FakeTTY(io.StringIO):

@@ -370,14 +370,23 @@ class _InputRowOutput:
     """OutputAdapter stand-in for the steering input row."""
 
     def __init__(
-        self, line: str = "", queued: str | None = None, armed: bool = True
+        self,
+        line: str = "",
+        queued: str | None = None,
+        armed: bool = True,
+        caret: int | None = None,
     ) -> None:
         self.line = line
         self.queued = queued
         self.armed = armed
+        # Default to the end of the line, which is where typing leaves it.
+        self.caret = len(line) if caret is None else caret
 
     def steer_line(self) -> str:
         return self.line
+
+    def steer_caret(self) -> int:
+        return self.caret
 
     def steer_pending(self) -> str | None:
         return self.queued
@@ -445,11 +454,40 @@ class TestSteeringInputRow(unittest.TestCase):
         agent._turn_in_progress = False
         self.assertEqual(agent._footer_input(), "")
 
-    def test_a_long_line_still_ends_with_the_cursor(self):
+    def test_a_long_line_still_shows_the_caret(self):
         row = self._row(line="x" * 500)
         self.assertIn("…", row)
         self.assertLessEqual(visible_len(row), term_width())
-        self.assertTrue(row.endswith(_CURSOR), row[-20:])
+        self.assertIn(_CURSOR, row)
+
+    def test_the_caret_sits_where_the_editing_position_is(self):
+        """The block is drawn *in* the text, not always after it.
+
+        `steer_window` reserves the caret's column and gives back an index to
+        splice it at, so the text before the caret is exactly what the cursor
+        moved over.
+        """
+        row = self._row(line="use pandas", caret=3)
+        self.assertEqual(visible_len(row[: row.index(_CURSOR)]), 6)  # " ❯ use"
+        self.assertGreater(row.index("use"), 0)
+        self.assertGreater(row.index("pandas"), row.index(_CURSOR))
+
+    def test_the_caret_can_move_to_the_start(self):
+        row = self._row(line="use pandas", caret=0)
+        self.assertEqual(visible_len(row[: row.index(_CURSOR)]), 3)  # " ❯ "
+
+    def test_a_late_caret_scrolls_to_keep_it_visible(self):
+        """A caret past the window scrolls the row, cutting both ends.
+
+        The window follows the caret, so the front of the line is dropped --
+        the old tail-anchored rule showed the end of the line and drew the
+        caret next to text it was nowhere near.
+        """
+        row = self._row(line="abc" + "-" * 500 + "xyz", caret=503)
+        self.assertEqual(row.count("…"), 2)  # cut at both ends
+        self.assertIn(_CURSOR, row)
+        self.assertLessEqual(visible_len(row), term_width())
+        self.assertNotIn("abc", row)  # what the window scrolled past
 
 
 class TestToolResultLine(unittest.TestCase):
