@@ -10,7 +10,6 @@ Wisemonkey is a simple, extensible CLI AI agent for Linux and macOS terminals. I
 wisemonkey/
 ├── agent/                  # Core agent code.
 │   ├── agent.py            # REPL frontend: agent loop, prompt handling, key bindings.
-│   ├── tui.py              # Textual TUI frontend.
 │   ├── client.py           # Client-side connection to a daemon server.
 │   ├── server.py           # Daemon server (UDS) owning the session Core.
 │   ├── ipc.py              # Client/server protocol: messages, payloads, transports.
@@ -26,7 +25,7 @@ wisemonkey/
 │   ├── history.py          # Input history handling.
 │   ├── config.py           # Configuration loading and handling.
 │   ├── console.py          # Rich console output with themed formatting.
-│   ├── output.py           # Output adapter protocol (REPL, TUI, IPC).
+│   ├── output.py           # Output adapter protocol (REPL, IPC).
 │   ├── core.py             # Core agent functions, like API connection and tool calls.
 │   ├── mcp.py              # MCP server support.
 │   ├── mdstream.py         # Streaming markdown renderer for the REPL.
@@ -73,7 +72,7 @@ The system prompt is built in `Core._build_system_prompt()` each turn. It assemb
 
 ### IPC Protocol (`agent/ipc.py`)
 
-Phase 0 of the client/server split (see the `CLIENT_SERVER` session plan). Defines the wire protocol that lets a client (REPL/TUI) talk to a server that owns `Core`/`Memory`/`Config`:
+Phase 0 of the client/server split (see the `CLIENT_SERVER` session plan). Defines the wire protocol that lets a client talk to a server that owns `Core`/`Memory`/`Config`:
 
 - `Message` envelope: `kind` (`event`/`request`/`response`/`error`), `name`, `payload`, `id`, `reply_to`, `turn_id`, `ts`.
 - Framing: newline-delimited JSON via `encode_message()` / `decode_message()`.
@@ -89,7 +88,7 @@ Phase 0 of the client/server split (see the `CLIENT_SERVER` session plan). Defin
 Phase 2/3 of the client/server split. The **server owns the session authoritatively**: `Core`, `ChatMemory`, profile/notes, vector store, tool execution, and persistence all live in the daemon process.
 
 - `wmk --server [session]` runs the daemon: binds a UDS at `$XDG_RUNTIME_DIR/wisemonkey/$SESSION.sock`, serves requests until stopped.
-- Clients (REPL `agent.py`, TUI `tui.py`) try `ServerConnection.connect(session, spawn=False)` at startup. On success they run as thin remote clients (turns via `remote.prompt`, commands via `remote.command`, cancel via `remote.cancel`, memory stats via `MEMORY_STATS`); on failure they fall back to local mode (in-process `Core` + loopback emitter).
+- Clients (REPL `agent.py`) try `ServerConnection.connect(session, spawn=False)` at startup. On success they run as thin remote clients (turns via `remote.prompt`, commands via `remote.command`, cancel via `remote.cancel`, memory stats via `MEMORY_STATS`); on failure they fall back to local mode (in-process `Core` + loopback emitter).
 - `ServerConnection` uses a **single reader thread** that dispatches all incoming messages: replies → per-request queues, events → the current turn's `on_event`, server requests → RPC handlers. Never `recv()` from multiple threads.
 - Client requests: `PROMPT`, `COMMAND`, `CANCEL`, `PING`, `MEMORY_STATS`, `RECORD` (records a client-side exchange, e.g. a locally run `!` shell command, into the server's chat history), `SHUTDOWN`.
 - `ServerRequest` RPCs (confirmations, questions, subprocess runs) are relayed to the attached client and answered there; `run_subprocess` executes client-side with full terminal control.
@@ -117,8 +116,6 @@ A truncated answer used to be indistinguishable from a finished one. The provide
 - cancelled or errored → not flagged: neither is an incomplete *answer* (one has its own channel, the other is raised).
 
 `run_turn()` builds `TurnResult.incomplete` / `.incomplete_reason` (`"length"` or `"stream_ended"`), flags the stored exchange (`incomplete: True`) and reports it. The flag is metadata: the content the model sees is untouched, and `_render_history()` honours it when `mark_incomplete` is on, so the startup recap says `(continued)` for a fragment that happens to *look* finished — the punctuation heuristic `_ends_mid_sentence()` cannot. `_persist_partial_turn()` flags what it stores too: whatever streamed before an error is a fragment by definition.
-
-The payload field mirrors `max_turns_reached` end to end (`TurnEndPayload` → `TurnEmitter.turn_end` → `server.py` → the TUI), and the wording lives in one place, `output.incomplete_message()`, so the REPL and the TUI cannot drift.
 
 **Do not read a usage-bearing chunk and `continue`.** OpenAI's `include_usage` puts usage on a choices-less chunk, but a provider that attaches it to its last *content* chunk would have that text silently dropped — the usage branch used to `continue` before the delta was read. Record usage, then fall through to the empty-choices guard.
 
@@ -183,8 +180,6 @@ Visible reasoning is **not** marked in the chat output. Instead, the footer's bo
 
 The reasoning text itself **is** printed to chat: `_handle_event` streams it with `print(..., end="")` in the `thinking` role. Because that leaves the cursor mid-line, `_reasoning_stop` emits the missing newline when the block ended without one (`_reasoning_mid_line`), so the dim thinking text and the answer never share a line. A block that already ended in a newline adds none.
 
-The TUI needs no equivalent: it buffers reasoning and flushes whole lines, and has its own status-bar indicator. `tests/test_agent_stages.py::TestReasoningFooterIndicator` pins the flag lifecycle, the absence of chat-output markers, the closing newline and its absence when the block already ended at a line boundary; `tests/test_footer.py::TestFooterHintsRow` pins which row the indicators are drawn on.
-
 ### Mid-turn steering (`agent/steer.py`)
 
 While a turn is running, `agent/steer.py` puts the tty in **cbreak** mode and reads keystrokes on a daemon thread. Enter queues the line; the REPL main loop drains the queue *before* showing the prompt again (`Agent._steer_drain`), so a queued line goes through the exact same `@`-expansion, command dispatch and turn path as a typed prompt.
@@ -195,9 +190,9 @@ The buffer is a real, if small, **line editor**: the caret can sit anywhere in t
 
 Two encodings have to be decoded, because the kitty protocol is pushed at REPL start and *stays* pushed: the legacy `CSI D` / `CSI 1~` / `ESC O H` spellings that a terminal ignoring the protocol sends, and the protocol's own `CSI 1;129D` (Left with num_lock) and `CSI 7;129~`. `_nav_action()` is the single table for both -- an unknown sequence stays swallowed, exactly as before, so a function key still cannot leak its bytes into the line. `ESC <key>` that is not a sequence is no longer dropped along with the ESC: a stray Escape used to eat the character that followed it, and the read loop now clears a stale escape state on its select timeout so a lone `ESC` cannot swallow a keystroke arriving later.
 
-That row is an **input field**, so it renders a prompt marker and a block cursor (`❯ █`) even when nothing has been typed yet, and `Agent._footer_input()` drops the caret — never the marker alone — while steering is not actually capturing (`OutputAdapter.steer_active()`, which is False while an `ask_*` question or a subprocess owns the tty); with nothing typed and nothing queued, the row then goes blank rather than inviting keystrokes into a buffer nobody is reading. The terminal's own cursor cannot be used for this: it has to stay where the streamed answer is being written. The caret is therefore a cell drawn from the palette (`footer_sgr()["cursor"]`, white), one visible column wide, spliced into the text at the caret's index. The TUI's cursor is *not* the same value: Textual fills its block with `primary` and draws the covered character in `block-cursor-foreground`, so keeping those equal is what makes the block solid — a white foreground there would punch a letter through it. The row is drawn from the turn flag plus the armed reader, so both turn loops call `_footer_refresh()` *after* `_steer_start()` — refreshing before either is set would leave the row blank until the next keystroke or streamed chunk. `Footer.set_spinner("")` re-renders the row with its existing content for the same reason: that redraw exists to clear the last spinner frame off the hints row, not to blank what the user is typing on.
+That row is an **input field**, so it renders a prompt marker and a block cursor (`❯ █`) even when nothing has been typed yet, and `Agent._footer_input()` drops the caret — never the marker alone — while steering is not actually capturing (`OutputAdapter.steer_active()`, which is False while an `ask_*` question or a subprocess owns the tty); with nothing typed and nothing queued, the row then goes blank rather than inviting keystrokes into a buffer nobody is reading. The terminal's own cursor cannot be used for this: it has to stay where the streamed answer is being written. The caret is therefore a cell drawn from the palette, one visible column wide, **painted over the character it points at rather than spliced in beside it**: inserting a cell pushed the rest of the line one column right every time the caret moved, which is not how a terminal or `readline` behaves. `footer.block_cursor(under)` builds it in its two forms — `footer_sgr()["cursor_over"]` over a character (reverse video, so the letter stays put inside the white block and is drawn through it, knocked out in the terminal's own background colour, which is the one colour the palette cannot know) and `footer_sgr()["cursor"]` past the end of the line, where there is no character to cover and the cell takes one column of its own.
 
-`footer.steer_window()` is what makes the caret *visible* wherever it is, and it is the part that is easy to get subtly wrong. The old rule — truncate from the front, caret always last — stopped being right the moment arrow keys could move it. The window now reserves one column for the caret cell and one per `…` it actually draws, is centred on the caret (keeping the text *before* it, which is what is being edited), and only then measures the markers against the budget. `tests/test_footer.py::TestSteerWindow` sweeps every caret position on a long line across several widths and asserts the invariant that no other test can see: text + markers + caret never exceed the budget, and the caret never falls outside the window. Ordering in the row is typed text → queued line → bare marker, so a queued follow-up is not hidden by an empty input field.
+`footer.steer_window()` is what makes the caret *visible* wherever it is, and it is the part that is easy to get subtly wrong. The old rule — truncate from the front, caret always last — stopped being right the moment arrow keys could move it. The window now reserves one column for the caret cell and one per `…` it actually draws, is centred on the caret (keeping the text *before* it, which is what is being edited), and only then measures the markers against the budget. That reservation stays as it was even though a caret sitting on a character no longer consumes a column: the surplus is one column of slack, whereas a budget that assumed the overlay would wrap the row on the one caret position that does need the column (the end of the line). `tests/test_footer.py::TestSteerWindow` sweeps every caret position on a long line across several widths and asserts the invariant that no other test can see: text + markers + caret never exceed the budget, and the caret never falls outside the window. `tests/test_footer.py::TestBlockCursor` pins the cell itself (one column, its own reset, the character kept inside it), and `tests/test_agent_stages.py::TestSteeringInputRow` pins the row-level consequence: the row's width does not change as the caret moves within the line. Ordering in the row is typed text → queued line → bare marker, so a queued follow-up is not hidden by an empty input field.
 
 It clears `ICANON` and `ECHO` but deliberately **keeps `ISIG`**. With `ISIG` off the kernel never turns Ctrl+C into SIGINT: the reader thread would just see a literal `0x03` byte and set a flag, which the turn does not check while it is blocked in `router.chat()` or inside a tool — so Ctrl+C would silently do nothing during exactly the phases it is most needed. Keeping `ISIG` on means Ctrl+C raises `KeyboardInterrupt` in the main thread, which `core.py` already unwinds (`TurnResult(cancelled=True)`). `0x03` is dropped in `_handle_byte` as a belt-and-braces measure.
 
@@ -281,7 +276,7 @@ The child gets its own **process group**, so `kill_job` signals the whole group:
 
 A tool asks the user before it does something irreversible or that reaches
 outside the session. The prompt is always `output.ask_confirm(...)` (so it works
-identically in the REPL, the TUI and the IPC/daemon path), never a bare
+identically in the REPL and the IPC/daemon path), never a bare
 `input()`, and a decline returns a dict carrying `user_cancelled: True` plus an
 `error` that tells the model to explain itself rather than retry.
 
@@ -438,7 +433,6 @@ One config vocabulary (`model.thinking.effort`: `none, minimal, low, medium, hig
 | Rich output | `rich_theme_dict()` | style *tags* (`[weak]`, `[patch-add]`, ...), not values |
 | REPL prompt | `prompt_toolkit_dict()` | prompt_toolkit needs literal hex, not Rich style names |
 | Sticky footer | `footer_sgr()` | the footer writes raw escape sequences and never goes through Rich |
-| Textual TUI | `textual_theme()` | Textual resolves `$primary` etc. from its own theme object |
 
 The rules the palette encodes, each of which fixed a real defect:
 
@@ -447,7 +441,6 @@ The rules the palette encodes, each of which fixed a real defect:
 - **`patch-add`/`patch-remove` are the same green/red as `ok`/`error`.** They were `green` and `red` against `chartreuse4` and `bold red` — two greens and two reds doing one job each.
 - **`path` is foreground-only.** It was `#999999 on #252525`, which drew a dark rectangle around every path and every `$ command` in a light terminal.
 - **Yellow is keycaps only.** Keycaps are the one place a hue that means nothing semantic is worth the contrast.
-- **Reasoning text has its own role, `thinking`.** It was `[weak]` in the REPL and `[dim]` in the TUI — two different greys for one thing, and the brighter of the two competed with the answer. `thinking` is its own field, `think` (darker than both `weak` and `faint`), in both frontends, since the model musing about its plan is not part of the answer.
 
 Roles (`agent`, `user`, `tool`, `path`, ...) are **properties**, not fields, so they cannot be assigned independently and drift apart.
 

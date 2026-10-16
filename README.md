@@ -246,7 +246,7 @@ You can attach files directly to a prompt with `@`-references: writing `@agent/a
 - **Directories** inject a shallow listing.
 - Non-existent or handle-like tokens (`@langur`, `a@b.com`) are left untouched.
 
-The typed text stays as-is on screen and in chat history — only the message sent to the model carries the attachment. Set `agent.at_file_max_chars: 0` to disable the feature. Path completion works after `@` too (`@ag` → `@agent/`), in both the REPL and the TUI.
+The typed text stays as-is on screen and in chat history — only the message sent to the model carries the attachment. Set `agent.at_file_max_chars: 0` to disable the feature. Path completion works after `@` too (`@ag` → `@agent/`).
 
 ## Soul file
 
@@ -380,7 +380,7 @@ wmk --server my-project
 
 The server binds a Unix domain socket at `$XDG_RUNTIME_DIR/wisemonkey/$SESSION.sock` (e.g. `/run/user/1000/wisemonkey/default.sock`) and stays running until stopped.
 
-Any client started afterwards (REPL `wmk` or TUI `wmk --tui`) **tries to attach to an existing daemon for its session first**. If a server is up, the client runs as a thin remote client: turns, slash commands, cancellation, and memory stats all flow over the socket, while shell commands (`!`) run locally and their results are recorded in the server's chat history. If no server is up, the client falls back to the normal mode, where an ephemeral server is spawned for the duration of the client's lifespan.
+Any client started afterwards **tries to attach to an existing daemon for its session first**. If a server is up, the client runs as a thin remote client: turns, slash commands, cancellation, and memory stats all flow over the socket, while shell commands (`!`) run locally and their results are recorded in the server's chat history. If no server is up, the client falls back to the normal mode, where an ephemeral server is spawned for the duration of the client's lifespan.
 
 ```bash
 # Terminal 1: start the daemon
@@ -535,7 +535,7 @@ In addition to persistent memory, the agent maintains a **chat history** of rece
 - Targeted edits use `patch_file`, which can match text (whitespace-tolerant, exact-match required) or patch by line range with `start_line`/`end_line`
 - `search_content` searches file contents by literal substring (default) or by Python regular expression (`regex: true`), with context lines, glob filters, depth limits and a reported result cap
 - The token count is live: the footer shows a per-turn Δ while the model streams, the status line shows the exact delta, provider-reported prompt tokens and (if `model.pricing` is configured) the turn's cost
-- All colour comes from one palette (`agent/palette.py`); the Rich theme, the prompt, the sticky footer and the TUI are generated from it and cannot drift apart
+- All color comes from one palette (`agent/palette.py`); the Rich theme, the prompt, the sticky footer, and other components cannot drift apart
 - Long-running commands can be backgrounded with `spawn`, watched incrementally with `poll_job`, and stopped with `kill_job` (which signals the whole process group and returns the output printed before death)
 
 **Persistence:**
@@ -566,7 +566,6 @@ Wisemonkey is built to be modular and hackable. Here is an overview of the main 
 wisemonkey/
 ├── agent/                  # Core agent code.
 │   ├── agent.py            # REPL frontend: agent loop, prompt handling, key bindings.
-│   ├── tui.py              # Textual TUI frontend.
 │   ├── client.py           # Client-side connection to a daemon server.
 │   ├── server.py           # Daemon server (UDS) owning the session Core.
 │   ├── ipc.py              # IPC protocol: messages, payloads, transports.
@@ -580,7 +579,7 @@ wisemonkey/
 │   ├── history.py          # Input history handling.
 │   ├── config.py           # Configuration loading and handling.
 │   ├── console.py          # Rich console output with themed formatting.
-│   ├── output.py           # Output adapter protocol (REPL, TUI, IPC).
+│   ├── output.py           # Output adapter protocol (REPL, IPC).
 │   ├── footer.py           # Sticky footer (DECSTBM scroll region) + spinner.
 │   ├── steer.py            # Mid-turn steering input (cbreak key capture).
 │   ├── keys.py             # Terminal key protocol (modified Enter, kitty keys).

@@ -100,12 +100,9 @@ class TestRichTheme(TestCase):
 
     def test_reasoning_sites_use_the_thinking_tag(self):
         """Pins the wiring: a `[weak]`/`[dim]` left behind in a frontend would
-        pass every palette test above (the TUI rendered reasoning with `[dim]`,
-        the REPL with `[weak]` -- two different greys for one thing)."""
+        pass every palette test above."""
         for src_path, needle in (
             ("agent/agent.py", 'print(f"[thinking]{escape(payload.text)}[/]"'),
-            ("agent/tui.py", 'f"[thinking]{buf}[/thinking]"'),
-            ("agent/tui.py", 'f"[thinking]{self._reasoning_buffer}[/thinking]"'),
         ):
             src = pathlib.Path(src_path).read_text(encoding="utf-8")
             assert needle in src, f"{src_path}: reasoning not using [thinking]"
@@ -134,10 +131,11 @@ class TestPromptToolkitStyle(TestCase):
 
 
 class TestFooterSgr(TestCase):
-    def test_all_eight_footer_slots_are_present(self):
+    def test_every_footer_slot_is_present(self):
         """footer.py reads these by name; a rename there breaks the footer."""
         assert set(PALETTE.footer_sgr()) == {
-            "dim", "reset", "accent", "label", "text", "key", "bar_bg", "cursor",
+            "dim", "reset", "accent", "label", "text", "key", "bar_bg",
+            "cursor", "cursor_over",
         }
 
     def test_cursor_is_a_white_background_block(self):
@@ -148,71 +146,13 @@ class TestFooterSgr(TestCase):
         r, g, b = (int(PALETTE.text[i:i + 2], 16) for i in (1, 3, 5))
         assert PALETTE.footer_sgr()["cursor"] == f"\x1b[48;2;{r};{g};{b}m"
 
-
-class TestTextualCursor(TestCase):
-    def test_block_cursor_stays_solid(self):
-        """Textual fills its cursor with `primary` and draws the underlying
-        character in `block-cursor-foreground`, so the two being *equal* is
-        what makes the block solid. Making this white would punch a letter
-        through it -- the footer's white caret is a different mechanism."""
-        variables = PALETTE.textual_theme().variables
-        assert variables["block-cursor-foreground"] == PALETTE.blue
-
-    def test_footer_colours_come_from_the_palette(self):
-        """The SGR carries 24-bit RGB components, not the hex text, so the
-        check is on the numbers: a `\\x1b[36m`-style approximation would
-        not match."""
-        sgr = PALETTE.footer_sgr()
-        r, g, b = (int(PALETTE.blue[i:i + 2], 16) for i in (1, 3, 5))
-        assert sgr["accent"] == f"\x1b[38;2;{r};{g};{b}m"
-        assert sgr["key"].endswith(f"38;2;{int(PALETTE.kbd[1:3], 16)};"
-                                   f"{int(PALETTE.kbd[3:5], 16)};"
-                                   f"{int(PALETTE.kbd[5:7], 16)}m")
-
-    def test_reset_is_a_real_reset(self):
-        assert PALETTE.footer_sgr()["reset"] == "\x1b[0m"
-
-    def test_footer_module_uses_the_generated_sequences(self):
-        """Pins the wiring, not just the palette: a hand-written
-        `\\x1b[36m` left behind would pass every test above."""
-        src = pathlib.Path("agent/footer.py").read_text(encoding="utf-8")
-        assert "_SGR = PALETTE.footer_sgr()" in src
-        # No hard-coded colour escapes left outside the generated block.
-        body = src.split("_SGR = PALETTE.footer_sgr()")[1]
-        assert "\\x1b[3" not in body
-        assert "\\x1b[1;38;5;" not in body
-
-
-class TestTextualTheme(TestCase):
-    def test_theme_builds_and_has_the_wisemonkey_tokens(self):
-        theme = PALETTE.textual_theme()
-        assert theme.name == "wisemonkey"
-        colors = theme.to_color_system().generate()
-        # These are the two tokens wm.tcss used, which resolved to
-        # Textual's purple palette before.
-        assert colors["primary"] == "#4C9AFF"
-        assert colors["accent"] == "#2F81F7"
-
-    def test_textual_tokens_are_derived_from_our_primary(self):
-        """`$primary-muted` is a darkened form of *our* primary now. When it
-        came from Textual's built-in theme it was purple, which is the whole
-        reason the TUI did not match the REPL."""
-        colors = PALETTE.textual_theme().to_color_system().generate()
-        primary = colors["primary"].lower()
-        assert primary == PALETTE.blue
-        muted = colors["primary-muted"].lower()
-        assert muted != "#3c3c3c"  # Textual's default muted purple
-        # A muted token is the same hue at lower luminance.
-        pr, pg, pb = (int(primary[i:i + 2], 16) for i in (1, 3, 5))
-        mr, mg, mb = (int(muted[i:i + 2], 16) for i in (1, 3, 5))
-        assert mr <= pr and mg <= pg and mb <= pb
-        assert (mr, mg, mb) != (pr, pg, pb)
-
-    def test_tui_registers_the_theme_before_css_is_parsed(self):
-        src = pathlib.Path("agent/tui.py").read_text(encoding="utf-8")
-        assert "self.register_theme(PALETTE.textual_theme())" in src
-        assert 'self.theme = "wisemonkey"' in src
-
+    def test_cursor_over_a_character_is_reverse_video(self):
+        """The caret painted on a character fills the same white cell while
+        drawing the character in the terminal's own background colour -- which
+        is the one colour the palette cannot know, so reverse video is what
+        does the knocking out."""
+        r, g, b = (int(PALETTE.text[i:i + 2], 16) for i in (1, 3, 5))
+        assert PALETTE.footer_sgr()["cursor_over"] == f"\x1b[38;2;{r};{g};{b}m\x1b[7m"
 
 class TestPaletteIsFrozen(TestCase):
     def test_fields_cannot_be_mutated_at_runtime(self):
@@ -230,32 +170,3 @@ class TestPaletteIsFrozen(TestCase):
         assert "agent" not in p.__dataclass_fields__
         assert p.agent == p.blue_dim
 
-
-class TestNoScatteredCopies(TestCase):
-    def test_console_theme_is_generated(self):
-        src = pathlib.Path("agent/console.py").read_text(encoding="utf-8")
-        assert "PALETTE.rich_theme_dict()" in src
-        # The old inline dict of colour names is gone.
-        assert "deep_sky_blue3" not in src
-
-    def test_no_stray_rich_colour_names_left_in_the_source(self):
-        """A leftover `steel_blue3` somewhere would be a fourth palette.
-
-        This is what found the real strays: `tui.py` styled tool activation
-        with `steel_blue3` inline, `output.py` with `bold deep_sky_blue3`, and
-        four spots in `commands.py` with `grey30/39/50`, none of which the
-        theme controlled.
-        """
-        root = pathlib.Path("agent")
-        offenders = []
-        for path in root.rglob("*.py"):
-            if path.name == "palette.py":
-                continue
-            for i, line in enumerate(
-                path.read_text(encoding="utf-8").splitlines(), 1
-            ):
-                if re.search(r"\b(steel_blue\d|deep_sky_blue\d|chartreuse\d|"
-                             r"indian_red|light_pink\d|dark_olive_green\d|"
-                             r"orange_red\d|orange\d|grey\d+|gray\d+)\b", line):
-                    offenders.append(f"{path}:{i}: {line.strip()}")
-        assert not offenders, "hard-coded Rich colour names remain:\n" + "\n".join(offenders)

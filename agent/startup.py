@@ -34,7 +34,7 @@ def startup_info(core, output: OutputAdapter):
     """Print startup information.
 
     Delegates all output to the *output* adapter so the same code works
-    in both the terminal agent (console) and the TUI (RichLog).
+    in the terminal agent.
     """
 
     import shutil

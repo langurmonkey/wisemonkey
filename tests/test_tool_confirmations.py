@@ -414,7 +414,7 @@ class TestFileToolConfirmation(BaseTest):
         output, result = self._call("read_file", {"path": str(self.outside)})
         assert len(output.confirmations) == 1
         # The prompt shows the *contracted* path (``contractuser``, the same
-        # shortening the REPL and the TUI use), so the home prefix reads as
+        # shortening the REPL use), so the home prefix reads as
         # ``~``. Comparing against the raw absolute path only matched while the
         # temp directory happened to sit outside $HOME -- and ``mkdtemp``
         # honours $TMPDIR, which the agent points at its own scratch dir inside

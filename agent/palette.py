@@ -3,9 +3,7 @@
 There used to be four independent palettes — a Rich `Theme`, a
 prompt_toolkit `Style`, hand-written SGR constants in the footer, and
 Textual's built-in design tokens — with no shared values and no shared
-intent. That is why the TUI looked purple while the REPL looked blue, and
-why `path` rendered as a dark block on a light terminal: the copy had
-drifted.
+intent.
 
 This module fixes that structurally rather than by taste alone:
 
@@ -220,53 +218,26 @@ class Palette:
             "text": fg(self.text),
             "key": f"\x1b[1m{fg(self.kbd)}",
             "bar_bg": bg(self.bar_bg),
-            # The steering row's block cursor: a *background* colour, because
-            # the cell it paints has no glyph of its own to tint. White, not
-            # the accent blue: a caret is a pointing device, not a signal, and
-            # at one cell wide a coloured block reads as a marked character
-            # rather than as the insertion point. `text` is the palette's
-            # whitest neutral, so this is one colour among the others rather
-            # than a literal `#ffffff` the theme does not know about.
+            # The steering row's block cursor over an *empty* cell (the caret
+            # at the end of the line): a background colour, because the cell
+            # it paints has no glyph of its own to tint. White, not the accent
+            # blue: a caret is a pointing device, not a signal, and at one cell
+            # wide a coloured block reads as a marked character rather than as
+            # the insertion point. `text` is the palette's whitest neutral, so
+            # this is one colour among the others rather than a literal
+            # `#ffffff` the theme does not know about.
             "cursor": bg(self.text),
+            # ...and over a *character* (the caret mid-line): reverse video,
+            # which fills the cell with the same white while drawing the
+            # character it covers in the terminal's own background colour.
+            # That is the point -- the letter shows through the block, knocked
+            # out, exactly as `readline` and prompt_toolkit draw one, and the
+            # cell stays one column wide instead of pushing the text along.
+            # Reverse rather than a fixed knockout colour because the terminal's
+            # background is the one colour the palette cannot know.
+            "cursor_over": f"{fg(self.text)}\x1b[7m",
         }
 
-    def textual_theme(self) -> Any:
-        """A Textual `Theme` matching the same palette.
-
-        The TUI previously used Textual's built-in `$primary-muted` and
-        `$accent-muted`, which is where the purple came from — the TUI was
-        literally running a different colour scheme. Overriding the theme
-        makes `$primary` etc. resolve to these values instead.
-        """
-        from textual.theme import Theme
-
-        return Theme(
-            name="wisemonkey",
-            primary=self.blue,
-            secondary=self.blue_dim,
-            accent=self.blue_mid,
-            warning=self.warn,
-            error=self.error,
-            success=self.ok,
-            foreground=self.text,
-            background="#0d1117",
-            surface="#161b22",
-            panel="#21262d",
-            boost=self.blue_mid,
-            dark=True,
-            variables={
-                "footer-key-foreground": self.kbd,
-                "footer-background": self.bar_bg,
-                # The TUI's block cursor is left as it was: Textual fills that
-                # cursor with the theme's `primary` (= `blue`) and draws the
-                # character it covers in this foreground, so keeping the two
-                # equal is what makes the block *solid*. Setting it to `text`
-                # here would punch a white letter through the block. The
-                # footer has no such mechanism -- it paints an empty cell --
-                # so its white caret is a background colour, above.
-                "block-cursor-foreground": self.blue,
-            },
-        )
 
 
 #: The palette everything uses. A module-level instance rather than a

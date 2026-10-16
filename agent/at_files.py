@@ -9,7 +9,7 @@ in a prompt attaches the file's content to the message sent to the model:
   knows the file exists and can read it itself with ``read_file``.
 * Directories inject a shallow listing.
 
-The user-visible text in the REPL/TUI keeps the bare ``@path`` reference;
+The user-visible text in the REPL keeps the bare ``@path`` reference;
 expansion happens in :func:`expand_at_references` right before the turn is
 run, so chat history stays compact (only the model sees the inlined block).
 """
@@ -17,13 +17,13 @@ run, so chat history stays compact (only the model sees the inlined block).
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 # Matches @path or @`path` tokens. The path part must not contain
 # whitespace or backticks; it may start with ~, ., / or be a bare word
 # containing a path separator or an extension (to avoid eating @handles
 # like "@langur" in prose).
 import re
+from pathlib import Path
 
 _AT_RE = re.compile(r"@(`[^`\s]+`|[^\s`]+)")
 

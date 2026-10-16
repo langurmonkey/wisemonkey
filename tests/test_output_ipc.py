@@ -2,10 +2,9 @@
 
 import unittest
 
-from tests.conftest import BaseTest
-
 from agent.ipc import Event, OutputPayload, loopback_pair, payload_as
 from agent.output import IpcOutputAdapter, get_output_or_ipc, set_output
+from tests.conftest import BaseTest
 
 
 class TestIpcOutputAdapter(BaseTest):

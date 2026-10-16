@@ -1,8 +1,8 @@
 """Turn event emitter (client/server phase 1).
 
 The emitter is the boundary between the agent core and whatever is driving it.
-Instead of calling Rich/inline UI helpers directly, a driver (today: the REPL
-and TUI; tomorrow: the IPC server) hands a :class:`TurnEmitter` to
+Instead of calling Rich/inline UI helpers directly, a driver (today: the REPL UI;
+ tomorrow: the IPC server) hands a :class:`TurnEmitter` to
 ``Core.run_turn()`` and receives a stream of protocol events.
 
 Phase 1 contract
@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import time
 import uuid
-
 from typing import Any
 
 from agent.ipc import (
@@ -36,7 +35,6 @@ from agent.ipc import (
     InjectWhen,
     Message,
     ReasoningPayload,
-    StageKind,
     StagePayload,
     StatusPayload,
     ToolCallPayload,

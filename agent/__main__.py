@@ -89,11 +89,6 @@ def main():
         help='Run a single prompt non-interactively, print the answer and exit',
     )
     parser.add_argument(
-        '-t', '--tui',
-        action='store_true',
-        help='WIP/EXPERIMENTAL! Launch the Textual full-screen TUI',
-    )
-    parser.add_argument(
         '--server',
         action='store_true',
         help='Run as a server process owning the session (client/server mode)',
@@ -196,18 +191,6 @@ def main():
     if args.server:
         from agent.server import main as server_main
         sys.exit(server_main(config_path=args.config, session=args.session))
-
-    # Launch TUI
-    if args.tui:
-        try:
-            from agent.tui import WisemonkeyTui
-            app = WisemonkeyTui(config_path=args.config, session=args.session)
-            app.run()
-        except Exception as e:
-            err(f"TUI launch failed: {e}")
-            traceback.print_exc()
-            sys.exit(1)
-        return
 
     # Create agent
     try:

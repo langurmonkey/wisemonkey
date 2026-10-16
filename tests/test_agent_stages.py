@@ -10,7 +10,7 @@ from typing import Any, Callable, cast
 from unittest import mock
 
 from agent.agent import Agent
-from agent.footer import _CURSOR, visible_len
+from agent.footer import _CURSOR, _RESET, block_cursor, visible_len
 from agent.ipc import Event, Message, ReasoningPayload, StageKind
 from agent.palette import PALETTE
 from agent.utils import term_width
@@ -410,10 +410,25 @@ class TestSteeringInputRow(unittest.TestCase):
     caret there was nothing to say *where* the next character would land. Both
     are the frontend's job: the terminal's own cursor has to stay on the
     streamed answer, so the caret is drawn into the row instead.
+
+    The caret is painted *over* the character it points at, never spliced in
+    beside it: a caret cell that occupied its own column pushed the rest of the
+    line one to the right whenever it moved, which is not how a terminal or a
+    prompt line editor behaves.
     """
+
+    #: The reverse-video sequence that opens a caret cell sitting on a
+    #: character (as opposed to the filled cell used past the end of the line).
+    _OVER = PALETTE.footer_sgr()["cursor_over"]
 
     def _row(self, **kwargs: Any) -> str:
         return _InputRowAgent(**kwargs)._footer_input()
+
+    def _caret_at(self, row: str) -> int:
+        """Index of the caret cell in *row*, either form."""
+        if self._OVER in row:
+            return row.index(self._OVER)
+        return row.index(_CURSOR)
 
     def test_idle_row_shows_a_marker_and_a_cursor(self):
         row = self._row()
@@ -421,14 +436,45 @@ class TestSteeringInputRow(unittest.TestCase):
         self.assertIn(_CURSOR, row)
 
     def test_typed_text_sits_before_the_cursor(self):
-        row = self._row(line="use pandas")
+        row = self._row(line="use pandas", caret=len("use pandas"))
         self.assertIn("use pandas", row)
-        self.assertLess(row.index("use pandas"), row.index(_CURSOR))
+        self.assertLess(row.index("use pandas"), self._caret_at(row))
+
+    def test_the_caret_covers_the_character_it_points_at(self):
+        """The character under the caret stays, inside the block.
+
+        It is drawn *through* the block (reverse video), so it neither
+        disappears nor moves -- which is the whole point of a block cursor.
+        """
+        row = self._row(line="use pandas", caret=4)  # on the 'p'
+        self.assertIn(f"{self._OVER}p{_RESET}", row)
+        self.assertIn("use ", row)
+        self.assertIn("andas", row)
+
+    def test_the_row_does_not_change_width_as_the_caret_moves(self):
+        """The bug: a caret cell of its own shifted the line on every key.
+
+        While the caret is on a character the row is exactly as wide as the
+        line -- the cell replaces a column instead of adding one.
+        """
+        line = "use pandas"
+        widths = {
+            visible_len(self._row(line=line, caret=i)) for i in range(len(line))
+        }
+        self.assertEqual(widths, {visible_len(self._row(line=line, caret=0))})
+        # Past the last character there is nothing to paint over, so the cell
+        # takes a column of its own -- the one `steer_window` reserves.
+        self.assertEqual(
+            visible_len(self._row(line=line, caret=len(line))),
+            visible_len(self._row(line=line, caret=0)) + 1,
+        )
 
     def test_cursor_is_a_one_column_block_from_the_palette(self):
         """The caret must come from the shared palette, not a stray colour."""
         self.assertIn(PALETTE.footer_sgr()["cursor"], _CURSOR)
         self.assertEqual(visible_len(_CURSOR), 1)
+        self.assertEqual(visible_len(block_cursor("q")), 1)
+        self.assertIn(PALETTE.footer_sgr()["cursor_over"], block_cursor("q"))
 
     def test_queued_line_keeps_its_own_marker(self):
         row = self._row(queued="wait, use polars")
@@ -448,6 +494,7 @@ class TestSteeringInputRow(unittest.TestCase):
         row = self._row(line="half typed", armed=False)
         self.assertIn("half typed", row)
         self.assertNotIn(_CURSOR, row)
+        self.assertNotIn(self._OVER, row)
 
     def test_row_is_blank_outside_a_turn(self):
         agent = _InputRowAgent()
@@ -458,23 +505,24 @@ class TestSteeringInputRow(unittest.TestCase):
         row = self._row(line="x" * 500)
         self.assertIn("…", row)
         self.assertLessEqual(visible_len(row), term_width())
-        self.assertIn(_CURSOR, row)
+        self.assertIn(_CURSOR, row)  # the caret is past the end of the window
 
     def test_the_caret_sits_where_the_editing_position_is(self):
         """The block is drawn *in* the text, not always after it.
 
         `steer_window` reserves the caret's column and gives back an index to
-        splice it at, so the text before the caret is exactly what the cursor
+        paint it at, so the text before the caret is exactly what the cursor
         moved over.
         """
         row = self._row(line="use pandas", caret=3)
-        self.assertEqual(visible_len(row[: row.index(_CURSOR)]), 6)  # " ❯ use"
+        self.assertEqual(visible_len(row[: self._caret_at(row)]), 6)  # " ❯ use"
         self.assertGreater(row.index("use"), 0)
-        self.assertGreater(row.index("pandas"), row.index(_CURSOR))
+        self.assertGreater(row.index("pandas"), self._caret_at(row))
 
     def test_the_caret_can_move_to_the_start(self):
         row = self._row(line="use pandas", caret=0)
-        self.assertEqual(visible_len(row[: row.index(_CURSOR)]), 3)  # " ❯ "
+        self.assertEqual(visible_len(row[: self._caret_at(row)]), 3)  # " ❯ "
+        self.assertIn(f"{self._OVER}u{_RESET}", row)
 
     def test_a_late_caret_scrolls_to_keep_it_visible(self):
         """A caret past the window scrolls the row, cutting both ends.
@@ -485,7 +533,7 @@ class TestSteeringInputRow(unittest.TestCase):
         """
         row = self._row(line="abc" + "-" * 500 + "xyz", caret=503)
         self.assertEqual(row.count("…"), 2)  # cut at both ends
-        self.assertIn(_CURSOR, row)
+        self.assertIn(self._OVER, row)
         self.assertLessEqual(visible_len(row), term_width())
         self.assertNotIn("abc", row)  # what the window scrolled past
 

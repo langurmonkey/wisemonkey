@@ -9,8 +9,6 @@ lines (``+``), separated by a blank line::
     # 2026-06-25 15:15:39.141343
     +Ok, now I see the drop down for the provider…
 
-Designed for use with the TUI's alt+up/alt+down navigation.
-
 This module also provides :class:`PromptHistory`, the ``prompt_toolkit``
 history used by the classic REPL, which keeps slash commands out of the
 navigable prompt history.

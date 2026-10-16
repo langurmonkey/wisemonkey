@@ -21,7 +21,14 @@ from agent.completion import SmartPathCompleter
 from agent.console import err, info, newline, print
 from agent.core import Core
 from agent.emitter import TurnEmitter
-from agent.footer import _ACCENT, _CURSOR, _DIM, _LABEL, _RESET, steer_window
+from agent.footer import (
+    _ACCENT,
+    _DIM,
+    _LABEL,
+    _RESET,
+    block_cursor,
+    steer_window,
+)
 from agent.history import PromptHistory
 from agent.ipc import (
     ContentPayload,
@@ -531,7 +538,6 @@ class Agent:
         """
         if not getattr(result, "incomplete", False):
             return
-        # The wording is shared with the TUI, so the two frontends cannot drift.
         self.output.print(
             f"  [warn]{incomplete_message(getattr(result, 'incomplete_reason', ''))}[/warn]"
         )
@@ -574,6 +580,11 @@ class Agent:
         own cursor cannot be used for it, because that one has to stay where
         the streamed answer is being written.
 
+        The caret is painted *over* the character it points at rather than
+        spliced in beside it (see :func:`block_cursor`), so moving it leaves
+        the line exactly where it was. Inserting a cell shifted everything
+        after the caret one column to the right on every arrow key.
+
         Priority for the text itself: what is being typed, then the oldest
         queued follow-up. The footer's own spinner animation lives on the
         key-hints row (see :meth:`Footer.set_spinner`), never on this one, so
@@ -586,20 +597,23 @@ class Agent:
         # The caret is a promise: it says a keystroke now would land here. It
         # is dropped while the reader is paused (an ``ask_*`` question, an
         # editor owning the tty), because then nothing would happen.
-        cursor = _CURSOR if self.output.steer_active() else ""
+        caret_visible = self.output.steer_active()
         # Priority: what is being typed, then the queued follow-up, then the
         # bare input marker. A queued line outranks the caret, because an
         # empty field would hide the text that is about to be delivered.
-        if line or (cursor and not queued):
+        if line or (caret_visible and not queued):
             # `steer_window` reserves the caret's own column, so the text it
             # returns plus the caret never exceeds the budget and the row
             # cannot wrap. Four columns go to the marker and the margins.
             text, caret = steer_window(
                 line, self.output.steer_caret(), max(20, term_width() - 4)
             )
+            if not caret_visible:
+                return f" {_ACCENT}❯{_RESET} {_LABEL}{text}{_RESET}"
+            under = text[caret:]
             return (
                 f" {_ACCENT}❯{_RESET} {_LABEL}{text[:caret]}{_RESET}"
-                f"{cursor}{_LABEL}{text[caret:]}{_RESET}"
+                f"{block_cursor(under[:1])}{_LABEL}{under[1:]}{_RESET}"
             )
         if queued:
             # A submitted line is handed to the running turn at its next tool
@@ -609,13 +623,13 @@ class Agent:
                 f" {_ACCENT}↳{_RESET} {_LABEL}queued: {queued}{_RESET}"
                 f"  {_DIM}(next tool result){_RESET}"
             )
-        if not cursor:
+        if not caret_visible:
             # Nothing typed, nothing queued, and steering is off (or paused):
             # the row has nothing to advertise, so leave it blank rather than
             # inviting keystrokes into a buffer nobody is reading.
             return ""
         # Nothing typed yet: the marker and the caret *are* the message.
-        return f" {_ACCENT}❯{_RESET} {cursor}"
+        return f" {_ACCENT}❯{_RESET} {block_cursor()}"
 
     # ── mid-turn steering ───────────────────────────────────────────────────
 
@@ -875,7 +889,7 @@ class Agent:
         unsafe_warn = "  <unsafe-warn> ⚠ UNSAFE </unsafe-warn>" if unsafe else ""
         # `/resume` rebinds the memory singleton under us; keep the agent's own
         # copy in step, since it names the session for the daemon lookup and
-        # for the TUI/REPL banners.
+        # for the REPL banner.
         self.session = self.core.memory.session
         self._session = PromptSession(
             style=style,

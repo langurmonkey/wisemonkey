@@ -1,8 +1,8 @@
 """Wisemonkey IPC protocol (phase 0).
 
 This module defines the wire protocol that lets a Wisemonkey *client*
-(the classic REPL or the Textual TUI) talk to a Wisemonkey *server*
-(``Core``, tools, memory, router) over a local transport.
+talk to a Wisemonkey *server* (``Core``, tools, memory, router) over a
+local transport.
 
 Nothing here performs I/O beyond the in-process :class:`LoopbackTransport`.
 The concrete Unix-domain-socket transport lands in phase 2; phase 1 wires the

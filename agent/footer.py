@@ -90,13 +90,38 @@ _WHITE = _SGR["text"]
 _KEY = _SGR["key"]
 _BAR_BG = _SGR["bar_bg"]
 
-# One block-cursor cell: the cursor colour painted on a space, with its own
-# reset, so it is exactly one visible column wherever it is spliced in. The
-# steering row (drawn by the frontend, not here) splices it into the text at
-# the caret's index to mark where the next typed character lands -- the
-# terminal's own cursor cannot be used, because it has to stay where the
-# streamed answer is being written.
-_CURSOR = f"{_SGR['cursor']} {_SGR['reset']}"
+# A block-cursor cell, painted with its own reset so it is exactly one visible
+# column wherever it lands. The steering row (drawn by the frontend, not here)
+# places it at the caret's index to mark where the next typed character goes --
+# the terminal's own cursor cannot be used, because that one has to stay where
+# the streamed answer is being written.
+#
+# Two forms, because the caret can sit on a character or past the end:
+#
+#   * over a character -- reverse video, so the letter shows *through* the
+#     block, knocked out in the terminal's background colour. The cell is one
+#     column wide and replaces the character it covers, which is what keeps the
+#     line still while the caret moves;
+#   * over an empty cell (the caret at the end of the line) -- a filled white
+#     cell, there being no character to show through.
+_cursor_fill = f"{_SGR['cursor']} {_SGR['reset']}"
+
+
+def block_cursor(under: str = "") -> str:
+    """The caret cell, painted over the character *under* it.
+
+    *under* is the character the caret points at, or ``""`` at the end of the
+    line. Either way the result occupies exactly one column, so moving the
+    caret can never change the width of the row.
+    """
+    if not under:
+        return _cursor_fill
+    return f"{_SGR['cursor_over']}{under[0]}{_SGR['reset']}"
+
+
+#: The caret cell on an empty one, i.e. with nothing under it. Kept as a name
+#: because "is the caret drawn at all?" reads well against it.
+_CURSOR = _cursor_fill
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
@@ -148,9 +173,10 @@ def steer_window(line: str, caret: int, avail: int) -> tuple[str, int]:
     The steering row is an input field, so its caret can sit anywhere in the
     line -- the "show the tail, caret last" rule stopped being right the
     moment arrow keys could move it. Returns the visible text together with
-    the caret's index *within* that text (the caller splices the caret cell in
-    at that index), so text, its ``…`` markers and the caret together occupy
-    at most *avail* columns.
+    the caret's index *within* that text (the caller paints the caret cell over
+    the character at that index, or past the end of the text when there is
+    none), so text, its ``…`` markers and the caret together occupy at most
+    *avail* columns.
 
     The window keeps as much as it can *before* the caret -- that is the part
     being edited -- and only scrolls once the caret would otherwise fall off

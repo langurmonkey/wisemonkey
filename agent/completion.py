@@ -1,4 +1,4 @@
-"""Smart file-path completion shared by the REPL and the TUI.
+"""Smart file-path completion.
 
 The stock ``prompt_toolkit.PathCompleter`` is close to what we need, but it
 has shortcomings that make it awkward inside a chat prompt:
@@ -15,8 +15,7 @@ This module provides:
   that completes the *last token* of the input, whatever it is, handling
   ``~`` expansion and rewriting completions so the ``~`` prefix survives.
 * :func:`complete_path` — a framework-agnostic helper returning
-  ``(completions, common_prefix)`` for the last token of a text string, used
-  by the TUI (Textual has no completer protocol) for Tab completion.
+  ``(completions, common_prefix)`` for the last token of a text string.
 """
 
 from __future__ import annotations

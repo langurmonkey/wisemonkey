@@ -21,12 +21,15 @@ from agent.footer import (
     THINKING_LABEL,
     WRITE_LOCK,
     Footer,
+    _CURSOR,
     _LockedWriter,
+    block_cursor,
     clip_ansi,
     real_stream,
     steer_window,
     visible_len,
 )
+from agent.palette import PALETTE
 
 _BOLD = "\x1b[1m"
 _RESET = "\x1b[0m"
@@ -149,6 +152,40 @@ class TestSteerWindow(unittest.TestCase):
         """A stale index (the line shrank under it) must not slice wildly."""
         text, caret = steer_window("abc", 99, 20)
         self.assertEqual((text, caret), ("abc", 3))
+
+
+class TestBlockCursor(unittest.TestCase):
+    """The caret cell: one column, painted over what it points at.
+
+    A cell that took a column of its own pushed the rest of the line one to
+    the right every time the caret moved -- not how a terminal or a readline
+    prompt behaves. The character under the caret instead stays put and is
+    drawn *through* the block (reverse video), so it can still be read.
+    """
+
+    def setUp(self) -> None:
+        self.sgr = PALETTE.footer_sgr()
+
+    def test_the_cell_is_always_one_column_wide(self):
+        for under in ("", "a", " ", "€"):
+            self.assertEqual(visible_len(block_cursor(under)), 1, repr(under))
+
+    def test_the_character_under_the_caret_is_kept_inside_the_cell(self):
+        cell = block_cursor("q")
+        self.assertIn("q", cell)
+        self.assertIn(self.sgr["cursor_over"], cell)
+
+    def test_the_cell_carries_its_own_reset(self):
+        """Otherwise reverse video would leak into the rest of the row."""
+        self.assertTrue(block_cursor("q").endswith(self.sgr["reset"]))
+
+    def test_past_the_end_of_the_line_the_cell_is_a_filled_block(self):
+        self.assertEqual(block_cursor(""), _CURSOR)
+        self.assertIn(self.sgr["cursor"], block_cursor(""))
+
+    def test_only_the_first_character_is_taken(self):
+        """Callers pass a tail; the cell must still be one column."""
+        self.assertEqual(visible_len(block_cursor("rest")), 1)
 
 
 class FakeTTY(io.StringIO):

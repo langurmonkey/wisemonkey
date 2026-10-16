@@ -333,7 +333,7 @@ class Memory:
         is dropped and rebuilt lazily on next use.
 
         This mutates the singleton in place. Callers that cached session state
-        (the prompt message, the footer status line, the TUI status bar) must
+        (the prompt message, the footer status line) must
         refresh, and callers that hold a session name of their own -- the
         remote client's, the daemon's -- are unaffected, because they never
         go through this path: the daemon owns its session.

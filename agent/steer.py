@@ -304,7 +304,7 @@ class SteerInput:
         """Return the caret's index within :meth:`line` (0 .. ``len(line)``).
 
         Published alongside the line because the two describe one thing: the
-        frontend splices its block cursor into the text at this index, so a
+        frontend paints its block cursor over the character at this index, so a
         caret that moved left is drawn *there* rather than always at the end.
         """
         with self._lock:

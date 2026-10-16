@@ -1,7 +1,7 @@
 # Wisemonkey Client/Server Protocol
 
 This document specifies the wire protocol between a Wisemonkey **client**
-(REPL, TUI, or any third-party frontend) and a **server** (daemon) that owns
+(REPL or any third-party frontend) and a **server** (daemon) that owns
 the session authoritatively: `Core`, chat memory, profile/notes, vector store,
 tool execution, and persistence.
 
