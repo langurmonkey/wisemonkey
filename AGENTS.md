@@ -234,7 +234,7 @@ An image result (`image_base64` + `mime_type`) becomes a multimodal `tool` messa
 ### Streaming markdown (`agent/mdstream.py`)
 
 Most constructs are rendered a line at a time, as soon as the line is
-complete. Two are not, and both are **held back** instead.
+complete. Three are not, and all three are **held back** instead.
 
 #### Tables
 
@@ -303,6 +303,37 @@ either having to be enumerated exhaustively. `_syntax_theme()` builds it once.
 An unknown lexer name, or a layout failure, falls back to printing the raw lines
 in the `code` style — the same rule as the table: a rendering bug must not lose
 content.
+
+#### Setext headings
+
+`Sub` followed by `---` is an **H2**, not a paragraph cut in half by a thematic
+break — and until the line below arrives, the two are indistinguishable: a `---`
+is a setext underline *and* a horizontal rule, and only its predecessor decides
+which. So an ordinary paragraph line is held back **one line** (`_para`), and
+the line that follows resolves it: a setext underline (`_setext_level`, `=+` for
+H1 or `-+` for H2) turns it into a heading, anything else means it was prose and
+it is emitted then, with the current line re-processed from the top (and
+possibly held in turn).
+
+This is the cheapest of the three hold-backs — one line, not a whole block — and
+it only costs a line of latency, because the deciding line is the very next one.
+Two consequences are worth knowing:
+
+- `_could_be_setext_text()` is what makes it affordable. Only a line that could
+  plausibly *be* a heading's text is held; a fence, an ATX heading, a list, a
+  quote or a rule is emitted the moment it arrives, so the hold never applies to
+  block structure, only to prose.
+- **The table check still wins.** A `|`-bearing line is offered to the table
+  first, and `|---|` is a delimiter row before it is ever a setext underline;
+  with no table the line falls through to the same paragraph hold. A one-column
+  table whose delimiter is a bare `---` is therefore still a table.
+
+A multi-line paragraph underlines only its **last** line, where CommonMark would
+make the whole paragraph one heading — the earlier lines were emitted as prose
+before the underline arrived, and nothing is ever rendered twice.
+
+`flush()` emits a paragraph line still held, exactly as it closes a table or a
+fence: the line was prose, its underline simply never came.
 
 #### The inline scanner
 

@@ -116,10 +116,15 @@ class TestTableInStream(unittest.TestCase):
     def test_nothing_of_the_table_is_printed_while_it_streams(self):
         console, stream = _capture()
         renderer = MarkdownStreamRenderer(console)
-        for line in self.TABLE:
+        for index, line in enumerate(self.TABLE):
             renderer.feed(line)
             written = stream.getvalue()
-            self.assertIn("Here is a table", written)
+            if index:
+                # The intro is ordinary prose, so it is held back one line
+                # like any other paragraph line -- a setext underline could
+                # have followed it. It lands when the header decides, which
+                # is what this test is about: never held *with* the table.
+                self.assertIn("Here is a table", written)
             self.assertNotIn("Name", written)
             self.assertNotIn("Ada", written)
 

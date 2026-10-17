@@ -20,15 +20,19 @@ without Rich markup strings. The strategy is deliberately simple and cheap:
   bold/italic/code/strikethrough/link formatting with backslash escapes.
   Styles come from the console theme (``agent/console.py``), so the output
   matches the rest of the UI.
-- Two constructs cannot be rendered a line at a time, and both are held
-  back rather than printed as they arrive. A fenced code block is buffered
-  until its closing fence and then drawn in one piece with real syntax
-  highlighting (``rich.syntax.Syntax``), since highlighting is a property
-  of the whole block. A table is buffered for a second reason as well: the
-  column widths come from every row, and the delimiter line that marks a
-  table at all arrives *after* its header, so a header candidate holds the
-  renderer back -- nothing further is emitted until the table ends -- and
-  the finished table is drawn in one piece as a Rich ``Table``.
+- Three constructs cannot be rendered a line at a time, and all three are
+  held back rather than printed as they arrive. A fenced code block is
+  buffered until its closing fence and then drawn in one piece with real
+  syntax highlighting (``rich.syntax.Syntax``), since highlighting is a
+  property of the whole block. A table is buffered for a second reason as
+  well: the column widths come from every row, and the delimiter line that
+  marks a table at all arrives *after* its header, so a header candidate
+  holds the renderer back -- nothing further is emitted until the table
+  ends -- and the finished table is drawn in one piece as a Rich ``Table``.
+  An ordinary paragraph line is held back *one line*, because a setext
+  heading underline (``===`` or ``---``) turns the line above it into a
+  heading, and a ``---`` cannot be told from a thematic break until the line
+  under it arrives.
 """
 
 from __future__ import annotations
@@ -119,6 +123,12 @@ _INLINE_RE = re.compile(
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _HR_RE = re.compile(r"^\s*([-*_]\s*){3,}$")
+#: A setext heading's underline: a run of ``=`` (an H1) or ``-`` (an H2),
+#: optionally indented up to three spaces and trailed by spaces. Note that a
+#: ``---`` is therefore *both* a setext underline and a thematic break, and
+#: which of the two it is depends on the line above it -- the reason setext is
+#: a hold-back (see `MarkdownStreamRenderer`).
+_SETEXT_RE = re.compile(r"^ {0,3}(?P<mark>=+|-+)\s*$")
 _UL_RE = re.compile(r"^(\s*)[-*+]\s+(.*)$")
 _OL_RE = re.compile(r"^(\s*)(\d+[.)])\s+(.*)$")
 _QUOTE_RE = re.compile(r"^(\s*)>\s?(.*)$")
@@ -141,6 +151,48 @@ def _fence_match(line: str) -> tuple[str, int, str] | None:
     if not m:
         return None
     return m.group(2)[0], len(m.group(2)), m.group(3)
+
+
+def _setext_level(line: str) -> int:
+    """Return 1 or 2 if *line* is a setext underline, otherwise 0.
+
+    ``===`` underlines an H1, ``---`` an H2. Which one a line of dashes is --
+    a setext underline or a thematic break -- is decided by its *caller*,
+    against the line above: see :func:`MarkdownStreamRenderer._drain`.
+    """
+    m = _SETEXT_RE.match(line)
+    if m is None:
+        return 0
+    return 1 if m.group("mark").startswith("=") else 2
+
+
+def _could_be_setext_text(line: str) -> bool:
+    """Whether *line* could be the text of a setext heading.
+
+    A setext heading's text is a paragraph, so a line that opens some *other*
+    block -- a fence, an ATX heading, a list, a quote, a rule, or an underline
+    itself -- can never be one, and is emitted the moment it arrives. Only an
+    ordinary paragraph line is worth holding back, because only it can be
+    turned into a heading by the line that follows.
+    """
+    if not line.strip():
+        return False
+    if _fence_match(line) is not None:
+        return False
+    if _HEADING_RE.match(line) or _SETEXT_RE.match(line) or _HR_RE.match(line):
+        return False
+    if _UL_RE.match(line) or _OL_RE.match(line) or _QUOTE_RE.match(line):
+        return False
+    return True
+
+
+def _heading_style(level: int) -> str:
+    """The style for a heading of *level*: H1 underlined, H2 accent-bold."""
+    if level == 1:
+        return f"{_style('accent-bold')} underline"
+    if level == 2:
+        return _style("accent-bold")
+    return "bold"
 
 
 def _render_inline(text: str, base: str = "") -> Text:
@@ -196,16 +248,10 @@ def render_line(line: str) -> Text:
 
     m = _HEADING_RE.match(line)
     if m:
-        level = len(m.group(1))
         # H1 gets the accent style underlined; H2 just accent-bold; deeper
-        # headings plain bold.
-        if level == 1:
-            style = f"{_style('accent-bold')} underline"
-        elif level == 2:
-            style = _style("accent-bold")
-        else:
-            style = "bold"
-        return _render_inline(m.group(2), base=style)
+        # headings plain bold. A setext heading reaches the same styles via
+        # `_heading_style` -- `===` is an H1, `---` an H2.
+        return _render_inline(m.group(2), base=_heading_style(len(m.group(1))))
 
     if _HR_RE.match(line):
         return Text("─" * 40, style=_style("weak"))
@@ -340,11 +386,12 @@ class MarkdownStreamRenderer:
     """Incrementally render streamed markdown text to the console.
 
     Feed chunks with :meth:`feed`. Only complete lines are emitted, so
-    output is stable and nothing is rendered twice. A table is the one
-    exception, and it is deliberate: its lines are held until the table
-    ends (see the module docstring), then drawn in one piece. Call
-    :meth:`flush` at the end of the stream to emit the trailing partial
-    line and close a table still open.
+    output is stable and nothing is rendered twice. Two exceptions are
+    deliberate: a table's lines are held until the table ends (see the
+    module docstring) and drawn in one piece, and an ordinary paragraph line
+    is held *one line* to see whether a setext underline follows it. Call
+    :meth:`flush` at the end of the stream to emit the trailing partial line,
+    the paragraph line still held, and close a table or fence still open.
     """
 
     def __init__(self, console) -> None:
@@ -362,6 +409,9 @@ class MarkdownStreamRenderer:
         # the language is known at the opening fence, so only the body waits.
         self._code_lang = ""
         self._code_lines: list[str] = []
+        # A paragraph line held back one line, to see whether a setext
+        # underline follows it. `None` when there is none held.
+        self._para: str | None = None
         # The table being accumulated: its header, its delimiter row and the
         # raw rows seen so far. `_table_header` is None when there is none.
         self._table_header: str | None = None
@@ -394,6 +444,27 @@ class MarkdownStreamRenderer:
         total = len(self._queue)
         while index < total:
             line = self._queue[index]
+
+            # A paragraph line held back to see whether a setext underline
+            # would follow it. Resolve it against this line first: at most one
+            # of the two can be pending, and the held line has to be drawn
+            # before anything that comes after it.
+            if self._para is not None:
+                held = self._para
+                self._para = None
+                level = _setext_level(line)
+                if level:
+                    # The line above *was* a setext heading after all. The
+                    # underline itself is consumed, not printed.
+                    self._emit(
+                        _render_inline(held, base=_heading_style(level)), held
+                    )
+                    index += 1
+                    continue
+                # Not an underline: ordinary prose. Emit it and re-process
+                # this line from the top, which may hold *it* in turn.
+                self._emit(render_line(held), held)
+                continue
 
             # Already inside a table: keep taking rows until one is not,
             # then lay the whole thing out. The line that ends the table is
@@ -453,14 +524,26 @@ class MarkdownStreamRenderer:
                 elif not final:
                     break  # the deciding line has not arrived yet
 
-            self._emit(render_line(line), line)
+            # An ordinary paragraph line is held back one line, because a
+            # setext underline (``===`` or ``---``) turns the line *above* it
+            # into a heading and cannot be recognised until it arrives. Every
+            # other kind of line is emitted immediately.
+            if _could_be_setext_text(line):
+                self._para = line
+            else:
+                self._emit(render_line(line), line)
             index += 1
 
         del self._queue[:index]
         if final:
-            # A stream can end with a fence still open. Close it first: only
-            # one of the two can be open at a time, and the code block has to
-            # be drawn before the table that follows it.
+            # A stream can end mid-paragraph: a line held for a setext
+            # underline that never came was ordinary prose.
+            if self._para is not None:
+                self._emit(render_line(self._para), self._para)
+                self._para = None
+            # A stream can also end with a fence still open. Close it first:
+            # only one of the two can be open at a time, and the code block
+            # has to be drawn before the table that follows it.
             self._close_code()
             self._close_table()
 
