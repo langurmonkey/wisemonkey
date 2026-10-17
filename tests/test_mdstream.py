@@ -1,10 +1,13 @@
-"""Tests for the streaming markdown renderer, tables above all.
+"""Tests for the streaming markdown renderer.
 
 A table is the one construct the renderer cannot emit as it arrives: the
 delimiter row that identifies a table comes *after* its header, and the
 column widths come from the rows. So these tests pin both halves of that --
 nothing of the table is printed while it streams, and the whole of it is
 printed once it ends.
+
+The rest covers the inline scanner: backslash escapes, images, task lists and
+run-length-matched code fences.
 """
 
 from __future__ import annotations
@@ -17,7 +20,9 @@ from rich.console import Console
 from agent.console import monkee_theme
 from agent.mdstream import (
     MarkdownStreamRenderer,
+    _fence_match,
     _is_delimiter_row,
+    _render_inline,
     _table_cells,
     render_table,
 )
@@ -217,6 +222,91 @@ class TestTableEnds(unittest.TestCase):
         )
         self.assertIn("1", out)
         self.assertIn("Next", out)
+
+
+class TestBackslashEscapes(unittest.TestCase):
+    def test_an_escaped_asterisk_is_literal_not_emphasis(self):
+        text = _render_inline(r"\*stars\*")
+        self.assertEqual(text.plain, "*stars*")
+        self.assertTrue(all(span.style != "italic" for span in text.spans))
+
+    def test_an_escaped_underscore_is_literal_not_emphasis(self):
+        text = _render_inline(r"\_under\_")
+        self.assertEqual(text.plain, "_under_")
+        self.assertTrue(all(span.style != "italic" for span in text.spans))
+
+    def test_an_escaped_backslash_leaves_one_backslash(self):
+        self.assertEqual(_render_inline(r"a \\ b").plain, r"a \ b")
+
+    def test_an_unescaped_asterisk_still_emphasises(self):
+        text = _render_inline("*stars*")
+        self.assertEqual(text.plain, "stars")
+
+    def test_the_escape_is_gone_from_the_rendered_line(self):
+        out = _render([r"literal \*stars\* here" + "\n"])
+        self.assertIn("literal *stars* here", out)
+        self.assertNotIn("\\", out)
+
+
+class TestImages(unittest.TestCase):
+    def test_an_image_keeps_no_stray_bang(self):
+        out = _render(["![alt text](http://x/y.png)\n"])
+        self.assertIn("alt text", out)
+        self.assertIn("http://x/y.png", out)
+        self.assertNotIn("!alt", out)
+
+    def test_an_image_with_no_alt_falls_back_to_a_label(self):
+        out = _render(["![](http://x/y.png)\n"])
+        self.assertIn("image", out)
+
+    def test_a_plain_link_is_untouched(self):
+        text = _render_inline("[label](http://x)")
+        self.assertEqual(text.plain, "label (http://x)")
+
+
+class TestTaskLists(unittest.TestCase):
+    def test_checked_and_unchecked_items_get_their_glyphs(self):
+        out = _render(["- [x] done\n", "- [ ] todo\n"])
+        self.assertIn("☑ done", out)
+        self.assertIn("☐ todo", out)
+
+    def test_a_capital_x_is_checked_too(self):
+        out = _render(["- [X] done\n"])
+        self.assertIn("☑", out)
+
+    def test_a_plain_list_item_is_untouched(self):
+        out = _render(["- plain item\n"])
+        self.assertIn("• plain item", out)
+
+
+class TestCodeFences(unittest.TestCase):
+    def test_a_fence_is_three_or_more_backticks_or_tildes(self):
+        self.assertEqual(_fence_match("```"), ("`", 3, ""))
+        self.assertEqual(_fence_match("~~~python"), ("~", 3, "python"))
+        self.assertIsNone(_fence_match("`` only two"))
+        self.assertIsNone(_fence_match("not a fence"))
+
+    def test_a_shorter_run_does_not_close_a_longer_fence(self):
+        # Four backticks open, so a line of three inside is content, not a
+        # close -- which is the whole reason a code sample about fences is
+        # written with four.
+        out = _render(
+            ["````\n", "text\n", "```\n", "still code\n", "````\n", "after\n"]
+        )
+        self.assertIn("```", out)
+        self.assertIn("after", out)
+
+    def test_a_tilde_fence_can_contain_a_backtick_fence(self):
+        out = _render(["~~~\n", "```\n", "not a close\n", "~~~\n", "after\n"])
+        self.assertIn("```", out)
+        self.assertIn("not a close", out)
+        self.assertIn("after", out)
+
+    def test_a_tilde_fence_is_recognised_at_all(self):
+        out = _render(["~~~python\n", "x = 1\n", "~~~\n", "after\n"])
+        self.assertIn("x = 1", out)
+        self.assertIn("(python)", out)
+        self.assertIn("after", out)
 
 
 if __name__ == "__main__":

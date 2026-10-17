@@ -267,6 +267,33 @@ console while it streams, and the whole of it does once it ends, plus the false
 positives above (a lone pipe line, a thematic break, a mismatched delimiter
 count, a pipe inside a fence).
 
+#### The inline scanner
+
+`_render_inline()` is a flat regex scanner, and a few constructs need care
+around it:
+
+- **Backslash escapes.** Markdown makes any ASCII punctuation after `\`
+  literal (`\*` is a star, not emphasis), but a flat regex cannot be told to
+  skip one character. `_protect_escapes()` swaps each escaped punctuation
+  character for a private-use sentinel *before* scanning — one character for
+  one character, so offsets do not shift — and `_restore_escapes()` puts the
+  punctuation back in every piece of text appended to the `Text`.
+- **Images.** `![alt](url)` has its own alternative *before* the link one, so
+  the `!` is consumed instead of leaking through as a stray literal. It
+  renders as its alt text and source, styled like a link (empty alt → the
+  word "image"). The alternatives use **named** groups: the image added two
+  groups, and the positional `group(7)` would otherwise have come to mean
+  something else.
+- **Task lists.** `- [x]` / `- [ ]` is recognised in the list branch of
+  `render_line()` *before* inline rendering, which would otherwise leave the
+  `[x]` as literal text, and drawn as `☑` / `☐`.
+- **Code fences** are matched by `_fence_match()`: three or more backticks
+  **or tildes**, and a closing fence must use the same character for *at least*
+  the opening length and carry nothing after it. That is what lets a block
+  opened with four backticks contain a line of three — the reason a code
+  sample about code fences is written with four — and a tilde fence contain a
+  backtick one.
+
 ### Chat memory rolling window (`agent/memory.py`)
 
 `ChatMemory` supports a turn-based rolling window via `agent.memory_rolling_window_turns` (default `0` = disabled). When > 0, only the last n exchanges (a user message plus everything after it until the next user message) are kept; older exchanges leave the live history. Trimming happens after each `add_exchange()` and at load time (reconciling a lowered setting), before the token-cap compaction, which remains as a backstop.

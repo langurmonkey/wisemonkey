@@ -15,10 +15,11 @@ without Rich markup strings. The strategy is deliberately simple and cheap:
   raise a ``MarkupError``.
 - The parser is a lightweight line/inline scanner, not a full markdown
   parser. It covers the constructs that matter visually while streaming:
-  headings, code fences, lists, blockquotes, horizontal rules, and inline
-  bold/italic/code/strikethrough/link formatting. Styles come from the
-  console theme (``agent/console.py``), so the output matches the rest of
-  the UI.
+  headings, code fences (`` ``` `` and ``~~~``, run-length matched), lists
+  and task lists, blockquotes, horizontal rules, images, and inline
+  bold/italic/code/strikethrough/link formatting with backslash escapes.
+  Styles come from the console theme (``agent/console.py``), so the output
+  matches the rest of the UI.
 - Tables are the one construct that cannot be rendered incrementally. The
   column widths and alignments are only known once every row has arrived,
   and the delimiter line that marks a table at all comes *after* its
@@ -30,6 +31,7 @@ without Rich markup strings. The strategy is deliberately simple and cheap:
 from __future__ import annotations
 
 import re
+import string
 
 from rich import box
 from rich.console import JustifyMethod
@@ -51,16 +53,49 @@ def _style(name: str, fallback: str = "") -> str:
     return theme_dict.get(name, fallback)
 
 
+# ── backslash escapes ──────────────────────────────────────────────────────
+#
+# Markdown lets a backslash escape any ASCII punctuation, meaning the
+# character is literal: ``\*`` is a star, not the start of emphasis. The
+# inline scanner is a flat regex and cannot be told "ignore this one" after
+# the fact, so an escaped character has to be taken out of its reach *before*
+# scanning and put back afterwards. Each punctuation character is swapped for
+# a private-use sentinel -- one character for one character, so nothing
+# downstream shifts -- and restored in every piece of text that reaches the
+# ``Text``.
+
+_ESCAPE_RE = re.compile(r"\\([" + re.escape(string.punctuation) + r"])")
+_SENTINEL = {ch: chr(0xE000 + ord(ch)) for ch in string.punctuation}
+_UNSENTINEL = str.maketrans(
+    {sentinel: ch for ch, sentinel in _SENTINEL.items()}
+)
+
+
+def _protect_escapes(text: str) -> str:
+    """Hide backslash-escaped punctuation from the inline scanner."""
+    return _ESCAPE_RE.sub(lambda m: _SENTINEL[m.group(1)], text)
+
+
+def _restore_escapes(text: str) -> str:
+    """Put back the punctuation that :func:`_protect_escapes` took out."""
+    return text.translate(_UNSENTINEL)
+
+
 # Combined inline scanner. Alternation order matters: code first, then
-# bold (** before *), then italic, strikethrough, links.
+# bold (** before *), then italic, strikethrough, images (before links, so
+# the leading ``!`` is consumed rather than left as a stray literal), links.
+# Named groups rather than numbers: the image alternative added two groups,
+# and a positional ``group(7)`` would silently start meaning something else
+# the next time a construct is inserted.
 _INLINE_RE = re.compile(
-    r"`([^`]+)`"                                   # 1: code span
-    r"|\*\*(.+?)\*\*"                              # 2: bold (**)
-    r"|__(.+?)__"                                  # 3: bold (__)
-    r"|(?<!\*)\*(?!\*)([^*\n]+?)(?<!\*)\*(?!\*)"   # 4: italic (*)
-    r"|(?<![\w\\])_([^_\n]+?)_(?!\w)"              # 5: italic (_)
-    r"|~~([^~\n]+?)~~"                             # 6: strikethrough
-    r"|\[([^\]\n]+)\]\(([^)\n]+)\)"                # 7, 8: [label](url)
+    r"`(?P<code>[^`]+)`"                                          # code span
+    r"|\*\*(?P<bold_star>.+?)\*\*"                                # bold (**)
+    r"|__(?P<bold_under>.+?)__"                                   # bold (__)
+    r"|(?<!\*)\*(?!\*)(?P<italic_star>[^*\n]+?)(?<!\*)\*(?!\*)"   # italic (*)
+    r"|(?<![\w\\])_(?P<italic_under>[^_\n]+?)_(?!\w)"             # italic (_)
+    r"|~~(?P<strike>[^~\n]+?)~~"                                  # strikethrough
+    r"|!\[(?P<image_alt>[^\]\n]*)\]\((?P<image_url>[^)\n]+)\)"    # image
+    r"|\[(?P<link_label>[^\]\n]+)\]\((?P<link_url>[^)\n]+)\)"     # link
 )
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
@@ -68,33 +103,64 @@ _HR_RE = re.compile(r"^\s*([-*_]\s*){3,}$")
 _UL_RE = re.compile(r"^(\s*)[-*+]\s+(.*)$")
 _OL_RE = re.compile(r"^(\s*)(\d+[.)])\s+(.*)$")
 _QUOTE_RE = re.compile(r"^(\s*)>\s?(.*)$")
+_TASK_RE = re.compile(r"^\[([ xX])\]\s+(.*)$")
+#: Three or more backticks or tildes: a code fence. The run length matters on
+#: close (a fence has to be closed by one *at least as long*), so both are
+#: counted rather than merely detected.
+_FENCE_RE = re.compile(r"^(\s*)(`{3,}|~{3,})(.*)$")
+
+
+def _fence_match(line: str) -> tuple[str, int, str] | None:
+    """Return ``(char, length, rest)`` if *line* opens or closes a fence.
+
+    A fence is three or more backticks or tildes. A closing fence has to use
+    the *same* character for *at least* the opening length, so a block opened
+    with four backticks can contain a line of three without ending early --
+    which is exactly why a code sample about code fences is written with four.
+    """
+    m = _FENCE_RE.match(line)
+    if not m:
+        return None
+    return m.group(2)[0], len(m.group(2)), m.group(3)
 
 
 def _render_inline(text: str, base: str = "") -> Text:
     """Convert inline markdown in *text* to a styled ``Text``.
 
     Literal text is appended as-is (no escaping needed — ``Text`` is not
-    parsed as markup), and recognized constructs get style spans.
+    parsed as markup), and recognized constructs get style spans. Backslash
+    escapes are honoured: ``\\*`` is a literal asterisk, not emphasis.
     """
     result = Text(style=base)
+    protected = _protect_escapes(text)
+
+    def add(segment: str, style: str | None = None) -> None:
+        result.append(_restore_escapes(segment), style=style)
+
     pos = 0
-    for m in _INLINE_RE.finditer(text):
+    for m in _INLINE_RE.finditer(protected):
         if m.start() > pos:
-            result.append(text[pos:m.start()])
-        if m.group(1) is not None:  # code
-            result.append(m.group(1), style=_style("code"))
-        elif m.group(2) is not None or m.group(3) is not None:  # bold
-            result.append(m.group(2) or m.group(3), style="bold")
-        elif m.group(4) is not None or m.group(5) is not None:  # italic
-            result.append(m.group(4) or m.group(5), style="italic")
-        elif m.group(6) is not None:  # strikethrough
-            result.append(m.group(6), style="strike")
+            add(protected[pos:m.start()])
+        g = m.groupdict()
+        if g["code"] is not None:  # code span
+            add(g["code"], _style("code"))
+        elif g["bold_star"] is not None or g["bold_under"] is not None:  # bold
+            add(g["bold_star"] or g["bold_under"] or "", "bold")
+        elif g["italic_star"] is not None or g["italic_under"] is not None:  # italic
+            add(g["italic_star"] or g["italic_under"] or "", "italic")
+        elif g["strike"] is not None:  # strikethrough
+            add(g["strike"], "strike")
+        elif g["image_alt"] is not None:  # image
+            # Consume the ``!`` here rather than leave it as a stray literal:
+            # alt text and source, styled like a link.
+            add(g["image_alt"] or "image", _style("link"))
+            add(f" ({g['image_url']})", _style("weak"))
         else:  # link
-            result.append(m.group(7), style=_style("link"))
-            result.append(f" ({m.group(8)})", style=_style("weak"))
+            add(g["link_label"] or "", _style("link"))
+            add(f" ({g['link_url']})", _style("weak"))
         pos = m.end()
-    if pos < len(text):
-        result.append(text[pos:])
+    if pos < len(protected):
+        add(protected[pos:])
     return result
 
 
@@ -103,10 +169,10 @@ def render_line(line: str) -> Text:
     if not line.strip():
         return Text("")
 
-    # Code fences: the fence line itself is dimmed.
-    if line.lstrip().startswith("```"):
-        lang = line.lstrip()[3:].strip()
-        label = f" ({lang})" if lang else ""
+    # Code fences: the fence line itself is dimmed, with its language label.
+    fence = _fence_match(line)
+    if fence is not None:
+        label = f" ({fence[2].strip()})" if fence[2].strip() else ""
         return Text(f"{'─' * 3}{label}", style=_style("weak"))
 
     m = _HEADING_RE.match(line)
@@ -129,6 +195,16 @@ def render_line(line: str) -> Text:
     if m:
         indent, text = m.group(1), m.group(2)
         result = Text(indent)
+        # A task list item: ``- [x]`` / ``- [ ]``. The marker is recognised
+        # before inline rendering, which would otherwise leave the ``[x]``
+        # as a literal run of text.
+        task = _TASK_RE.match(text)
+        if task:
+            checked = task.group(1).lower() == "x"
+            result.append("☑" if checked else "☐", style=_style("list-item"))
+            result.append(" ")
+            result.append(_render_inline(task.group(2)))
+            return result
         result.append("•", style=_style("list-item"))
         result.append(" ")
         result.append(_render_inline(text))
@@ -257,6 +333,11 @@ class MarkdownStreamRenderer:
         self._pending = ""  # the trailing, still-incomplete line
         self._queue: list[str] = []  # complete lines not yet emitted
         self._in_code = False
+        # The open fence's character and run length, so a line of three
+        # backticks cannot close a block opened with four (nor a tilde fence
+        # an opened backtick one).
+        self._fence_char = ""
+        self._fence_len = 0
         # The table being accumulated: its header, its delimiter row and the
         # raw rows seen so far. `_table_header` is None when there is none.
         self._table_header: str | None = None
@@ -301,14 +382,31 @@ class MarkdownStreamRenderer:
                 self._close_table()
                 continue
 
-            # Fenced code is verbatim: a pipe inside it is not a table.
-            if line.lstrip().startswith("```"):
-                self._in_code = not self._in_code
-                self._emit(render_line(line), line)
+            # Fenced code is verbatim: a pipe inside it is not a table. A
+            # fence is opened by three or more backticks or tildes and closed
+            # only by the same character at least as long.
+            fence = _fence_match(line)
+            if self._in_code:
+                closes = (
+                    fence is not None
+                    and fence[0] == self._fence_char
+                    and fence[1] >= self._fence_len
+                    and not fence[2].strip()
+                )
+                if closes:
+                    self._in_code = False
+                    self._fence_char = ""
+                    self._fence_len = 0
+                    self._emit(render_line(line), line)
+                else:
+                    self._emit(Text(line, style=_style("code")), line)
                 index += 1
                 continue
-            if self._in_code:
-                self._emit(Text(line, style=_style("code")), line)
+            if fence is not None:
+                self._in_code = True
+                self._fence_char = fence[0]
+                self._fence_len = fence[1]
+                self._emit(render_line(line), line)
                 index += 1
                 continue
 
