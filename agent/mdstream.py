@@ -20,12 +20,15 @@ without Rich markup strings. The strategy is deliberately simple and cheap:
   bold/italic/code/strikethrough/link formatting with backslash escapes.
   Styles come from the console theme (``agent/console.py``), so the output
   matches the rest of the UI.
-- Tables are the one construct that cannot be rendered incrementally. The
-  column widths and alignments are only known once every row has arrived,
-  and the delimiter line that marks a table at all comes *after* its
-  header, so a header candidate holds the renderer back -- nothing further
-  is emitted until the table ends -- and the finished table is drawn in one
-  piece as a Rich ``Table``.
+- Two constructs cannot be rendered a line at a time, and both are held
+  back rather than printed as they arrive. A fenced code block is buffered
+  until its closing fence and then drawn in one piece with real syntax
+  highlighting (``rich.syntax.Syntax``), since highlighting is a property
+  of the whole block. A table is buffered for a second reason as well: the
+  column widths come from every row, and the delimiter line that marks a
+  table at all arrives *after* its header, so a header candidate holds the
+  renderer back -- nothing further is emitted until the table ends -- and
+  the finished table is drawn in one piece as a Rich ``Table``.
 """
 
 from __future__ import annotations
@@ -36,10 +39,12 @@ import string
 from rich import box
 from rich.console import JustifyMethod
 from rich.markup import escape
+from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
 from agent.console import theme_dict
+from agent.palette import PALETTE
 
 
 def _style(name: str, fallback: str = "") -> str:
@@ -51,6 +56,20 @@ def _style(name: str, fallback: str = "") -> str:
     unstyled span.
     """
     return theme_dict.get(name, fallback)
+
+
+#: The syntax theme, built once. It is derived from the palette rather than
+#: named, so a fenced code block cannot introduce a colour the rest of the
+#: UI has never seen (see `Palette.syntax_theme`).
+_SYNTAX_THEME = None
+
+
+def _syntax_theme():
+    """Return the shared syntax theme, building it on first use."""
+    global _SYNTAX_THEME
+    if _SYNTAX_THEME is None:
+        _SYNTAX_THEME = PALETTE.syntax_theme()
+    return _SYNTAX_THEME
 
 
 # ── backslash escapes ──────────────────────────────────────────────────────
@@ -338,6 +357,11 @@ class MarkdownStreamRenderer:
         # an opened backtick one).
         self._fence_char = ""
         self._fence_len = 0
+        # The open fence's language and the body lines seen so far. The body
+        # is held until the block closes so it can be highlighted as a whole;
+        # the language is known at the opening fence, so only the body waits.
+        self._code_lang = ""
+        self._code_lines: list[str] = []
         # The table being accumulated: its header, its delimiter row and the
         # raw rows seen so far. `_table_header` is None when there is none.
         self._table_header: str | None = None
@@ -384,7 +408,9 @@ class MarkdownStreamRenderer:
 
             # Fenced code is verbatim: a pipe inside it is not a table. A
             # fence is opened by three or more backticks or tildes and closed
-            # only by the same character at least as long.
+            # only by the same character at least as long. The body is held
+            # back rather than printed line by line, so the whole block can be
+            # highlighted at once when the closing fence arrives.
             fence = _fence_match(line)
             if self._in_code:
                 closes = (
@@ -394,18 +420,17 @@ class MarkdownStreamRenderer:
                     and not fence[2].strip()
                 )
                 if closes:
-                    self._in_code = False
-                    self._fence_char = ""
-                    self._fence_len = 0
+                    self._close_code()
                     self._emit(render_line(line), line)
                 else:
-                    self._emit(Text(line, style=_style("code")), line)
+                    self._code_lines.append(line)
                 index += 1
                 continue
             if fence is not None:
                 self._in_code = True
                 self._fence_char = fence[0]
                 self._fence_len = fence[1]
+                self._code_lang = fence[2].strip()
                 self._emit(render_line(line), line)
                 index += 1
                 continue
@@ -433,7 +458,54 @@ class MarkdownStreamRenderer:
 
         del self._queue[:index]
         if final:
+            # A stream can end with a fence still open. Close it first: only
+            # one of the two can be open at a time, and the code block has to
+            # be drawn before the table that follows it.
+            self._close_code()
             self._close_table()
+
+    def _close_code(self) -> None:
+        """Draw the code block being accumulated, highlighted as a whole.
+
+        The body is held until the fence closes for the same reason a table
+        is: syntax highlighting is a property of the whole block, not of one
+        line of it. The language, unlike a table's column widths, is known
+        the moment the fence opens -- so the opening marker is printed
+        immediately and only the body waits.
+
+        The fence line itself is *not* printed here: the caller emits it as
+        an ordinary line, before this runs for the opening fence and after it
+        for the closing one, which is what keeps the marker above the code.
+        """
+        if not self._in_code:
+            return
+        lines = self._code_lines
+        lang = self._code_lang
+        self._in_code = False
+        self._fence_char = ""
+        self._fence_len = 0
+        self._code_lang = ""
+        self._code_lines = []
+        if not lines:
+            return
+        try:
+            self._console.print(
+                Syntax(
+                    "\n".join(lines),
+                    lang or "text",
+                    theme=_syntax_theme(),
+                    line_numbers=False,
+                    word_wrap=True,
+                    # The same surface the inline `code` style sits on, so a
+                    # fenced block and a code span read as the same thing.
+                    background_color=PALETTE.bar_bg,
+                )
+            )
+        except Exception:
+            # An unknown lexer or a layout bug must not lose the code: show
+            # it exactly as it arrived, one plain line at a time.
+            for line in lines:
+                self._console.print(Text(line, style=_style("code")))
 
     def _close_table(self) -> None:
         """Draw the table being accumulated, if there is one."""

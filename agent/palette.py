@@ -238,6 +238,114 @@ class Palette:
             "cursor_over": f"{fg(self.text)}\x1b[7m",
         }
 
+    def syntax_theme(self) -> Any:
+        """The syntax-highlighting theme for fenced code blocks.
+
+        Rich's ``Syntax`` accepts either a Pygments theme *name*
+        (``"monokai"``, ``"dracula"``, ...) or a ``SyntaxTheme``. A name
+        would drag in fifteen colours this palette has never seen -- and
+        would be the one place in the agent where a colour is not decided
+        here. So the tokens are mapped onto fields the palette already has,
+        by meaning:
+
+        * keywords and types take the accent blue -- the same hue that
+          marks structure everywhere else in the UI;
+        * strings are ``ok`` (green), numbers ``warn`` (orange), errors
+          ``error`` (red), comments ``faint`` -- so a code block uses the
+          same signals as the rest of the output rather than a parallel
+          set of them;
+        * function names get ``blue``, the *saturated* accent, because in a
+          code block the function being defined is the one thing worth
+          drawing the eye to.
+
+        The background is ``bar_bg``, deliberately the same tint the inline
+        ``code`` style uses, so a fenced block and a ``code span`` sit on
+        the same surface.
+
+        ``SyntaxTheme`` is an ABC with two methods, so the class is built
+        inline: it has no state beyond the mapping and needs no module of
+        its own. The Pygments import lives inside the method to keep this
+        module importable without Rich.
+        """
+        from pygments.token import (  # type: ignore[import-untyped]
+            Comment,
+            Error,
+            Generic,
+            Keyword,
+            Name,
+            Number,
+            Operator,
+            Punctuation,
+            String,
+            Text as TokenText,
+            Token,
+        )
+        from rich.style import Style
+        from rich.syntax import SyntaxTheme
+
+        # Longest match wins: the lookup walks up `token.parent` from the
+        # most specific type, so `Name.Function` beats `Name` without either
+        # having to be enumerated exhaustively.
+        styles: dict[Any, str] = {
+            Token: self.text,
+            TokenText: self.text,
+            TokenText.Whitespace: self.text,
+            Comment: self.faint,
+            Comment.Preproc: self.weak,
+            Comment.Special: self.weak,
+            Keyword: self.accent,
+            Keyword.Constant: self.accent,
+            Keyword.Declaration: self.accent,
+            Keyword.Namespace: self.accent,
+            Keyword.Type: self.accent,
+            Operator: self.text,
+            Operator.Word: self.accent,
+            Punctuation: self.weak,
+            Name: self.text,
+            Name.Attribute: self.text,
+            Name.Builtin: self.accent,
+            Name.Class: self.accent,
+            Name.Constant: self.accent,
+            Name.Decorator: self.warn,
+            Name.Exception: self.error,
+            Name.Function: self.blue,
+            Name.Label: self.text,
+            Name.Namespace: self.text,
+            Name.Tag: self.accent,
+            Name.Variable: self.text,
+            String: self.ok,
+            String.Doc: self.faint,
+            String.Escape: self.warn,
+            String.Regex: self.warn,
+            String.Symbol: self.warn,
+            Number: self.warn,
+            Generic.Deleted: self.error,
+            Generic.Inserted: self.ok,
+            Generic.Heading: f"bold {self.accent}",
+            Generic.Subheading: f"bold {self.accent}",
+            Generic.Emph: "italic",
+            Generic.Strong: "bold",
+            Generic.Error: self.error,
+            Error: f"bold {self.error}",
+        }
+        default = Style.parse(self.text)
+        background = Style.parse(f"on {self.bar_bg}")
+
+        class _PaletteSyntaxTheme(SyntaxTheme):
+            def get_style_for_token(self, token_type: Any) -> Any:
+                token = token_type
+                while token is not None:
+                    spec = styles.get(token)
+                    if spec is not None:
+                        return Style.parse(spec)
+                    token = getattr(token, "parent", None)
+                return default
+
+            def get_background_style(self) -> Any:
+                return background
+
+        return _PaletteSyntaxTheme()
+
 
 
 #: The palette everything uses. A module-level instance rather than a

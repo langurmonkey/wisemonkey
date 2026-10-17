@@ -231,10 +231,15 @@ An image result (`image_base64` + `mime_type`) becomes a multimodal `tool` messa
 
 `tools/read_image.py` loads an image file from disk and returns the same shape as `screenshot`, so both reach the vision decoder through the identical path. `tests/test_core_turn.py::TestImageToolResults` pins the parse-back, the multimodal block, the error flag and the plain-string pass-through.
 
-### Streaming markdown tables (`agent/mdstream.py`)
+### Streaming markdown (`agent/mdstream.py`)
 
-Every other construct is rendered a line at a time, as soon as the line is
-complete. A table cannot be: its column widths come from *every* row, and the
+Most constructs are rendered a line at a time, as soon as the line is
+complete. Two are not, and both are **held back** instead.
+
+#### Tables
+
+A table cannot be rendered line by line: its column widths come from *every*
+row, and the
 delimiter row that identifies a table at all arrives **after** its header. So a
 line containing `|` is **held** rather than printed, until the next line proves
 whether it is a header — a matching delimiter row starts a table, anything else
@@ -266,6 +271,38 @@ tool, so whatever rows arrived *are* the whole table.
 console while it streams, and the whole of it does once it ends, plus the false
 positives above (a lone pipe line, a thematic break, a mismatched delimiter
 count, a pipe inside a fence).
+
+#### Buffered code blocks
+
+A fenced code block is held for a simpler reason than a table: highlighting is
+a property of the *whole* block, not of one line of it, so the body is
+accumulated (`_code_lines`) and handed to `rich.syntax.Syntax` in one piece when
+the closing fence arrives (`_close_code()`). What makes this much less delicate
+than the table hold-back is that the language is known **the moment the fence
+opens** — only the body waits — which is why `Syntax` can be given a lexer name
+that a half-read block could not supply. The opening marker is still printed
+immediately; the closing one is printed *after* the body, since the code has to
+sit between the two `───` lines.
+
+`flush()` closes a fence that never closed, exactly as it closes a table: a
+truncated stream still gets its code. The fence-marker line is not part of what
+`_close_code()` draws — the caller emits it — so a block whose closing fence
+never arrived simply ends without a lower marker.
+
+The theme is **derived from the palette**, never named. `Syntax(theme="monokai")`
+would be a two-line change and would drag in fifteen colours the agent has never
+seen, which is the one thing `agent/palette.py` exists to prevent. So
+`Palette.syntax_theme()` maps Pygments tokens onto fields the palette already
+has — keywords and types to the accent blue, strings to `ok`, numbers to `warn`,
+comments to `faint`, function names to the saturated `blue` — and the block
+background is `bar_bg`, the same surface the inline `code` style sits on.
+`SyntaxTheme` is an ABC with two methods and no state, so it is subclassed
+inline; the lookup walks `token.parent` so `Name.Function` beats `Name` without
+either having to be enumerated exhaustively. `_syntax_theme()` builds it once.
+
+An unknown lexer name, or a layout failure, falls back to printing the raw lines
+in the `code` style — the same rule as the table: a rendering bug must not lose
+content.
 
 #### The inline scanner
 
