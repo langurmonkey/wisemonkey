@@ -186,6 +186,27 @@ def _could_be_setext_text(line: str) -> bool:
     return True
 
 
+#: The width a rule falls back to when the caller has no console to ask (see
+#: `render_rule`). The renderer always passes its own width, so this is only
+#: what a pure-function caller gets.
+_RULE_WIDTH = 40
+
+
+def render_rule(width: int = _RULE_WIDTH) -> Text:
+    """A horizontal rule: one full-width line of ``\u2500``.
+
+    The rule replaces the source line entirely, so its length is the console's
+    width rather than the length of the ``---`` that produced it -- which is why
+    the width is a parameter: `render_line` is a pure function with no console
+    to ask, and the renderer supplies its own.
+
+    It is drawn in ``faint``, the palette's own field for separators, one step
+    below ``weak``. A rule is punctuation in the layout, not something the agent
+    wrote, so it must not read as an annotation.
+    """
+    return Text("\u2500" * max(1, width), style=_style("faint"))
+
+
 def _heading_style(level: int) -> str:
     """The style for a heading of *level*: H1 underlined, H2 accent-bold."""
     if level == 1:
@@ -235,8 +256,12 @@ def _render_inline(text: str, base: str = "") -> Text:
     return result
 
 
-def render_line(line: str) -> Text:
-    """Render a single complete markdown line as a styled ``Text``."""
+def render_line(line: str, width: int = _RULE_WIDTH) -> Text:
+    """Render a single complete markdown line as a styled ``Text``.
+
+    *width* is only consulted for a horizontal rule, which spans the console:
+    everything else is a property of the line itself. See `render_rule`.
+    """
     if not line.strip():
         return Text("")
 
@@ -254,7 +279,7 @@ def render_line(line: str) -> Text:
         return _render_inline(m.group(2), base=_heading_style(len(m.group(1))))
 
     if _HR_RE.match(line):
-        return Text("─" * 40, style=_style("weak"))
+        return render_rule(width)
 
     m = _UL_RE.match(line)
     if m:
@@ -463,7 +488,7 @@ class MarkdownStreamRenderer:
                     continue
                 # Not an underline: ordinary prose. Emit it and re-process
                 # this line from the top, which may hold *it* in turn.
-                self._emit(render_line(held), held)
+                self._emit(self._render(held), held)
                 continue
 
             # Already inside a table: keep taking rows until one is not,
@@ -492,7 +517,7 @@ class MarkdownStreamRenderer:
                 )
                 if closes:
                     self._close_code()
-                    self._emit(render_line(line), line)
+                    self._emit(self._render(line), line)
                 else:
                     self._code_lines.append(line)
                 index += 1
@@ -502,7 +527,7 @@ class MarkdownStreamRenderer:
                 self._fence_char = fence[0]
                 self._fence_len = fence[1]
                 self._code_lang = fence[2].strip()
-                self._emit(render_line(line), line)
+                self._emit(self._render(line), line)
                 index += 1
                 continue
 
@@ -531,7 +556,7 @@ class MarkdownStreamRenderer:
             if _could_be_setext_text(line):
                 self._para = line
             else:
-                self._emit(render_line(line), line)
+                self._emit(self._render(line), line)
             index += 1
 
         del self._queue[:index]
@@ -539,7 +564,7 @@ class MarkdownStreamRenderer:
             # A stream can end mid-paragraph: a line held for a setext
             # underline that never came was ordinary prose.
             if self._para is not None:
-                self._emit(render_line(self._para), self._para)
+                self._emit(self._render(self._para), self._para)
                 self._para = None
             # A stream can also end with a fence still open. Close it first:
             # only one of the two can be open at a time, and the code block
@@ -606,6 +631,15 @@ class MarkdownStreamRenderer:
             # A layout bug must not lose the content: show it as it arrived.
             for line in (header, delimiter, *rows):
                 self._console.print(escape(line), highlight=False)
+
+    def _render(self, line: str) -> Text:
+        """Render one line, giving the constructs that need it the console width.
+
+        Only a horizontal rule consults the width, and the console is the only
+        thing that knows it -- so every line goes through here rather than
+        calling the pure :func:`render_line` directly.
+        """
+        return render_line(line, width=self._console.width)
 
     def _emit(self, rendered: Text, raw: str) -> None:
         """Print one rendered line, never letting a render bug kill the turn."""

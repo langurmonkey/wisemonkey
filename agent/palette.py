@@ -162,6 +162,10 @@ class Palette:
             "code": f"{self.text} on {self.bar_bg}",
             "prompt": f"{self.ok} bold",
             "weak": self.weak,
+            # The dimmest readable grey: separators -- a horizontal rule, a
+            # table's border. A step below `weak`, which is an annotation the
+            # agent *wrote* and so still carries meaning.
+            "faint": self.faint,
             "thinking": self.thinking,
             "kbd": f"{self.kbd} bold on {self.bar_bg}",
             "link": f"{self.accent} underline",
