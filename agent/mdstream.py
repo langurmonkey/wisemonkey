@@ -19,13 +19,22 @@ without Rich markup strings. The strategy is deliberately simple and cheap:
   bold/italic/code/strikethrough/link formatting. Styles come from the
   console theme (``agent/console.py``), so the output matches the rest of
   the UI.
+- Tables are the one construct that cannot be rendered incrementally. The
+  column widths and alignments are only known once every row has arrived,
+  and the delimiter line that marks a table at all comes *after* its
+  header, so a header candidate holds the renderer back -- nothing further
+  is emitted until the table ends -- and the finished table is drawn in one
+  piece as a Rich ``Table``.
 """
 
 from __future__ import annotations
 
 import re
 
+from rich import box
+from rich.console import JustifyMethod
 from rich.markup import escape
+from rich.table import Table
 from rich.text import Text
 
 from agent.console import theme_dict
@@ -146,76 +155,212 @@ def render_line(line: str) -> Text:
     return _render_inline(line)
 
 
+# ── tables ────────────────────────────────────────────────────────────────
+#
+# A table cannot be rendered until it ends: the column widths come from every
+# row, and the delimiter row that identifies a table at all arrives *after*
+# its header. So a header candidate stops the renderer -- nothing is emitted
+# again until the table does end -- and the finished table is drawn in one
+# piece. See `MarkdownStreamRenderer`.
+
+_ESCAPED_PIPE = "\\|"  # ``\|``: a literal pipe inside a cell
+_PIPE_MARK = chr(0)  # stands in for it while the row is split
+_DELIMITER_CELL_RE = re.compile(r"^:?-+:?$")
+
+
+def _table_cells(line: str) -> list[str]:
+    """Split a table row into its cells.
+
+    The leading and trailing ``|`` are both optional in markdown, so each is
+    dropped if present before splitting on the pipes that remain.
+    """
+    body = line.strip()
+    if body.startswith("|"):
+        body = body[1:]
+    if body.endswith("|") and not body.endswith(_ESCAPED_PIPE):
+        body = body[:-1]
+    cells = body.replace(_ESCAPED_PIPE, _PIPE_MARK).split("|")
+    return [cell.replace(_PIPE_MARK, "|").strip() for cell in cells]
+
+
+def _is_delimiter_row(cells: list[str], columns: int) -> bool:
+    """Whether *cells* is the ``--- | :--: |`` line of a *columns*-wide table.
+
+    The count has to match the header's: that is what separates a table from
+    a thematic break (``---``) that happens to follow a line with a pipe in
+    it, which is the only false positive that would otherwise be common.
+    """
+    return (
+        bool(cells)
+        and len(cells) == columns
+        and all(_DELIMITER_CELL_RE.match(cell.strip()) for cell in cells)
+    )
+
+
+def _table_alignments(cells: list[str]) -> list[JustifyMethod]:
+    """The column justifications a delimiter row names with its colons."""
+    alignments: list[JustifyMethod] = []
+    for cell in cells:
+        cell = cell.strip()
+        if cell.startswith(":") and cell.endswith(":"):
+            alignments.append("center")
+        elif cell.endswith(":"):
+            alignments.append("right")
+        else:
+            alignments.append("left")
+    return alignments
+
+
+def render_table(header_line: str, delimiter_line: str, rows: list[str]) -> Table:
+    """Render a complete markdown table as a Rich ``Table``.
+
+    Cell contents are rendered inline (bold, code, links), and the column
+    count is the widest of any row so a short or ragged row cannot misalign
+    what follows it. Alignment is taken from the delimiter row, which is the
+    only place markdown records it.
+    """
+    header = _table_cells(header_line)
+    body = [_table_cells(row) for row in rows]
+    columns = max([len(header), *(len(row) for row in body)])
+    alignments = _table_alignments(_table_cells(delimiter_line))
+
+    table = Table(box=box.SIMPLE, show_edge=False, border_style=_style("weak"))
+    for index in range(columns):
+        header_cell = header[index] if index < len(header) else ""
+        table.add_column(
+            _render_inline(header_cell, base=_style("accent-bold")),
+            justify=alignments[index] if index < len(alignments) else "left",
+        )
+    for row in body:
+        table.add_row(
+            *[
+                _render_inline(row[index] if index < len(row) else "")
+                for index in range(columns)
+            ]
+        )
+    return table
+
+
 class MarkdownStreamRenderer:
     """Incrementally render streamed markdown text to the console.
 
     Feed chunks with :meth:`feed`. Only complete lines are emitted, so
-    output is stable and nothing is rendered twice. Call :meth:`flush`
-    at the end of the stream to emit the trailing partial line.
+    output is stable and nothing is rendered twice. A table is the one
+    exception, and it is deliberate: its lines are held until the table
+    ends (see the module docstring), then drawn in one piece. Call
+    :meth:`flush` at the end of the stream to emit the trailing partial
+    line and close a table still open.
     """
 
     def __init__(self, console) -> None:
         self._console = console
-        self._buffer = ""
-        self._emitted = 0  # chars of buffer already rendered
+        self._pending = ""  # the trailing, still-incomplete line
+        self._queue: list[str] = []  # complete lines not yet emitted
         self._in_code = False
+        # The table being accumulated: its header, its delimiter row and the
+        # raw rows seen so far. `_table_header` is None when there is none.
+        self._table_header: str | None = None
+        self._table_delimiter = ""
+        self._table_rows: list[str] = []
 
     def feed(self, text: str) -> None:
         """Accept a new chunk of streamed text."""
-        self._buffer += text
+        if not text:
+            return
+        self._pending += text
+        # Everything up to the last newline is a complete line; whatever
+        # follows it is still being written and waits for the next chunk.
+        complete, separator, self._pending = self._pending.rpartition("\n")
+        if separator:
+            self._queue.extend(complete.split("\n"))
         self._drain(final=False)
 
     def flush(self) -> None:
         """Emit any remaining buffered text (end of stream)."""
+        if self._pending:
+            self._queue.append(self._pending)
+            self._pending = ""
         self._drain(final=True)
 
-    # ── internals ───────────────────────────────────────────────────────────
+    # ── internals ─────────────────────────────────────────────────────────
 
     def _drain(self, final: bool) -> None:
-        pending = self._buffer[self._emitted:]
-        if not pending:
-            return
+        index = 0
+        total = len(self._queue)
+        while index < total:
+            line = self._queue[index]
 
-        # Determine how much of the pending text is safe to render:
-        # everything up to and including the last newline. On the final
-        # flush, everything.
+            # Already inside a table: keep taking rows until one is not,
+            # then lay the whole thing out. The line that ends the table is
+            # rendered as an ordinary one.
+            if self._table_header is not None:
+                if "|" in line:
+                    self._table_rows.append(line)
+                    index += 1
+                    continue
+                self._close_table()
+                continue
+
+            # Fenced code is verbatim: a pipe inside it is not a table.
+            if line.lstrip().startswith("```"):
+                self._in_code = not self._in_code
+                self._emit(render_line(line), line)
+                index += 1
+                continue
+            if self._in_code:
+                self._emit(Text(line, style=_style("code")), line)
+                index += 1
+                continue
+
+            if "|" in line:
+                # A pipe alone does not make a table: the *next* line has to
+                # be a matching delimiter row. Until that line arrives this
+                # one is held, so the header is never printed in a shape the
+                # finished table would contradict.
+                if index + 1 < total:
+                    following = self._queue[index + 1]
+                    if _is_delimiter_row(
+                        _table_cells(following), len(_table_cells(line))
+                    ):
+                        self._table_header = line
+                        self._table_delimiter = following
+                        self._table_rows = []
+                        index += 2
+                        continue
+                elif not final:
+                    break  # the deciding line has not arrived yet
+
+            self._emit(render_line(line), line)
+            index += 1
+
+        del self._queue[:index]
         if final:
-            safe, pending = pending, ""
-        else:
-            idx = pending.rfind("\n")
-            if idx < 0:
-                return  # no complete line yet
-            safe, pending = pending[:idx + 1], pending[idx + 1:]
+            self._close_table()
 
-        # safe always ends with "\n" (except on final flush), so drop the
-        # trailing empty element to avoid emitting a spurious blank line
-        # after every rendered line.
-        lines = safe.split("\n")
-        if not final:
-            lines = lines[:-1]
-        for line in lines:
-            self._emit_line(line)
-        self._emitted = len(self._buffer) - len(pending)
-
-    def _emit_line(self, line: str) -> None:
-        # Track fenced code blocks: while inside one, lines are rendered
-        # verbatim in the code style (no inline markdown processing).
-        if line.lstrip().startswith("```"):
-            self._in_code = not self._in_code
-            self._console.print(render_line(line), highlight=False)
+    def _close_table(self) -> None:
+        """Draw the table being accumulated, if there is one."""
+        if self._table_header is None:
             return
-        if self._in_code:
-            self._console.print(
-                Text(line, style=_style("code")), highlight=False
-            )
-            return
-        rendered = render_line(line)
-        if rendered.plain:
-            try:
-                self._console.print(rendered, highlight=False)
-            except Exception:
-                # Belt and braces: a rendering bug must never crash the
-                # turn. Plain escaped text is always safe.
+        header = self._table_header
+        delimiter = self._table_delimiter
+        rows = self._table_rows
+        self._table_header = None
+        self._table_delimiter = ""
+        self._table_rows = []
+        try:
+            self._console.print(render_table(header, delimiter, rows))
+        except Exception:
+            # A layout bug must not lose the content: show it as it arrived.
+            for line in (header, delimiter, *rows):
                 self._console.print(escape(line), highlight=False)
-        else:
+
+    def _emit(self, rendered: Text, raw: str) -> None:
+        """Print one rendered line, never letting a render bug kill the turn."""
+        if not rendered.plain:
             self._console.print()
+            return
+        try:
+            self._console.print(rendered, highlight=False)
+        except Exception:
+            # Belt and braces: plain escaped text is always safe.
+            self._console.print(escape(raw), highlight=False)

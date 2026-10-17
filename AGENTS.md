@@ -231,6 +231,42 @@ An image result (`image_base64` + `mime_type`) becomes a multimodal `tool` messa
 
 `tools/read_image.py` loads an image file from disk and returns the same shape as `screenshot`, so both reach the vision decoder through the identical path. `tests/test_core_turn.py::TestImageToolResults` pins the parse-back, the multimodal block, the error flag and the plain-string pass-through.
 
+### Streaming markdown tables (`agent/mdstream.py`)
+
+Every other construct is rendered a line at a time, as soon as the line is
+complete. A table cannot be: its column widths come from *every* row, and the
+delimiter row that identifies a table at all arrives **after** its header. So a
+line containing `|` is **held** rather than printed, until the next line proves
+whether it is a header — a matching delimiter row starts a table, anything else
+means it was an ordinary line after all. Once a table has started, every
+subsequent line containing `|` is a row; the first that does not ends the table
+and is then rendered normally. The cost is that a `|`-bearing line reaches the
+screen one line late; the benefit is that a header is never printed in a shape
+the finished table would contradict.
+
+The header and the delimiter must have the **same cell count**. That is not
+pedantry: without it, a thematic break (`---`) following any line with a pipe in
+it becomes a one-column table. `_is_delimiter_row` takes the count as an
+argument for exactly this reason. Fenced code is checked first, so a pipe inside
+a fence stays verbatim, and `\|` is a literal pipe rather than a cell boundary.
+
+The finished table is a Rich `Table` (`box.SIMPLE`, header in `accent-bold`,
+border in `weak`), so it is laid out to the console width; cell contents are
+inline-rendered, alignment comes from the delimiter's colons, and the column
+count is the widest row so a ragged one cannot misalign what follows. A layout
+failure falls back to printing the raw lines: a rendering bug must not lose
+content.
+
+`flush()` renders a table still open — `Agent._flush_md_stream()` calls it
+mid-turn before tool output, and `_md_stream_stop()` at the end. That is the
+right thing in both cases: mid-turn, the model stopped generating to call a
+tool, so whatever rows arrived *are* the whole table.
+
+`tests/test_mdstream.py` pins both halves: nothing of the table reaches the
+console while it streams, and the whole of it does once it ends, plus the false
+positives above (a lone pipe line, a thematic break, a mismatched delimiter
+count, a pipe inside a fence).
+
 ### Chat memory rolling window (`agent/memory.py`)
 
 `ChatMemory` supports a turn-based rolling window via `agent.memory_rolling_window_turns` (default `0` = disabled). When > 0, only the last n exchanges (a user message plus everything after it until the next user message) are kept; older exchanges leave the live history. Trimming happens after each `add_exchange()` and at load time (reconciling a lowered setting), before the token-cap compaction, which remains as a backstop.
