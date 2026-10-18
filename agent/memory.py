@@ -84,7 +84,11 @@ def _load_vectorstore(session_dir):
         from agent.vectorstore import VectorStore
 
         return VectorStore(session_dir)
+    except ImportError as exc:
+        log.info("Vector store unavailable (missing dependency): %s", exc)
+        return None
     except Exception:
+        log.exception("Vector store failed to initialise; continuing without it")
         return None
 
 
@@ -107,7 +111,8 @@ def current_session_temp_dir() -> Path | None:
     """
     try:
         return Memory().temp_dir
-    except Exception:
+    except OSError as exc:
+        log.warning("Session scratch directory unavailable: %s", exc)
         return None
 
 
@@ -224,7 +229,8 @@ def _tool_result_limit() -> int:
                 DEFAULT_TOOL_RESULT_MAX_CHARS,
             )
         )
-    except Exception:
+    except (ImportError, TypeError, ValueError) as exc:
+        log.warning("Bad tool-result limit config, using default: %s", exc)
         return DEFAULT_TOOL_RESULT_MAX_CHARS
 
 

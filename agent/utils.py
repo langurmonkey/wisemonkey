@@ -16,7 +16,8 @@ def term_width() -> int:
     import os
     try:
         w = os.get_terminal_size().columns
-    except Exception:
+    except OSError:
+        # Not a terminal (piped output, tests).
         w = 80
     return w
 

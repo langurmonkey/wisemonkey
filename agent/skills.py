@@ -90,7 +90,7 @@ class SkillLoader:
                                 meta, _ = self._parse_frontmatter(content)
                                 if meta.get("name"):
                                     name = meta["name"]
-                            except Exception:
+                            except (OSError, UnicodeDecodeError):
                                 pass
                             _add(name, skill_file)
 
@@ -170,7 +170,7 @@ class SkillLoader:
                             meta, _ = self._parse_frontmatter(content)
                             if meta.get("name") == name:
                                 return content
-                        except Exception:
+                        except (OSError, UnicodeDecodeError):
                             pass
 
         return None

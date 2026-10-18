@@ -11,7 +11,11 @@ from __future__ import annotations
 
 # Chars-per-token used by the fallback estimate and for legacy config
 # conversion (agent.max_chat_history was defined in characters).
+import logging
+
 CHARS_PER_TOKEN = 4
+
+log = logging.getLogger(__name__)
 
 _encoding = None
 _encoding_loaded = False
@@ -26,7 +30,12 @@ def _get_encoding():
             import tiktoken
 
             _encoding = tiktoken.get_encoding("o200k_base")
+        except ImportError:
+            _encoding = None
         except Exception:
+            # Usually the encoding file could not be fetched (offline).
+            # Counts become estimates; say so once rather than per call.
+            log.warning("tiktoken encoding unavailable; using chars/4 estimate", exc_info=True)
             _encoding = None
     return _encoding
 
@@ -42,6 +51,8 @@ def count_tokens(text: str) -> int:
     if enc is not None:
         try:
             return len(enc.encode(text, disallowed_special=()))
-        except Exception:
+        except (ValueError, TypeError):
+            # Only encode() failures on odd input fall back; anything else
+            # is a bug and propagates.
             pass
     return max(1, len(text) // CHARS_PER_TOKEN)
