@@ -254,6 +254,116 @@ def get_mcp_config_path() -> Path:
     return _ensure_mcp_config()
 
 
+# The .env file wisemonkey writes secrets to. It is loaded at import time from
+# the current directory, the config directory or $HOME (in that order of
+# preference); writes always land in the config directory, which is the one the
+# user owns and the one that survives a change of working directory.
+ENV_FILE = BASE_CONFIG_DIR / ".env"
+
+# The convention this tool looks for when listing keys. It is a *listing*
+# filter, not a resolution rule: api_key_candidates() alone decides which
+# variables a provider is allowed to read a key from.
+API_KEY_NAME_SUFFIX = "_API_KEY"
+
+
+def env_file_paths() -> list[Path]:
+    """The .env files that dotenv loads, most specific first, de-duplicated."""
+    candidates = [
+        Path(os.getcwd()) / ".env",
+        ENV_FILE,
+        Path.home() / ".env",
+    ]
+    paths: list[Path] = []
+    for path in candidates:
+        if path not in paths:
+            paths.append(path)
+    return paths
+
+
+def api_key_env_names(suffix: str = API_KEY_NAME_SUFFIX) -> list[str]:
+    """Names of the API-key variables defined in the .env files or the environment.
+
+    Parsing is deliberately shallow -- a name is a name, and the value is never
+    read out -- because this only feeds a choice list, so that a key one already
+    has on disk is visible instead of something to remember. '.env' entry order
+    first, then the environment, so the file the user edits leads.
+    """
+    names: list[str] = []
+
+    def add(name: str) -> None:
+        if name.endswith(suffix) and name not in names:
+            names.append(name)
+
+    for path in env_file_paths():
+        try:
+            text = path.read_text()
+        except OSError:
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):].lstrip()
+            name, sep, _ = line.partition("=")
+            if sep:
+                add(name.strip())
+
+    for name in os.environ:
+        add(name)
+
+    return names
+
+
+def _quote_env_value(value: str) -> str:
+    """Quote a .env value only when it needs it."""
+    if value == "" or any(c in value for c in " \t\n#\"'\\$"):
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    return value
+
+
+def set_env_var(name: str, value: str, path: Path | None = None) -> Path:
+    """Store ``NAME=value`` in the config .env file, replacing any existing line.
+
+    Secrets never go into config.yaml: that is the file which gets shared or
+    committed, while .env is the one the user keeps. The file is created if
+    missing and chmod 600 afterwards. The variable is also set in the current
+    process, so the key works for the rest of this session without a restart.
+    """
+    target = Path(path) if path is not None else ENV_FILE
+    target.parent.mkdir(parents=True, exist_ok=True)
+    line = f"{name}={_quote_env_value(value)}"
+
+    kept: list[str] = []
+    replaced = False
+    if target.exists():
+        for existing in target.read_text().splitlines():
+            stripped = existing.strip()
+            body = (
+                stripped[len("export "):].lstrip()
+                if stripped.startswith("export ")
+                else stripped
+            )
+            key = body.partition("=")[0].strip() if "=" in body else ""
+            if key == name:
+                if not replaced:
+                    kept.append(line)
+                    replaced = True
+                continue
+            kept.append(existing)
+    if not replaced:
+        kept.append(line)
+
+    target.write_text("\n".join(kept).rstrip("\n") + "\n")
+    try:
+        os.chmod(target, 0o600)
+    except OSError:
+        pass
+    os.environ[name] = value
+    return target
+
+
 def load_config(path=None):
     """Load config and return as dict (backward compatibility)."""
     config = get_config()

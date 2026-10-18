@@ -634,7 +634,7 @@ Sessions are directories under `~/.local/share/wisemonkey/sessions/`. Each sessi
 ## Configuration
 
 Configuration lives in `$XDG_CONFIG_HOME/wisemonkey/config.yaml` (created on first run). Key sections:
-- `model` — provider, name, base_url, temperature, reasoning
+- `model` — provider, name, base_url, endpoints (usual URLs offered by `/model`), temperature, reasoning
 - `embedding` — embedding model name and endpoint
 - `agent` — max_turns, system_prompt, max_chat_history, vi_mode, soul_file, global_soul_file, context_files
 

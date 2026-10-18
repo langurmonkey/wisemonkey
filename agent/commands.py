@@ -1160,6 +1160,150 @@ def _cmd_skills(
     return True, None, buff, None
 
 
+# Sentinel values for the endpoint and API-key pickers: "type something else"
+# is a first-class option of the list it belongs to, not a separate question
+# asked after it.
+_NEW_ENDPOINT = "__new_endpoint__"
+_NEW_KEY = "__new_key__"
+_NEW_KEY_NAME = "__new_key_name__"
+
+
+def _default_key_var(provider: str) -> str:
+    """Fallback variable name for a key that is typed in.
+
+    Namespaced by provider, so two endpoints of the same provider do not
+    silently share one variable.
+    """
+    return f"WM_API_KEY_{(provider or 'generic').upper()}"
+
+
+def _endpoints(config) -> list[dict]:
+    """Normalise ``model.endpoints`` into a list of endpoint dicts.
+
+    Each entry is either a bare URL string or a mapping with ``name``,
+    ``base_url`` (``url`` is accepted too), ``provider`` and ``api_key_env``.
+    Malformed entries are dropped rather than raising: one typo must not make
+    ``/model`` unusable.
+    """
+    raw = config.get("model.endpoints") or []
+    if isinstance(raw, (str, dict)):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return []
+
+    entries: list[dict] = []
+    for item in raw:
+        if isinstance(item, str):
+            item = {"base_url": item}
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("base_url") or item.get("url") or "").strip()
+        if not url:
+            continue
+        env = item.get("api_key_env")
+        entries.append(
+            {
+                "name": str(item.get("name") or "").strip(),
+                "base_url": url,
+                "provider": str(item.get("provider") or "").strip().lower(),
+                "api_key_env": str(env or "").strip(),
+            }
+        )
+    return entries
+
+
+def _endpoint_label(entry: dict) -> str:
+    """One-line description of an endpoint entry for the picker."""
+    bits = [entry["name"] or entry["base_url"]]
+    if entry["name"]:
+        bits.append(entry["base_url"])
+    if entry["provider"]:
+        bits.append(entry["provider"])
+    if entry["api_key_env"]:
+        bits.append(f"key {entry['api_key_env']}")
+    return "  ·  ".join(bits)
+
+
+def _key_variable_options(
+    base_url: str,
+    current_env: str,
+    entry_env: str,
+    suggested_env: str,
+    candidates: list[str],
+) -> list[tuple[str, str]]:
+    """The API-key variable choices for one endpoint, most likely first.
+
+    The variable name for an OpenAI-compatible host is arbitrary, so having to
+    recall the exact one is the failure mode this list exists to remove. Order:
+    auto-detect, the endpoint's own variable (from its entry), the host's
+    conventional name, whatever is configured now, the resolution chain, and
+    every ``*_API_KEY`` variable that is on disk or in the environment -- so a
+    key one already has is visible instead of something to remember -- then the
+    two ways of entering something new.
+    """
+    from agent.config import api_key_env_names
+
+    options: list[tuple[str, str]] = [
+        ("", "Auto-detect: " + " or ".join(candidates)),
+    ]
+    on_disk = set(api_key_env_names())
+
+    def add(name: str) -> None:
+        if not name or any(n == name for n, _ in options):
+            return
+        if os.environ.get(name, "").strip():
+            mark = " (set)"
+        elif name in on_disk:
+            mark = " (empty)"
+        else:
+            mark = ""
+        options.append((name, name + mark))
+
+    for name in (entry_env, suggested_env, current_env, *candidates):
+        add(name)
+    for name in api_key_env_names():
+        add(name)
+
+    options.append((_NEW_KEY_NAME, "Enter a different variable name..."))
+    options.append(
+        (_NEW_KEY, "Enter a new API key (saved to the config .env file)")
+    )
+    return options
+
+
+def _store_new_key(
+    ui, name: str, base_url: str, provider: str
+) -> tuple[str, str]:
+    """Ask for a key, write it to the config ``.env``; return (var, path).
+
+    The value goes to ``~/.config/wisemonkey/.env`` (mode 600), never to
+    config.yaml: config.yaml is the file that gets shared or committed, and a
+    secret does not belong in it. Returns ``("", "")`` when there is nothing to
+    store, which leaves the normal resolution chain in charge.
+    """
+    from agent.config import set_env_var
+    from agent.router import suggest_key_env
+
+    fallback = name or suggest_key_env(base_url) or _default_key_var(provider)
+    value = ui.ask_string(
+        " API key (stored in the config .env file, never in config.yaml)"
+    ).strip()
+    if not value:
+        return "", ""
+
+    if not name:
+        name = str(
+            ui.ask_string(
+                " Environment variable to store it in", default=fallback
+            )
+            or ""
+        ).strip()
+    if not name:
+        name = fallback
+    path = set_env_var(name, value)
+    return name, str(path)
+
+
 def _configure_endpoint(
     core, params, output: OutputAdapter | None = None
 ) -> tuple[bool, str | None, str | None, str | None]:
@@ -1167,30 +1311,68 @@ def _configure_endpoint(
 
     URL, provider, API key and model are one decision, not four: OpenRouter,
     OpenCode and a local vLLM are all ``generic`` but need three *different*
-    keys, and the key belongs to the endpoint rather than to the model. Asking
-    for the URL first therefore also decides the provider (auto-detected) and
-    which key variables are even relevant -- a local endpoint asks no key
-    question at all.
+    keys, and the key belongs to the endpoint rather than to the model.
 
-    Steps: URL -> provider (auto-detected, overridable) -> key variable ->
-    router init -> model.
+    Steps: URL -> provider -> key variable -> router init -> model. The URL step
+    is a picker over ``model.endpoints`` (the URLs one actually uses, each
+    remembering the key variable it wants) with "enter a new URL" as one of its
+    options, and the key step likewise lets one name a new variable or paste a
+    key that is then stored in the config .env. Neither list is a cage: free
+    text is always one keystroke away.
     """
     ui = output or _fallback_output()
     from agent.config import get_config
-    from agent.router import Provider, _match_provider_url
+    from agent.router import (
+        Provider,
+        _match_provider_url,
+        api_key_candidates,
+        suggest_key_env,
+    )
 
     config = get_config()
 
     # --- 1. Endpoint URL -------------------------------------------------
+    # The configured list first, free text behind one entry of it. With no list
+    # configured this is exactly the old flow: ask for the URL.
     current_url = config.get("model.base_url") or ""
-    new_url = ui.ask_string(
-        " Enter the endpoint URL", default=current_url
-    ).strip()
+    entries = _endpoints(config)
+    selected_entry: dict | None = None
+    if entries:
+        endpoint_options = [
+            (str(i), _endpoint_label(entry)) for i, entry in enumerate(entries)
+        ]
+        endpoint_options.append((_NEW_ENDPOINT, "Enter a new URL..."))
+        default_entry = next(
+            (
+                str(i)
+                for i, entry in enumerate(entries)
+                if entry["base_url"].rstrip("/") == current_url.rstrip("/")
+            ),
+            _NEW_ENDPOINT,
+        )
+        picked = ui.ask_choice(
+            message=" Choose an endpoint:",
+            options=endpoint_options,
+            default=default_entry,
+        )
+        if picked not in (None, "", _NEW_ENDPOINT):
+            try:
+                selected_entry = entries[int(picked)]
+            except (TypeError, ValueError, IndexError):
+                selected_entry = None
+
+    if selected_entry is None:
+        new_url = ui.ask_string(
+            " Enter the endpoint URL", default=current_url
+        ).strip()
+    else:
+        new_url = selected_entry["base_url"]
     config.set("model.base_url", new_url)
 
-    # --- 2. Provider, auto-detected from the URL ------------------------
-    # None means an unrecognised host, not "generic": only a known URL decides
-    # the provider by itself.
+    # --- 2. Provider -----------------------------------------------------
+    # Precedence: what the entry declares, then a canonical URL (which decides
+    # the provider outright), then a question. Asking about a known URL is how
+    # people end up sending their Anthropic key to a generic host.
     detected = _match_provider_url(new_url)
     current_provider = config.get("model.provider", "")
     provider_opts = [
@@ -1200,11 +1382,12 @@ def _configure_endpoint(
         (Provider.LMSTUDIO.value, "LM Studio"),
         (Provider.GENERIC.value, "Generic (OpenAI-compatible)"),
     ]
-
     known_providers = {p for p, _ in provider_opts}
-    if detected is not None and detected.value in known_providers:
-        # Known URL: no question. The URL is authoritative, and asking anyway
-        # is how people end up sending their Anthropic key to a generic host.
+    declared_provider = (selected_entry or {}).get("provider", "")
+
+    if declared_provider in known_providers:
+        selected_provider = declared_provider
+    elif detected is not None and detected.value in known_providers:
         selected_provider = detected.value
     else:
         # Unknown host (OpenRouter, OpenCode, vLLM, ...): ask, defaulting to
@@ -1212,7 +1395,8 @@ def _configure_endpoint(
         # _PROVIDER_URLS, so anything else is an OpenAI-compatible endpoint
         # unless the user says otherwise.
         default_provider = (
-            current_provider if current_provider in known_providers
+            current_provider
+            if current_provider in known_providers
             else Provider.GENERIC.value
         )
         selected_provider = ui.ask_choice(
@@ -1222,29 +1406,30 @@ def _configure_endpoint(
         )
     config.set("model.provider", selected_provider)
 
-    # API key env var. Asked before the router is reinitialized because the
-    # key is what the router needs in order to list models at all, and because
-    # switching routers is exactly the case where the right variable changes.
-    # We store the variable *name*, never the key, so config.yaml stays safe to
-    # share.
-    from agent.router import api_key_candidates, suggest_key_env
-
+    # --- 3. API key variable ---------------------------------------------
+    # Asked before the router is reinitialized because the key is what the
+    # router needs in order to list models at all, and because switching
+    # routers is exactly the case where the right variable changes. The
+    # variable *name* is stored, never the key, so config.yaml stays safe to
+    # share; a key that is typed in here goes to the config .env instead.
     candidates = api_key_candidates(Provider(selected_provider))
+    stored_key_path = ""
     if candidates:
         current_env = str(config.get("model.api_key_env", "") or "").strip()
-        # Choice list, not free text: the key variable for an
-        # OpenAI-compatible host is arbitrary (one per endpoint), and having
-        # to recall the exact name is the failure mode. Offer the host's
-        # conventional name first, then the resolution chain, with "auto" as
-        # the default so behaviour is unchanged for anyone who does not need
-        # the explicit link.
-        options: list[tuple[str, str]] = [
-            ("", "Auto-detect: " + " or ".join(candidates)),
-        ]
-        for name in [suggest_key_env(new_url), current_env, *candidates]:
-            if name and not any(n == name for n, _ in options):
-                mark = " (set)" if os.environ.get(name, "").strip() else ""
-                options.append((name, name + mark))
+        entry_env = (selected_entry or {}).get("api_key_env", "")
+        suggested_env = suggest_key_env(new_url) or _default_key_var(
+            selected_provider
+        )
+        key_options = _key_variable_options(
+            base_url=new_url,
+            current_env=current_env,
+            entry_env=entry_env,
+            suggested_env=suggested_env,
+            candidates=candidates,
+        )
+        default_env = current_env or entry_env
+        if not any(name == default_env for name, _ in key_options):
+            default_env = ""
 
         new_env = str(
             ui.ask_choice(
@@ -1252,18 +1437,43 @@ def _configure_endpoint(
                     f" Environment variable holding the API key for "
                     f"{selected_provider}:"
                 ),
-                options=options,
-                default=current_env,
+                options=key_options,
+                default=default_env,
             )
             or ""
         ).strip()
+
+        if new_env == _NEW_KEY_NAME:
+            new_env = str(
+                ui.ask_string(
+                    " Environment variable name for this key",
+                    default=entry_env or suggested_env,
+                )
+                or ""
+            ).strip()
+            # A name with no value is the dead end the old flow ended in, so
+            # offer to fill it in right here instead of failing after the fact.
+            if new_env and not os.environ.get(new_env, "").strip():
+                if ui.ask_confirm(
+                    f" {new_env} is not set. Enter its value now?",
+                    default=True,
+                ):
+                    new_env, stored_key_path = _store_new_key(
+                        ui, new_env, new_url, selected_provider
+                    )
+        elif new_env == _NEW_KEY:
+            new_env, stored_key_path = _store_new_key(
+                ui, "", new_url, selected_provider
+            )
+
         config.set("model.api_key_env", new_env)
         if new_env and not os.environ.get(new_env, "").strip():
+            chain = " or ".join(candidates)
             return (
                 False,
                 f"{new_env} is not set in your environment or .env file. "
-                f"Set it, or choose auto-detect "
-                f"({' or '.join(candidates)}).",
+                f"Set it ({stored_key_path or '~/.config/wisemonkey/.env'}), "
+                f"or choose auto-detect ({chain}).",
                 None,
                 None,
             )
@@ -1303,6 +1513,8 @@ def _configure_endpoint(
         if success:
             pub.sendMessage("prompt-update")
             key_src = config.get("model.api_key_env", "") or "auto"
+            if stored_key_path:
+                key_src += f" (saved to {stored_key_path})"
             return (
                 True,
                 f"Endpoint: [accent]{new_url}[/accent] · "

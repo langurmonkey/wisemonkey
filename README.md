@@ -126,6 +126,23 @@ WM_API_KEY_ANTHROPIC=sk-ant-...
 
 In the agent loop, `/model` configures a whole endpoint in one flow: URL → provider → key variable → model (`/url` is an alias for the same flow). A canonical URL picks the provider for you, an unknown host asks whether it is OpenAI-compatible, and a local endpoint asks no key question at all. The key step is a list, not free text: it offers the host's conventional name first (`OPENROUTER_API_KEY` for `openrouter.ai`, `OPENCODE_API_KEY` for `opencode.ai`), marks the variables that are actually set in your environment, and keeps auto-detect as the default.
 
+Endpoints you use regularly can be listed under `model.endpoints`, and the URL step then becomes a picker with "Enter a new URL..." as its last entry:
+
+```yaml
+model:
+  endpoints:
+    - name: Local (LM Studio)
+      base_url: http://127.0.0.1:1234/v1
+      provider: lmstudio          # skips the provider question
+    - name: OpenRouter
+      base_url: https://openrouter.ai/api/v1
+      provider: generic
+      api_key_env: OPENROUTER_API_KEY   # the key this endpoint wants
+    - https://api.openai.com/v1         # bare URL = entry with no extras
+```
+
+Picking an entry sets its URL, provider and key variable at once, so switching back and forth is one selection. The key list likewise shows **every** `*_API_KEY` variable found in `.env` or the environment, not just the presets. Two entries are always appended for anything new: "Enter a different variable name..." and "Enter a new API key", which prompts for the value and writes it to `~/.config/wisemonkey/.env` (mode `600`), so a new key never needs a hand-edited file or a restart.
+
 Storing a key in `config.yaml` is not supported, deliberately: `config.yaml` gets shared and committed, `.env` does not. See `.env.example`.
 
 If a key cannot be found, Wisemonkey names every variable it tried, e.g.

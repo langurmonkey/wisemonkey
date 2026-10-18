@@ -8,6 +8,21 @@ model:
   name: qwen/qwen3.6-35b-a3b
   # URL of the OpenAI endpoint
   base_url: http://127.0.0.1:1234/v1
+  # Usual endpoints, offered as a picker by /model (and /url). Each entry is a
+  # base_url plus, optionally, a name for the list, the provider (skips the
+  # provider question) and the env var holding that endpoint's key, so
+  # switching back and forth is one selection instead of four answers.
+  # "Enter a new URL..." is always offered at the bottom, and a bare URL string
+  # is accepted as a shorthand for an entry with no extras.
+  # endpoints:
+  #   - name: Local (LM Studio)
+  #     base_url: http://127.0.0.1:1234/v1
+  #     provider: lmstudio
+  #   - name: OpenRouter
+  #     base_url: https://openrouter.ai/api/v1
+  #     provider: generic
+  #     api_key_env: OPENROUTER_API_KEY
+  #   - https://api.openai.com/v1
   # Temperature setting for inference
   temperature: 0.8
   # Name of the environment variable holding this endpoint's API key. Set it
