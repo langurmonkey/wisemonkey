@@ -116,6 +116,15 @@ _ANTHROPIC_MAX_TOKENS = 8192
 _ANTHROPIC_RESPONSE_MARGIN = 4096
 
 
+def _is_effort_rejection(exc: Exception) -> bool:
+    """True if a provider 400 is about the reasoning-effort parameter."""
+    status = getattr(exc, "status_code", None)
+    if status != 400:
+        return False
+    text = str(exc).lower()
+    return "effort" in text or "reasoning_effort" in text
+
+
 def _clamp_effort(effort: str, allowed: tuple[str, ...]) -> str:
     """Clamp a configured effort into the range ``allowed`` supports.
 
@@ -518,7 +527,7 @@ class ModelRouter:
         if stream:
             kwargs["stream_options"] = {"include_usage": True}
 
-# Extra body params (reasoning_effort, etc.). Only sent when thinking
+        # Extra body params (reasoning_effort, etc.). Only sent when thinking
         # is actually on: `none` is valid on recent OpenAI models but is a 400
         # on older ones and on strict OpenAI-compatible proxies, and an empty
         # effort would be meaningless. Clamped to the levels the OpenAI family
@@ -527,9 +536,19 @@ class ModelRouter:
             effort = _clamp_effort(thinking, ("minimal", "low", "medium", "high"))
             kwargs["extra_body"] = {"reasoning_effort": effort}
 
-        return self._openai_client.chat.completions.create(**kwargs)
-
-
+        try:
+            return self._openai_client.chat.completions.create(**kwargs)
+        except Exception as exc:
+            # Some OpenAI-compatible gateways translate `reasoning_effort` into
+            # a narrower vocabulary of their own (e.g. Logfare -> Anthropic
+            # `output_config.effort`, which rejects `minimal`). A 400 that names
+            # the effort parameter is retried once without it: omitting the
+            # field is the one spelling every endpoint accepts. Anything else
+            # is re-raised untouched.
+            if "extra_body" not in kwargs or not _is_effort_rejection(exc):
+                raise
+            kwargs.pop("extra_body")
+            return self._openai_client.chat.completions.create(**kwargs)
 
     # ------------------------------------------------------------------
     # Anthropic
