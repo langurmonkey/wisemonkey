@@ -168,6 +168,7 @@ _HOST_KEY_HINTS: tuple[tuple[str, str], ...] = (
     ("localhost:3001", "FREELLMAPI_API_KEY"),
     ("api.openai.com", "OPENAI_API_KEY"),
     ("api.anthropic.com", "ANTHROPIC_API_KEY"),
+    ("logfare.ai", "LOGFARE_API_KEY"),
 )
 
 
