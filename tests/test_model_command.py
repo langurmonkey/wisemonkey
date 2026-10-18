@@ -19,9 +19,10 @@ from agent.commands import registry
 class _ScriptedUI:
     """Replays scripted answers and records what was asked."""
 
-    def __init__(self, strings=None, choices=None):
+    def __init__(self, strings=None, choices=None, confirm=False):
         self._strings = list(strings or [])
         self._choices = list(choices or [])
+        self._confirm = confirm
         self.string_prompts = []
         self.choice_prompts = []
 
@@ -35,6 +36,9 @@ class _ScriptedUI:
 
     def ask_bool(self, message=None, default=False):
         return False
+
+    def ask_confirm(self, message=None, default=False):
+        return self._confirm
 
 
 class _Config:
@@ -394,8 +398,8 @@ class TestNewKeyEntry(unittest.TestCase):
         ui = _ScriptedUI(
             strings=[url, key],
             choices=["generic", "__new_key__", "m1"],
+            confirm=True,
         )
-        ui.ask_confirm = lambda message, default=False: True
 
         stored = {}
 

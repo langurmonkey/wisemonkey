@@ -1178,3 +1178,81 @@ class TestHistoryCommand(_HistoryBase):
         ok, msg, _, _ = self._run("two")
         assert not ok
         assert "must be integer" in msg
+
+
+class TestCorruptFilesAreNotOverwritten(BaseTest):
+    """A file that fails to parse is quarantined, never silently overwritten."""
+
+    def _session(self, name):
+        return self._tmpdir / "sessions" / name
+
+    def test_corrupt_chat_history_is_quarantined(self):
+        session_dir = self._session("corrupt_chat")
+        session_dir.mkdir(parents=True)
+        bad = '{"exchanges": [{"role": "user", "con'
+        (session_dir / "chat_history.json").write_text(bad)
+
+        cm = ChatMemory(session_dir)
+        assert cm.get_unformatted() == []
+
+        # The original bytes survive under a .corrupt- name.
+        kept = list(session_dir.glob("chat_history.json.corrupt-*"))
+        assert len(kept) == 1
+        assert kept[0].read_text() == bad
+        # The live path is gone, so a save cannot clobber the evidence.
+        assert not (session_dir / "chat_history.json").exists()
+
+    def test_save_after_corrupt_load_keeps_evidence(self):
+        session_dir = self._session("corrupt_then_save")
+        session_dir.mkdir(parents=True)
+        (session_dir / "chat_history.json").write_text("not json")
+
+        cm = ChatMemory(session_dir)
+        cm.save()
+
+        assert json.loads((session_dir / "chat_history.json").read_text()) == {
+            "exchanges": []
+        }
+        assert len(list(session_dir.glob("chat_history.json.corrupt-*"))) == 1
+
+    def test_corrupt_profile_and_notes_are_quarantined(self):
+        session_dir = self._session("corrupt_memory")
+        session_dir.mkdir(parents=True)
+        (session_dir / "user_profile.json").write_text("{broken")
+        (session_dir / "notes.json").write_text("[broken")
+
+        m = Memory(session_dir=session_dir)
+        assert m.get_notes() == []
+        assert len(list(session_dir.glob("user_profile.json.corrupt-*"))) == 1
+        assert len(list(session_dir.glob("notes.json.corrupt-*"))) == 1
+
+    def test_valid_files_round_trip_and_leave_no_temp(self):
+        session_dir = self._session("roundtrip")
+        m = Memory(session_dir=session_dir)
+        m.set_user_profile({"name": "Langur"})
+        m.add_note("remember this")
+        m.save()
+
+        m2 = Memory(session_dir=session_dir)
+        assert m2.get_user_profile()["name"] == "Langur"
+        assert m2.get_notes()[0]["content"] == "remember this"
+        assert list(session_dir.glob("*.tmp")) == []
+        assert list(session_dir.glob("*.corrupt-*")) == []
+
+    def test_failed_write_leaves_previous_file_intact(self):
+        import unittest.mock as mock
+
+        session_dir = self._session("atomic")
+        cm = ChatMemory(session_dir)
+        cm.add_exchange(None, "user", "first")
+        cm.save()
+        original = (session_dir / "chat_history.json").read_text()
+
+        # add_exchange() saves itself; make that write fail mid-replace.
+        with mock.patch("agent.memory.os.replace", side_effect=OSError("disk")):
+            try:
+                cm.add_exchange(None, "user", "second")
+            except OSError:
+                pass
+
+        assert (session_dir / "chat_history.json").read_text() == original

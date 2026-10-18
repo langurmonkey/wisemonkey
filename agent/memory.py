@@ -11,6 +11,7 @@ when save() is called. On init, state is loaded from disk.
 
 import datetime
 import json
+import logging
 import os
 from pathlib import Path
 from textwrap import shorten
@@ -19,6 +20,39 @@ from rich.markup import escape
 from xdg_base_dirs import xdg_data_home
 
 from agent.tokens import count_tokens
+
+log = logging.getLogger(__name__)
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Replace *path* with *text* so a crash never leaves a half-written file.
+
+    Writes to a sibling temp file, fsyncs, then os.replace() -- which is
+    atomic on POSIX within one filesystem.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def _atomic_write_json(path: Path, data) -> None:
+    _atomic_write(path, json.dumps(data, indent=2))
+
+
+def _quarantine(path: Path) -> Path | None:
+    """Move an unparseable file aside so the next save cannot overwrite it."""
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    dest = path.with_name(f"{path.name}.corrupt-{stamp}")
+    try:
+        os.replace(path, dest)
+    except OSError:
+        return None
+    log.warning("Corrupt %s moved to %s", path.name, dest)
+    return dest
 
 # Roles that represent the human-readable conversation, as opposed to the
 # machinery around it. A recap of "what did we discuss" wants these; the
@@ -373,17 +407,26 @@ class Memory:
 
     def _write_metadata(self, metadata):
         """Write a dict to a .session-metadata file in key: value format."""
-        with open(self.metadata_file, "w") as f:
-            for key, value in metadata.items():
-                f.write(f"{key}: {value}\n")
+        _atomic_write(
+            self.metadata_file,
+            "".join(f"{key}: {value}\n" for key, value in metadata.items()),
+        )
 
     def _load_json(self, path, default):
-        """Load JSON from file, returning default if not found or invalid."""
+        """Load JSON from file, returning default if not found or invalid.
+
+        A file that exists but does not parse is quarantined, not left for
+        the next save() to overwrite. A transient read error (OSError) is
+        not quarantined: the file may be fine.
+        """
         if path.exists():
             try:
-                with open(path, "r") as f:
+                with open(path, "r", encoding="utf-8") as f:
                     return json.load(f)
-            except (json.JSONDecodeError, IOError):
+            except json.JSONDecodeError:
+                _quarantine(path)
+                return default
+            except OSError:
                 return default
         return default
 
@@ -393,11 +436,8 @@ class Memory:
         This is the authoritative write — all changes are buffered
         in memory and only written here.
         """
-        with open(self._user_profile_path, "w") as f:
-            json.dump(self._user_profile, f, indent=2)
-
-        with open(self._notes_path, "w") as f:
-            json.dump(self._notes, f, indent=2)
+        _atomic_write_json(self._user_profile_path, self._user_profile)
+        _atomic_write_json(self._notes_path, self._notes)
 
         self._chat_history.save()
 
@@ -630,18 +670,20 @@ class ChatMemory:
         """Load chat history from disk."""
         if self._chat_path.exists():
             try:
-                with open(self._chat_path, "r") as f:
+                with open(self._chat_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    self._exchanges = data.get("exchanges", [])
-                    self._recount_tokens()
-            except (json.JSONDecodeError, IOError):
-                pass
+            except json.JSONDecodeError:
+                # Keep the unreadable file for recovery; start empty.
+                _quarantine(self._chat_path)
+                return
+            except OSError:
+                return
+            self._exchanges = data.get("exchanges", [])
+            self._recount_tokens()
 
     def save(self):
-        """Persist in-memory state to disk."""
-        self._chat_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self._chat_path, "w") as f:
-            json.dump({"exchanges": self._exchanges}, f, indent=2)
+        """Persist in-memory state to disk (atomically)."""
+        _atomic_write_json(self._chat_path, {"exchanges": self._exchanges})
 
     def add_exchange(self, core, role, content, **extra):
         """
