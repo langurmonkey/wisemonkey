@@ -137,6 +137,12 @@ class Core:
             # is observable state rather than an exception, so that it can
             # survive a process boundary (see agent/emitter.py).
             self._turn_cancelled = False
+            # Whether the model has reasoned at all during this turn. DeepSeek's
+            # thinking mode requires ``reasoning_content`` on *every* assistant
+            # message it is sent back, not only on the one that carried the
+            # reasoning, so once this is True the field rides along on all of
+            # them (see ``_ensure_reasoning_content``).
+            self._thinking_seen = False
             # Whether the last stream ended without the provider's terminal
             # marker (a dropped connection), and the marker when it sent one
             # ("stop", "tool_calls", "length"). Set by
@@ -225,6 +231,7 @@ class Core:
         self._pending_image = None
         self.pending_prompt = None
         self._turn_cancelled = False
+        self._thinking_seen = False
         self.stream_incomplete = False
         self.finish_reason = None
         # Reset session-specific router state
@@ -495,6 +502,9 @@ class Core:
                             reasoning_callback(Stage.START, None, thinking_display)
 
                     self.thinking_buffer += delta.reasoning_content
+                    # The turn is a thinking-mode conversation from now on:
+                    # every assistant message in it must carry the field back.
+                    self._thinking_seen = True
 
                     if reasoning_callback:
                         reasoning_callback(Stage.PROCESS, delta.reasoning_content, thinking_display)
@@ -599,6 +609,35 @@ class Core:
         if reasoning_callback:
             reasoning_callback(Stage.STOP)
 
+    def _ensure_reasoning_content(self) -> None:
+        """Give every assistant message the ``reasoning_content`` field.
+
+        DeepSeek's thinking mode rejects the whole request with a 400 unless
+        *every* assistant message sent back carries the field:
+
+            The `reasoning_content` in the thinking mode must be passed back
+            to the API.
+
+        Attaching it in ``_tool_calls`` is not enough: it only covers the round
+        that reasoned, while a turn can hold several assistant messages -- one
+        per tool round -- and a later round often reasons about nothing (it
+        just calls the next tool). That message was then sent without the key
+        and the request that followed it failed, which is why the error was
+        intermittent rather than constant.
+
+        Once the turn has shown reasoning at all it is a thinking-mode
+        conversation, so the key is present on every assistant message, with
+        an empty string where a round produced none: presence is what the API
+        checks, and inventing reasoning would be a lie. A turn that never
+        reasoned sends nothing extra, so providers without thinking mode are
+        untouched.
+        """
+        if not getattr(self, "_thinking_seen", False):
+            return
+        for msg in self.messages:
+            if msg.get("role") == "assistant" and not msg.get("reasoning_content"):
+                msg["reasoning_content"] = ""
+
     def _send_to_llm(self,
                      prompt_callback=None,
                      reasoning_callback=None,
@@ -621,7 +660,7 @@ class Core:
 
             if prompt_callback:
                 prompt_callback(Stage.START)
-                
+
             response = self.router.chat(
                 messages=self.messages,
                 stream=True,
@@ -751,6 +790,9 @@ class Core:
         # Reset per-turn cancellation state. Cancellation is observable state
         # (see agent/emitter.py) so that it can cross a process boundary.
         self._turn_cancelled = False
+        # Whether this turn has reasoned yet. Reset here because it describes
+        # the conversation being *built* below (see _ensure_reasoning_content).
+        self._thinking_seen = False
         # Reset the stream-completeness state too: it is read when the final
         # answer is built, and a stale True from an earlier turn would flag a
         # complete answer as a fragment.
@@ -798,7 +840,11 @@ class Core:
         n_tools = 0
         try:
             for _ in range(self.config.get("agent.max_turns", 50)):
-                # Send to LLM
+                # Send to LLM. DeepSeek's thinking mode wants the field on
+                # every assistant message of the conversation, not just on the
+                # one that reasoned (see _ensure_reasoning_content), and this
+                # is the single point where a request is about to be made.
+                self._ensure_reasoning_content()
                 try:
                     (result, tokens, gen_elapsed, stream_error, prompt_tokens) = self._send_to_llm(
                                                                                     prompt_callback,

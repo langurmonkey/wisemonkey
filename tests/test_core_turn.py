@@ -452,6 +452,101 @@ class TestReasoningContentRoundTrip(unittest.TestCase):
         with patch("agent.core.execute_tool", return_value="ok"):
             core.run_turn("go")
         assert "reasoning_content" not in self._assistant_with_tool_call(core)
+
+
+class TestReasoningContentOnEveryRound(unittest.TestCase):
+    """The field belongs on *every* assistant message of a thinking turn.
+
+    DeepSeek's rule is about the request, not about the round: one assistant
+    message without ``reasoning_content`` is enough to reject the whole call.
+    Attaching it only where the reasoning happened left every no-reasoning
+    tool round -- the common case after a tool result, where the model just
+    calls the next tool -- sending a message without the key, so the *next*
+    request failed. That is why the error was intermittent.
+    """
+
+    def _core(self, replies):
+        core = make_core(replies)
+        fake_send = core._send_to_llm
+        self.sent = []
+
+        def _send(*a, **k):
+            # Mirror _stream_handler's per-round reset.
+            core.thinking_buffer = ""
+            # Snapshot the exact message list the request would carry. This is
+            # taken *after* run_turn's _ensure_reasoning_content() call, which
+            # is the seam this test exercises.
+            self.sent.append([dict(m) for m in core.messages])
+            result = fake_send(*a, **k)
+            # Emulate _stream_handler: it accumulates the round's reasoning and
+            # marks the turn as thinking-mode, which is what makes
+            # _ensure_reasoning_content patch the rest of the messages.
+            core.thinking_buffer = result[0].get("thinking", "")
+            if core.thinking_buffer:
+                core._thinking_seen = True
+            return result
+
+        core._send_to_llm = _send
+        return core
+
+    @staticmethod
+    def _tool_call(call_id):
+        return {"id": call_id, "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"}}
+
+    def _assistants(self, request):
+        return [m for m in request if m.get("role") == "assistant"]
+
+    def test_a_tool_round_without_reasoning_still_sends_the_field(self):
+        core = self._core([
+            {"text": "", "thinking": "first thoughts", "tool_calls": [self._tool_call("c1")]},
+            {"text": "", "thinking": "", "tool_calls": [self._tool_call("c2")]},
+            {"text": "done"},
+        ])
+        with patch("agent.core.execute_tool", return_value="ok"):
+            core.run_turn("go")
+        third = self._assistants(self.sent[2])
+        self.assertEqual([m["reasoning_content"] for m in third],
+                         ["first thoughts", ""])
+
+    def test_a_message_shaped_before_the_first_reasoning_is_patched(self):
+        """Round 2 reasons, so round 1's message is fixed up before round 3.
+
+        Nothing can be done for round 1 itself -- no reasoning had been seen
+        yet -- but from the moment the turn proves it is a thinking
+        conversation, every message already in it gets the field.
+        """
+        core = self._core([
+            {"text": "", "thinking": "", "tool_calls": [self._tool_call("c1")]},
+            {"text": "", "thinking": "second thoughts", "tool_calls": [self._tool_call("c2")]},
+            {"text": "done"},
+        ])
+        with patch("agent.core.execute_tool", return_value="ok"):
+            core.run_turn("go")
+        third = self._assistants(self.sent[2])
+        self.assertEqual([m["reasoning_content"] for m in third],
+                         ["", "second thoughts"])
+
+    def test_a_turn_that_never_reasons_sends_no_field_at_all(self):
+        core = self._core([
+            {"text": "", "thinking": "", "tool_calls": [self._tool_call("c1")]},
+            {"text": "done"},
+        ])
+        with patch("agent.core.execute_tool", return_value="ok"):
+            core.run_turn("go")
+        for request in self.sent:
+            for msg in self._assistants(request):
+                assert "reasoning_content" not in msg, msg
+
+    def test_the_real_reasoning_is_never_overwritten(self):
+        core = self._core([
+            {"text": "", "thinking": "keep me", "tool_calls": [self._tool_call("c1")]},
+            {"text": "done"},
+        ])
+        with patch("agent.core.execute_tool", return_value="ok"):
+            core.run_turn("go")
+        self.assertEqual(self._assistants(core.messages)[0]["reasoning_content"],
+                         "keep me")
 class TestEmitterIntegration(unittest.TestCase):
     """The emitter can drive a whole turn through a loopback transport."""
 

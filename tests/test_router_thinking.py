@@ -209,6 +209,18 @@ class TestReasoningContentStrippedForAnthropic(unittest.TestCase):
         adapted, _ = r._adapt_messages_for_anthropic(msgs)
         self.assertNotIn("reasoning_content", adapted[0])
 
+    def test_an_empty_reasoning_content_is_removed_too(self):
+        """The key's *presence* is what matters, not its value.
+
+        core.py fills the field with an empty string on a tool round that
+        reasoned about nothing, and Anthropic's SDK rejects the unknown key
+        either way.
+        """
+        r = _router(Provider.ANTHROPIC, "none")
+        msgs = [{"role": "assistant", "content": "hi", "reasoning_content": ""}]
+        adapted, _ = r._adapt_messages_for_anthropic(msgs)
+        self.assertNotIn("reasoning_content", adapted[0])
+
 
 if __name__ == "__main__":
     unittest.main()

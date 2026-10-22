@@ -569,10 +569,12 @@ class ModelRouter:
         chat_messages = []
         for msg in messages:
             # DeepSeek's thinking mode requires `reasoning_content` back on the
-            # assistant message, so core.py puts it there. Anthropic names the
-            # same thing differently (thinking blocks) and its SDK rejects
-            # unknown message keys, so it is dropped on this path.
-            if msg.get("reasoning_content"):
+            # assistant message, so core.py puts it there -- including as an
+            # empty string on rounds that reasoned about nothing, which is why
+            # the check is for the *key*, not for a truthy value. Anthropic
+            # names the same thing differently (thinking blocks) and its SDK
+            # rejects unknown message keys, so it is dropped on this path.
+            if "reasoning_content" in msg:
                 msg = {k: v for k, v in msg.items() if k != "reasoning_content"}
             if msg.get("role") == "system":
                 content = msg.get("content", "")
