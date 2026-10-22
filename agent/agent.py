@@ -712,18 +712,36 @@ class Agent:
         self.core.pending_prompt = None
         return str(prompt)
 
-    def _steer_drain(self) -> str | None:
-        """Pop the next queued steering line, if the user sent one.
+    def _steer_requeue(self) -> str:
+        """Carry steering lines the finished turn never consumed to the prompt.
 
-        The line is announced on stdout as it leaves the queue, so the
-        `↳ queued: <text>` row in the footer has a visible counterpart once
-        the line is actually fed to the turn below it. Any lines still queued
-        behind it are picked up by the next iteration of the main loop.
+        A line typed during a turn is *steering* only while the turn is still
+        on its way to another model call: it is injected at the next tool-loop
+        seam. If the model answers without calling another tool, the line
+        arrives after the answer it meant to redirect -- and feeding it
+        straight back in, as the main loop used to, silently started a new
+        turn from text the user typed as a mid-sentence remark and never had
+        the chance to review.
+
+        So the leftovers are pasted into the prompt as its default text
+        instead: editable, submittable, or discarded with Ctrl+U. Returns that
+        text, which is ``""`` when nothing was queued (the ordinary case).
         """
-        line = self.output.steer_take()
-        if line is None:
-            return None
-        return line
+        lines = self.output.steer_take_all()
+        if not lines:
+            return ""
+        self.output.newline()
+        plural = "line" if len(lines) == 1 else "lines"
+        # No square brackets in the text: `OutputAdapter.print` renders Rich
+        # markup, and a bracketed phrase it does not recognise as a tag is
+        # dropped *silently* -- the note would be invisible.
+        self.output.print(
+            f"[weak]steering: the turn ended before using {len(lines)} queued "
+            f"{plural} — pasted into the prompt, edit or clear with Ctrl+U[/weak]"
+        )
+        # One queue entry per submitted line, so the author's line breaks are
+        # the honest join: Enter still submits, a modified Enter adds a line.
+        return "\n".join(lines)
 
     def _announce_steered(self, line: str, when: str = "mid-turn") -> None:
         """Echo a steering line as it enters the turn path.
@@ -733,13 +751,14 @@ class Agent:
         stdout once the line is really fed to the turn.
         """
         remaining = self.output.steer_pending()
-        note = ", 1 more queued" if remaining else ""
+        label = f"steered {when.replace('_', ' ')}"
+        if remaining:
+            label += ", 1 more queued"
         self.output.newline()
+        # The bracketed label is escaped: `[steered ...]` is not a theme tag,
+        # and Rich drops an unknown tag -- and the text inside it -- silently.
         self.output.print(
-            f"[user]⤷ {escape(line)}[/user]"
-            f"{'  ' + _DIM if note else ''}"
-            f"[steered mid-turn{': ' + note if note else ''}]"
-            f"{_RESET if note else ''}"
+            f"[user]↳ {escape(line)}[/user]  [weak][{escape(label)}][/weak]"
         )
 
     def _footer_refresh(self) -> None:
@@ -923,14 +942,25 @@ class Agent:
         if _HAS_PROMPT_TOOLKIT:
             self._create_prompt_session()
 
-            def get_input():
-                return str(self._session.prompt()).strip()
+            def get_input(default: str = ""):
+                # `default` pre-fills the buffer, so text queued during the
+                # previous turn is carried over as editable input rather than
+                # run on the user's behalf (see _steer_requeue).
+                return str(self._session.prompt(default=default)).strip()
         else:
             # Rich
-            def get_input():
+            def get_input(default: str = ""):
+                if not default:
+                    return Prompt.ask(
+                        prompt="[user]⪥ [bold]You[/bold] ⪤[/user]\n❯",
+                        console=self.output._console,
+                    )
+                # Nothing to pre-fill here, so the carried-over text becomes
+                # the prompt's default: a bare Enter accepts it.
                 return Prompt.ask(
-                    prompt="[user]⩥ [bold]You[/bold] ⩤[/user]\n❯",
+                    prompt="[user]⪥ [bold]You[/bold] ⪤[/user]\n❯",
                     console=self.output._console,
+                    default=default.replace("\n", " "),
                 )
 
         # Phase 1 (client/server): the turn is driven through the event
@@ -943,23 +973,21 @@ class Agent:
 
         # Main loop
         while True:
-            # A line typed into the footer during the previous turn (mid-turn
-            # steering) is consumed before the prompt is shown again, so it
-            # goes through exactly the same code path as a typed prompt.
-            steered = self._steer_drain()
-            if steered:
-                self._announce_steered(steered)
-            else:
-                try:
-                    user_input = get_input()
-                except (EOFError, KeyboardInterrupt):
-                    self.output.print(txt_goodbye)
-                    break
+            # Text typed into the footer during the previous turn that the turn
+            # never consumed is pasted into the prompt as its default, so the
+            # user can edit or discard it instead of having it run for them
+            # (see _steer_requeue). Usually empty.
+            carried = self._steer_requeue()
+            try:
+                user_input = get_input(carried)
+            except (EOFError, KeyboardInterrupt):
+                self.output.print(txt_goodbye)
+                break
 
-                if not user_input:
-                    continue
+            if not user_input:
+                continue
 
-                user_input = str(user_input)
+            user_input = str(user_input)
 
             # No cancel-on-empty-prompt branch here: Ctrl+C during a turn is
             # caught inside the turn handler above and sets
@@ -1364,14 +1392,22 @@ class Agent:
         if _HAS_PROMPT_TOOLKIT:
             self._create_prompt_session()
 
-            def get_input():
-                return str(self._session.prompt()).strip()
+            def get_input(default: str = ""):
+                # Same contract as the local loop: queued steering text the
+                # turn did not consume is pre-filled, not submitted.
+                return str(self._session.prompt(default=default)).strip()
         else:
 
-            def get_input():
+            def get_input(default: str = ""):
+                if not default:
+                    return Prompt.ask(
+                        prompt="[user]⨯ [bold]You[/bold] ⨯[/user]\n❯",
+                        console=self.output._console,
+                    )
                 return Prompt.ask(
                     prompt="[user]⨯ [bold]You[/bold] ⨯[/user]\n❯",
                     console=self.output._console,
+                    default=default.replace("\n", " "),
                 )
 
         # Background thread answering ServerRequest RPCs (confirmations,
@@ -1385,19 +1421,17 @@ class Agent:
 
         try:
             while True:
-                # Drain a mid-turn steering line before prompting again.
-                steered = self._steer_drain()
-                if steered:
-                    self._announce_steered(steered)
-                else:
-                    try:
-                        user_input = get_input()
-                    except (EOFError, KeyboardInterrupt):
-                        self.output.print(txt_goodbye)
-                        break
+                # Same as the local loop: leftover steering text is pasted
+                # into the prompt rather than run as a new turn.
+                carried = self._steer_requeue()
+                try:
+                    user_input = get_input(carried)
+                except (EOFError, KeyboardInterrupt):
+                    self.output.print(txt_goodbye)
+                    break
 
-                    if not user_input:
-                        continue
+                if not user_input:
+                    continue
 
                 if user_input.startswith("!"):
                     from agent.shellcmd import run_shell_command

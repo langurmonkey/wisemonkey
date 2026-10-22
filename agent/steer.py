@@ -24,9 +24,13 @@ rows, so a queued follow-up can be collected with very little machinery:
   keyboard protocol is enabled (see :mod:`agent.keys`) the terminal reports
   Ctrl+C as an escape sequence instead of ``0x03``, so the kernel is bypassed
   entirely and the reader re-raises SIGINT itself.
-* Submitted lines are queued. The REPL main loop drains them right after the
-  turn ends, so they go through the exact same ``@``-expansion, command
-  dispatch and turn path as a typed prompt.
+* Submitted lines are queued and handed to the model at the turn's next
+  tool-loop seam, so a remark typed while a tool runs still steers the turn
+  it was typed into. A line the turn never gets to -- the model answered
+  without calling another tool -- is **not** run on the user's behalf: it is
+  pasted into the prompt as editable default text (``Agent._steer_requeue``),
+  where it can be sent, edited or cleared with Ctrl+U. Auto-submitting it
+  would start a turn from a mid-sentence remark the user never reviewed.
 
 It is deliberately *not* prompt_toolkit: no history, no completion, no
 key-binding framework. It exists to steer a running turn ("actually, use
@@ -270,7 +274,8 @@ class SteerInput:
         daemon, but keeps its own copy until the daemon confirms delivery with
         an ``injected`` event. Only then is the local copy dropped. If the turn
         ends first and the confirmation never arrives, the line is still in the
-        queue and the main loop runs it as an ordinary next prompt.
+        queue and the main loop carries it into the prompt as editable text
+        instead of running it (see ``Agent._steer_requeue``).
         """
         with self._lock:
             try:

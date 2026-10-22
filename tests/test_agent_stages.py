@@ -366,6 +366,92 @@ class TestSteerInjection(unittest.TestCase):
         self.assertEqual(agent.refreshes, 1)
 
 
+class TestSteerRequeue(unittest.TestCase):
+    """Leftover steering text must reach the prompt, not the model.
+
+    A line typed mid-turn only steers the turn if another tool round follows.
+    When the model answers straight away, the line arrives after the answer it
+    meant to redirect -- and the main loop used to run it as the next prompt,
+    starting a turn from a mid-sentence remark the user never reviewed.
+    `_steer_requeue` hands it to the prompt as default text instead.
+    """
+
+    def test_nothing_queued_returns_nothing(self):
+        agent = _SteerAgent([])
+        self.assertEqual(agent._steer_requeue(), "")
+        self.assertEqual(agent.out.printed, [])
+
+    def test_a_queued_line_becomes_the_prompt_text(self):
+        agent = _SteerAgent(["actually, use pandas"])
+        self.assertEqual(agent._steer_requeue(), "actually, use pandas")
+
+    def test_the_queue_is_drained(self):
+        """Otherwise the line would be pasted again on the next loop pass."""
+        agent = _SteerAgent(["a", "b"])
+        agent._steer_requeue()
+        self.assertIsNone(agent.out.steer_pending())
+
+    def test_several_lines_keep_their_own_lines(self):
+        """One queue entry per Enter, so the author's breaks are the join."""
+        agent = _SteerAgent(["first thought", "second thought"])
+        self.assertEqual(agent._steer_requeue(), "first thought\nsecond thought")
+
+    def test_the_carry_over_is_announced(self):
+        agent = _SteerAgent(["one", "two"])
+        agent._steer_requeue()
+        note = agent.out.printed[0]
+        self.assertIn("2 queued lines", note)
+        self.assertIn("Ctrl+U", note)  # how to discard it
+
+    def test_the_note_survives_rich_markup(self):
+        """`OutputAdapter.print` renders markup; an unknown tag is dropped.
+
+        A note written as `[steering: ...]` is not a theme tag, so Rich throws
+        it away *silently* -- the message simply never reaches the screen. The
+        rendered output, not the raw string, is what has to contain it.
+        """
+        import io
+
+        from rich.console import Console
+
+        agent = _SteerAgent(["one"])
+        agent._steer_requeue()
+        buf = io.StringIO()
+        console = Console(file=buf, width=200, force_terminal=False)
+        console.print(agent.out.printed[0])
+        rendered = buf.getvalue()
+        self.assertIn("pasted into the prompt", rendered)
+
+    def test_it_is_not_announced_as_delivered(self):
+        """`steered ...` would claim the model received it."""
+        agent = _SteerAgent(["one"])
+        agent._steer_requeue()
+        self.assertNotIn("steered", agent.out.printed[0])
+
+
+class TestBothLoopsCarrySteeringOver(unittest.TestCase):
+    """Both REPL loops must pre-fill the prompt with the leftovers.
+
+    The local and remote loops are separate code paths, and a fix applied to
+    one of them is invisible in the other. This is a source-level pin because
+    the behaviour it guards -- "the line is passed to the prompt rather than
+    run" -- only exists as the call site.
+    """
+
+    def setUp(self) -> None:
+        from pathlib import Path
+
+        source = Path(__file__).resolve().parents[1] / "agent" / "agent.py"
+        self.source = source.read_text(encoding="utf-8")
+
+    def test_both_loops_pass_the_carry_over_to_get_input(self):
+        self.assertEqual(self.source.count("carried = self._steer_requeue()"), 2)
+        self.assertEqual(self.source.count("get_input(carried)"), 2)
+
+    def test_the_old_auto_submit_path_is_gone(self):
+        self.assertNotIn("_steer_drain", self.source)
+
+
 class _InputRowOutput:
     """OutputAdapter stand-in for the steering input row."""
 

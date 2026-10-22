@@ -182,7 +182,9 @@ The reasoning text itself **is** printed to chat: `_handle_event` streams it wit
 
 ### Mid-turn steering (`agent/steer.py`)
 
-While a turn is running, `agent/steer.py` puts the tty in **cbreak** mode and reads keystrokes on a daemon thread. Enter queues the line; the REPL main loop drains the queue *before* showing the prompt again (`Agent._steer_drain`), so a queued line goes through the exact same `@`-expansion, command dispatch and turn path as a typed prompt.
+While a turn is running, `agent/steer.py` puts the tty in **cbreak** mode and reads keystrokes on a daemon thread. Enter queues the line; it reaches the model at the turn's next *tool-loop seam*, never later.
+
+A line the turn never gets to — the model answered without calling another tool, so the seam never came — is **not** run on the user's behalf. `Agent._steer_requeue()` (called at the top of both REPL loops, local and remote) drains what is left and pastes it into the prompt as its **default text** (`PromptSession.prompt(default=...)`), so the user can edit it, submit it, or clear it with Ctrl+U. Auto-submitting it was the old behaviour, and it silently started a new turn from a mid-sentence remark the user had typed to redirect an answer they had already received. The Rich fallback (`Prompt.ask`) has no buffer to pre-fill, so there the same text becomes the prompt's default and a bare Enter accepts it. `_steer_inject` still drains at the tool seam and is the only path that feeds a line to the model directly.
 
 This stays deliberately **not** prompt_toolkit: nothing is echoed to the terminal, the partial line is only surfaced on the footer's dedicated input row (`❯ <text>` while typing, `↳ queued: <text>` once submitted; the stage spinner and the thinking indicator live on the hints row below it, never on this one), and there is no history or completion. Keeping it out of stdout means no second writer on the cursor and no risk of corrupting the stream.
 
@@ -217,7 +219,7 @@ Ownership differs by mode, because the queue lives in the client but the turn li
 - **local** — `Agent._steer_inject` pops the client's FIFO (`SteerInput.take_all`) and announces each line as it leaves.
 - **remote** — the client sends `INJECT(after_tool)`; the server queues it (`WisemonkeyServer._injections`) and its injection seam emits `Event.INJECTED`; the client pops its own copy on that event (`Agent._handle_injected`). `BETWEEN_TURNS` and `INTERRUPT` are rejected server-side — the first needs no queue, the second is unimplemented.
 
-In both modes the line stays in the client FIFO until delivery is confirmed, so a turn that ends before another tool call loses nothing: the main loop's `_steer_drain` runs the line as an ordinary next prompt. A new turn also clears the server queue, so injections never leak across turns. A callback that raises is swallowed by `Core._drain_injections` — a UI failure to collect typed text must not abort a working turn.
+In both modes the line stays in the client FIFO until delivery is confirmed, so a turn that ends before another tool call loses nothing: the leftover is pasted into the prompt by `_steer_requeue` as editable text rather than run. A new turn also clears the server queue, so injections never leak across turns. A callback that raises is swallowed by `Core._drain_injections` — a UI failure to collect typed text must not abort a working turn.
 
 ### Images from tools (`tools/screenshot.py`, `tools/read_image.py`)
 

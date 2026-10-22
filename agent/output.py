@@ -372,8 +372,8 @@ class RichOutputAdapter(OutputAdapter):
     def steer_stop(self) -> None:
         """Stop capturing keystrokes and restore the tty.
 
-        Queued lines are kept so the caller can drain them once the turn is
-        over; :meth:`steer_start` is what discards them.
+        Queued lines are kept so the caller can carry them into the prompt
+        once the turn is over (:meth:`steer_start` is what discards them).
         """
         if self._steer is not None:
             self._steer.stop()
