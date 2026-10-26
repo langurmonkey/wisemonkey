@@ -1533,7 +1533,7 @@ def _configure_endpoint(
 @cmd(
     "/model",
     "Configure the endpoint: URL, provider, API key variable and model",
-    aliases=["/models"],
+    aliases=["/models", "/connect"],
 )
 def _cmd_models(
     core, params, output: OutputAdapter | None = None
