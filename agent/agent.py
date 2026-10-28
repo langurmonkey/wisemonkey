@@ -116,6 +116,9 @@ class Agent:
         # `spinner_prompt`/`spinner_thinking` cannot be used to tell whether
         # there is something to clear.
         self._footer_spinner_mine = False
+        # Prompt handed back by a slash command's reply (`/retry`, `/edit` in
+        # remote mode) for the turn loop to run; see _take_pending_prompt.
+        self._client_pending_prompt: str | None = None
         self._last_ctrl_c_time = (
             0  # Timestamp of last Control+C for double-tap detection
         )
@@ -705,11 +708,20 @@ class Agent:
         itself: it stores the text on the core and returns, and the loop picks
         it up here. Reading it clears it, so a request can never be run twice
         nor leak into the next prompt.
+
+        Two slots, because the text is produced in two places: locally the
+        command sets it on the core, while in remote mode the daemon owns the
+        core and hands the text back in the command's reply, so the client
+        stashes it in ``_client_pending_prompt``.
         """
-        prompt = getattr(self.core, "pending_prompt", None)
+        prompt = getattr(self, "_client_pending_prompt", None)
+        self._client_pending_prompt = None
+        if not prompt:
+            prompt = getattr(self.core, "pending_prompt", None)
+            if prompt:
+                self.core.pending_prompt = None
         if not prompt:
             return None
-        self.core.pending_prompt = None
         return str(prompt)
 
     def _steer_requeue(self) -> str:
@@ -973,16 +985,25 @@ class Agent:
 
         # Main loop
         while True:
-            # Text typed into the footer during the previous turn that the turn
-            # never consumed is pasted into the prompt as its default, so the
-            # user can edit or discard it instead of having it run for them
-            # (see _steer_requeue). Usually empty.
-            carried = self._steer_requeue()
-            try:
-                user_input = get_input(carried)
-            except (EOFError, KeyboardInterrupt):
-                self.output.print(txt_goodbye)
-                break
+            # A command from the previous pass (`/retry`, `/edit`) leaves the
+            # prompt it wants re-run on the core. It is taken here, before the
+            # prompt, and run as an ordinary turn: it cannot run itself (the
+            # frontend owns the turn loop) and routing it back through
+            # get_input would silently discard it.
+            queued = self._take_pending_prompt()
+            if queued is not None:
+                user_input = queued
+            else:
+                # Text typed into the footer during the previous turn that the
+                # turn never consumed is pasted into the prompt as its default,
+                # so the user can edit or discard it instead of having it run
+                # for them (see _steer_requeue). Usually empty.
+                carried = self._steer_requeue()
+                try:
+                    user_input = get_input(carried)
+                except (EOFError, KeyboardInterrupt):
+                    self.output.print(txt_goodbye)
+                    break
 
             if not user_input:
                 continue
@@ -1055,12 +1076,9 @@ class Agent:
 
                         # `/retry` and `/edit` cannot run a turn themselves
                         # (the frontend owns the turn loop); they leave the
-                        # prompt here and it runs next, through exactly the
-                        # same path as a typed prompt.
-                        retry_prompt = self._take_pending_prompt()
-                        if not retry_prompt:
-                            continue
-                        user_input = retry_prompt
+                        # prompt on the core, and the next pass takes it and
+                        # runs it through the same path as a typed prompt.
+                        continue
 
                     else:
                         # Error
@@ -1421,14 +1439,23 @@ class Agent:
 
         try:
             while True:
-                # Same as the local loop: leftover steering text is pasted
-                # into the prompt rather than run as a new turn.
-                carried = self._steer_requeue()
-                try:
-                    user_input = get_input(carried)
-                except (EOFError, KeyboardInterrupt):
-                    self.output.print(txt_goodbye)
-                    break
+                # A command from the previous pass (`/retry`, `/edit`) has left
+                # the prompt to re-run in _client_pending_prompt (the daemon
+                # owns the core, so it hands the text back rather than storing
+                # it here). Taken before get_input, so it runs instead of being
+                # asked for again and lost.
+                queued = self._take_pending_prompt()
+                if queued is not None:
+                    user_input = queued
+                else:
+                    # Same as the local loop: leftover steering text is pasted
+                    # into the prompt rather than run as a new turn.
+                    carried = self._steer_requeue()
+                    try:
+                        user_input = get_input(carried)
+                    except (EOFError, KeyboardInterrupt):
+                        self.output.print(txt_goodbye)
+                        break
 
                 if not user_input:
                     continue
@@ -1493,10 +1520,11 @@ class Agent:
 
                         # `/retry` and `/edit` run in the daemon but need the
                         # client to drive the turn, so the server hands the
-                        # prompt back here and it runs next.
+                        # prompt back. Stashed for the next pass to take at the
+                        # top of the loop; running it from here would skip the
+                        # turn body below.
                         if result.pending_prompt:
-                            user_input = result.pending_prompt
-                            continue
+                            self._client_pending_prompt = result.pending_prompt
                     else:
                         if result.msg:
                             self.output.err(result.msg)

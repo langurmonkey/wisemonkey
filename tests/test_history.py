@@ -361,6 +361,56 @@ class TestTakePendingPrompt(unittest.TestCase):
         agent.core = cast(Any, mock.Mock(spec=[]))
         self.assertIsNone(agent._take_pending_prompt())
 
+    def test_the_client_slot_is_read_too(self):
+        """In remote mode the daemon owns the core, so the reply carries it."""
+        from agent.agent import Agent
+
+        agent = Agent.__new__(Agent)
+        agent.core = cast(Any, mock.Mock(pending_prompt=None))
+        agent._client_pending_prompt = "re-run me"
+        self.assertEqual(agent._take_pending_prompt(), "re-run me")
+        self.assertIsNone(agent._take_pending_prompt())
+
+    def test_the_client_slot_wins_and_is_cleared(self):
+        from agent.agent import Agent
+
+        agent = Agent.__new__(Agent)
+        agent.core = cast(Any, mock.Mock(pending_prompt="stale"))
+        agent._client_pending_prompt = "from the server"
+        self.assertEqual(agent._take_pending_prompt(), "from the server")
+
+
+class TestTheLoopsRunThePendingPrompt(unittest.TestCase):
+    """Both REPL loops must *run* what a command handed back.
+
+    `/retry` and `/edit` cannot run a turn themselves, so they leave the text
+    for the frontend. Setting it after `get_input` and never running it is what
+    made `/retry` print "re-running the last prompt" and then do nothing: the
+    turn body lives under the `else` of the slash-command branch, so a prompt
+    assigned inside that branch fell out of the pass. A source-level pin,
+    because the behaviour is the call site.
+    """
+
+    def setUp(self) -> None:
+        from pathlib import Path
+
+        source = Path(__file__).resolve().parents[1] / "agent" / "agent.py"
+        self.source = source.read_text(encoding="utf-8")
+
+    def test_both_loops_take_it_before_asking_for_input(self):
+        self.assertEqual(
+            self.source.count("queued = self._take_pending_prompt()"), 2
+        )
+
+    def test_the_local_loop_does_not_reroute_it_through_get_input(self):
+        self.assertNotIn("retry_prompt = self._take_pending_prompt()", self.source)
+        self.assertNotIn("get_input(retry_prompt", self.source)
+
+    def test_the_remote_loop_does_not_skip_the_turn(self):
+        """`user_input = result.pending_prompt; continue` re-prompted instead."""
+        self.assertNotIn("user_input = result.pending_prompt", self.source)
+        self.assertIn("self._client_pending_prompt = result.pending_prompt", self.source)
+
 
 if __name__ == "__main__":
     unittest.main()
