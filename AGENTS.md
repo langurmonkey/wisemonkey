@@ -623,8 +623,10 @@ Sessions are directories under `~/.local/share/wisemonkey/sessions/`. Each sessi
 ### Adding a Slash Command
 
 1. Add a function in `agent/commands.py`
-2. Decorate with `@cmd(name, description, aliases=[])`
+2. Decorate with `@cmd(name, description, aliases=[], category="...")`
 3. Return `(ok, msg, content, markdown)`
+
+`category` places the command in a `/help` group. The groups are `CATEGORY_ORDER` in `agent/commands.py` (`General`, `Config`, `Session`, `History`, `Planning`, `Embedding & Images`, `Tools & Skills`, `MCP`); an unlisted category is not dropped, it sorts after the known ones, so a typo shows up at the bottom of `/help` rather than misfiling silently — `tests/test_command_categories.py` fails instead. Commands are alphabetical within a group, except `PINNED_FIRST` (`/help`).
 
 `@cmd` returns `None`, so another command cannot call a decorated handler by name. Put the logic in a plain function and let each `@cmd` entry point delegate to it (as `/model` and `/url` do via `_configure_endpoint`).
 

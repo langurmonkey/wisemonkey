@@ -35,6 +35,24 @@ def empty():
     pass
 
 
+# Category display order in `/help`. A command whose category is not listed
+# here still shows up -- it is collected at the end rather than dropped.
+CATEGORY_ORDER = [
+    "General",
+    "Config",
+    "Session",
+    "History",
+    "Planning",
+    "Embedding & Images",
+    "Tools & Skills",
+    "MCP",
+]
+
+# Commands worth naming before the alphabetical run, because they are the way
+# in to everything else (`/help`) rather than one entry among many.
+PINNED_FIRST = ["/help"]
+
+
 @dataclass(frozen=True)
 class Command:
     """A single slash command definition."""
@@ -46,6 +64,7 @@ class Command:
     )
     aliases: list[str] = field(default_factory=list)
     examples: list[tuple[str, str]] = field(default_factory=list)
+    category: str = "General"
 
 
 class CommandRegistry:
@@ -153,17 +172,48 @@ class CommandRegistry:
                 result.append(cmd)
         return result
 
+    def list_by_category(self) -> list[tuple[str, list[Command]]]:
+        """Group the unique commands by category, in display order.
+
+        Categories follow ``CATEGORY_ORDER``; anything else is appended
+        after them (alphabetically) so a new category always shows up even
+        if nobody remembered to list it. Commands inside a group are
+        alphabetical, except ``PINNED_FIRST``.
+        """
+        groups: dict[str, list[Command]] = {}
+        for command in self.list_commands():
+            groups.setdefault(command.category or "General", []).append(command)
+
+        ordered = [c for c in CATEGORY_ORDER if c in groups]
+        ordered += sorted(c for c in groups if c not in CATEGORY_ORDER)
+        return [
+            (
+                name,
+                sorted(
+                    groups[name],
+                    key=lambda c: (
+                        PINNED_FIRST.index(c.name)
+                        if c.name in PINNED_FIRST
+                        else len(PINNED_FIRST),
+                        c.name,
+                    ),
+                ),
+            )
+            for name in ordered
+        ]
+
     def names(self) -> list[str]:
         """Return all command names (primary + aliases) for completion."""
         return list(self._commands.keys())
 
     def get_commands_str(self):
-        """Prints all defined commands to the output"""
-        all = ""
-        for cmd in self.list_commands():
-            all += f"{self._command_str(cmd)}"
-
-        return all
+        """Renders every command to a rich-markup string, grouped by category."""
+        blocks = []
+        for category, commands in self.list_by_category():
+            block = f"[accent-bold]{category}[/accent-bold]\n"
+            block += "".join(self._command_str(cmd) for cmd in commands)
+            blocks.append(block)
+        return "\n".join(blocks)
 
     def _command_str(self, cmd):
         aliases = ", ".join(f"[green]{a}[/]" for a in cmd.aliases)
@@ -203,6 +253,7 @@ def cmd(
     description: str = "",
     aliases: list[str] = [],
     examples: list[tuple[str, str]] = [],
+    category: str = "General",
 ):
     """
     Decorator to register commands.
@@ -215,7 +266,9 @@ def cmd(
     """
 
     def command(handler):
-        registry.register(Command(name, description, handler, aliases, examples))
+        registry.register(
+            Command(name, description, handler, aliases, examples, category)
+        )
 
     return command
 
@@ -228,7 +281,7 @@ def _fallback_output() -> OutputAdapter:
 
 
 # Built-in command handlers
-@cmd("/quit", "Exit the agent", aliases=["/exit", "/q"])
+@cmd("/quit", "Exit the agent", aliases=["/exit", "/q"], category="General")
 def _cmd_quit(
     core, params, output: OutputAdapter | None = None
 ) -> tuple[bool, str | None, str | None, str | None]:
@@ -238,6 +291,7 @@ def _cmd_quit(
 @cmd(
     "/reasoning",
     "Configure model reasoning",
+    category="Config",
 )
 def _cmd_reasoning(
     core, params, output: OutputAdapter | None = None
@@ -291,6 +345,7 @@ def _cmd_reasoning(
 @cmd(
     "/notes",
     "List all notes",
+    category="Session",
 )
 def _cmd_notes(
     core, params, output: OutputAdapter | None = None
@@ -312,6 +367,7 @@ def _cmd_notes(
     examples=[
         ("/notes add This is my note", "Add a new note"),
     ],
+    category="Session",
 )
 def _cmd_notes_add(
     core, params, output: OutputAdapter | None = None
@@ -329,6 +385,7 @@ def _cmd_notes_add(
     examples=[
         ("/sessions", "List every session, most recently used first"),
     ],
+    category="Session",
 )
 def _cmd_sessions(
     core, params, output: OutputAdapter | None = None
@@ -392,6 +449,7 @@ def _cmd_sessions(
         ("/resume", "Resume the most recently used other session"),
         ("/resume gaiasky", "Switch to the session named 'gaiasky'"),
     ],
+    category="Session",
 )
 def _cmd_resume(
     core, params, output: OutputAdapter | None = None
@@ -461,6 +519,7 @@ def _cmd_resume(
 @cmd(
     "/session",
     "Print session information",
+    category="Session",
 )
 def _cmd_session(
     core, params, output: OutputAdapter | None = None
@@ -495,6 +554,7 @@ def _cmd_session(
 @cmd(
     "/session-agent",
     "Show the session agent memory contents (user profile and notes)",
+    category="Session",
 )
 def _cmd_session_agent(
     core, params, output: OutputAdapter | None = None
@@ -517,6 +577,7 @@ def _cmd_session_agent(
         ("/history", "Print the entire session chat history"),
         ("/history 2", "Print the last 2 turns (prompt + answer)"),
     ],
+    category="History",
 )
 def _cmd_history(
     core, params, output: OutputAdapter | None = None
@@ -576,6 +637,7 @@ def _short_utc(when: str) -> str:
             "Number the interactions and their percentage of the history size",
         ),
     ],
+    category="History",
 )
 def _cmd_history_info(
     core, params, output: OutputAdapter | None = None
@@ -628,6 +690,7 @@ def _cmd_history_info(
         ("/history", "Clear chat memory for this session"),
         ("/history clear 10", "Clear the 10 oldest chat exchanges of this session"),
     ],
+    category="History",
 )
 def _cmd_history_clear(
     core, params, output: OutputAdapter | None = None
@@ -650,6 +713,7 @@ def _cmd_history_clear(
         ("/undo", "Drop the last exchange (prompt + answer + tool calls)"),
         ("/undo 3", "Drop the last three exchanges"),
     ],
+    category="History",
 )
 def _cmd_undo(
     core, params, output: OutputAdapter | None = None
@@ -686,6 +750,7 @@ def _cmd_undo(
         ("/retry", "Re-run the last prompt, keeping the old answer in context"),
         ("/retry --drop", "Re-run it and remove the old exchange first"),
     ],
+    category="History",
 )
 def _cmd_retry(
     core, params, output: OutputAdapter | None = None
@@ -720,6 +785,7 @@ def _cmd_retry(
     examples=[
         ("/edit", "Open the last prompt in $EDITOR, then re-run it"),
     ],
+    category="History",
 )
 def _cmd_edit(
     core, params, output: OutputAdapter | None = None
@@ -794,6 +860,7 @@ def _edit_in_editor(text: str, output: OutputAdapter | None) -> str | None:
 @cmd(
     "/last-prompt",
     "Print the most recent user prompt (used by /retry and /edit)",
+    category="History",
 )
 def _cmd_last_prompt(
     core, params, output: OutputAdapter | None = None
@@ -814,6 +881,7 @@ def _cmd_last_prompt(
         ("/history-compact 5", "Summarize only the 5 oldest interactions"),
         ("/history-compact 0", "Summarize the entire chat history"),
     ],
+    category="History",
 )
 def _cmd_history_compact(
     core, params, output: OutputAdapter | None = None
@@ -919,6 +987,7 @@ def _cmd_history_compact(
         ("/plan read NEW_FEATURE", "Read a specific plan"),
         ("/plan read REFACTOR", "Read the most recent matching plan"),
     ],
+    category="Planning",
 )
 def _cmd_plan_read(
     core, params, output: OutputAdapter | None = None
@@ -960,6 +1029,7 @@ def _cmd_plan_read(
     "/plan-list",
     "List all saved session plans in the current session",
     aliases=["/plan-ls", "/plans-list", "/plans-ls"],
+    category="Planning",
 )
 def _cmd_plan_list(
     core, params, output: OutputAdapter | None = None
@@ -1010,6 +1080,7 @@ def _cmd_plan_list(
         ("/plan edit REFACTOR_20260626_120000", "Edit a specific plan"),
         ("/plan edit REFACTOR", "Edit the most recent matching plan"),
     ],
+    category="Planning",
 )
 def _cmd_plan_edit(
     core, params, output: OutputAdapter | None = None
@@ -1067,6 +1138,7 @@ def _cmd_plan_edit(
         ("/embed ~/documents/research_paper.pdf", ""),
         ("/embed ./notes.md", ""),
     ],
+    category="Embedding & Images",
 )
 def _cmd_embed(
     core, params, output: OutputAdapter | None = None
@@ -1108,6 +1180,7 @@ def _cmd_embed(
 @cmd(
     "/tools",
     "List all available tools ⚙",
+    category="Tools & Skills",
 )
 def _cmd_tools(
     core, params, output: OutputAdapter | None = None
@@ -1120,6 +1193,7 @@ def _cmd_tools(
 @cmd(
     "/tools-native",
     "List native tools ⚙",
+    category="Tools & Skills",
 )
 def _cmd_tools_native(
     core, params, output: OutputAdapter | None = None
@@ -1135,6 +1209,7 @@ def _cmd_tools_native(
 @cmd(
     "/tools-mcp",
     "List MCP tools ⚙",
+    category="Tools & Skills",
 )
 def _cmd_tools_mcp(
     core, params, output: OutputAdapter | None = None
@@ -1150,6 +1225,7 @@ def _cmd_tools_mcp(
 @cmd(
     "/skills",
     "List loaded skills ⚔",
+    category="Tools & Skills",
 )
 def _cmd_skills(
     core, params, output: OutputAdapter | None = None
@@ -1534,6 +1610,7 @@ def _configure_endpoint(
     "/model",
     "Configure the endpoint: URL, provider, API key variable and model",
     aliases=["/models", "/connect"],
+    category="Config",
 )
 def _cmd_models(
     core, params, output: OutputAdapter | None = None
@@ -1545,6 +1622,7 @@ def _cmd_models(
 @cmd(
     "/url",
     "Configure the endpoint (alias of /model: URL, provider, key, model)",
+    category="Config",
 )
 def _cmd_url(
     core, params, output: OutputAdapter | None = None
@@ -1566,6 +1644,7 @@ def _cmd_url(
 @cmd(
     "/config-show",
     "Show current configuration",
+    category="Config",
 )
 def _cmd_config_show(
     core, params, output: OutputAdapter | None = None
@@ -1581,6 +1660,7 @@ def _cmd_config_show(
 @cmd(
     "/config-edit",
     "Edit the configuration file with $EDITOR or $VISUAL",
+    category="Config",
 )
 def _cmd_config_edit(
     core, params, output: OutputAdapter | None = None
@@ -1608,6 +1688,7 @@ def _cmd_config_edit(
     "/config",
     "Configure the agent interactively",
     aliases=["/configure"],
+    category="Config",
 )
 def _cmd_config(
     core, params, output: OutputAdapter | None = None
@@ -1629,6 +1710,7 @@ def _cmd_config(
 @cmd(
     "/mcp-edit",
     "Edit the mcp.json configuration file with $EDITOR or $VISUAL",
+    category="MCP",
 )
 def _cmd_mcp_edit(
     core, params, output: OutputAdapter | None = None
@@ -1651,6 +1733,7 @@ def _cmd_mcp_edit(
     "/mcp",
     "Show the current MCP configuration file",
     aliases=["/mcp-show"],
+    category="MCP",
 )
 def _cmd_mcp_show(
     core, params, output: OutputAdapter | None = None
@@ -1673,6 +1756,7 @@ def _cmd_mcp_show(
 @cmd(
     "/mcp-tools",
     "List MCP tools ⚙",
+    category="MCP",
 )
 def _cmd_mcp_tools(
     core, params, output: OutputAdapter | None = None
@@ -1686,6 +1770,7 @@ def _cmd_mcp_tools(
     "/temperature",
     "Set the inference temperature parameter in 0..2",
     aliases=["/temp", "/t"],
+    category="Config",
 )
 def _cmd_temperature(
     core, params, output: OutputAdapter | None = None
@@ -1708,6 +1793,7 @@ def _cmd_temperature(
 @cmd(
     "/vi",
     "Enable/disable vi input mode",
+    category="Config",
 )
 def _cmd_vi(
     core, params, output: OutputAdapter | None = None
@@ -1737,6 +1823,7 @@ def _cmd_vi(
 @cmd(
     "/unsafe",
     "Enable/disable unsafe mode",
+    category="Config",
 )
 def _cmd_unsafe(
     core, params, output: OutputAdapter | None = None
@@ -1766,6 +1853,7 @@ def _cmd_unsafe(
 @cmd(
     "/markdown",
     "Configure markdown rendering after inference",
+    category="Config",
 )
 def _cmd_vi(
     core, params, output: OutputAdapter | None = None
@@ -1799,6 +1887,7 @@ def _cmd_vi(
         ("/attachimage path/to/screenshot.png", ""),
         ("/attachimage ~/Pictures/photo.jpg", ""),
     ],
+    category="Embedding & Images",
 )
 def _cmd_attach_image(
     core, params, output: OutputAdapter | None = None
@@ -1830,6 +1919,7 @@ def _cmd_attach_image(
     "/help",
     "Show command help",
     aliases=["/commands"],
+    category="General",
 )
 def _cmd_help(
     core, params, output: OutputAdapter | None = None
@@ -1840,6 +1930,7 @@ def _cmd_help(
 @cmd(
     "/context",
     "Show context usage: token breakdown per section of the prompt",
+    category="General",
 )
 def _cmd_context(
     core, params, output: OutputAdapter | None = None
