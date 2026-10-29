@@ -7,11 +7,13 @@ Two rules are pinned here:
    pre-existing "matches a dangerous pattern" rule.
 2. ``fetch_url`` and ``web_search`` always ask before a request leaves the
    machine.
-3. The session is two directories -- the working directory and the session's
-   own scratch directory (``<session_dir>/tmp``), which tool subprocesses get
-   as ``TMPDIR``. The second one is inside, derived from the session rather
-   than hard-coded, so the boundary stays one rule instead of a growing list
-   of trusted locations.
+3. The session is the working directory plus two open directories of its own
+   session directory (``$XDG_DATA_HOME/wisemonkey/sessions/<name>``):
+   ``pasted/`` and ``tmp/``. The rest of the session directory -- plans, notes,
+   profile, chat history, the vector store -- is agent state reached through
+   its own tool, so a path to it still asks; a sibling session's directory
+   asks too. The roots are derived from the session rather than hard-coded, so
+   the boundary stays one rule instead of a growing list of trusted locations.
 4. The file tools (``read_file``, ``write_file``, ``patch_file``, ``list_dir``,
    ``find_files``, ``search_content``) ask on the same boundary: reaching a
    path outside the session is an explicit decision whichever tool names it,
@@ -268,6 +270,9 @@ class TestSessionTempDir(BaseTest):
     def _patch_temp(self):
         return patch("tools.terminal._session_temp_dir", return_value=self.temp)
 
+    def _patch_session_dir(self, path):
+        return patch("tools.terminal._session_pasted_dir", return_value=path)
+
     def test_tool_env_points_TMPDIR_at_the_session_temp_dir(self):
         with self._patch_temp():
             env = _tool_env()
@@ -311,11 +316,44 @@ class TestSessionTempDir(BaseTest):
             assert not _is_within_session("/tmp")
             assert not _is_within_session("/tmp/wisemonkey-scratch.txt")
 
-    def test_a_sibling_of_the_temp_dir_is_outside(self):
-        """It is the scratch directory that is trusted, not the session
-        directory around it: the chat history and the notes live there."""
-        with self._patch_temp():
+    def test_the_session_pasted_dir_is_inside_the_session(self):
+        """Pasted files are the user's own text, so they need no prompt.
+
+        They live under the session directory, not the working directory, so
+        without this root the agent could not read back a long prompt it had
+        spilled to disk.
+        """
+        pasted = self._tmpdir / "pasted"
+        with self._patch_session_dir(pasted):
+            assert _is_within_session(pasted)
+            assert _is_within_session(pasted / "paste_20260101_120000_000000.md")
+
+    def test_the_rest_of_the_session_directory_still_prompts(self):
+        """Plans, notes and chat history are agent state, not open files.
+
+        Each has a tool of its own, so reaching the file by path is reaching
+        around it -- and the model has no business rewriting the history the
+        agent is reading from.
+        """
+        pasted = self._tmpdir / "pasted"
+        with self._patch_session_dir(pasted):
+            assert not _is_within_session(self._tmpdir)
+            assert not _is_within_session(self._tmpdir / "plans" / "PLAN.md")
             assert not _is_within_session(self._tmpdir / "notes.json")
+            assert not _is_within_session(self._tmpdir / "chat_history.json")
+            assert not _is_within_session(self._tmpdir / "vectorstore")
+
+    def test_a_sibling_session_directory_is_outside(self):
+        pasted = self._tmpdir / "pasted"
+        with self._patch_session_dir(pasted):
+            sibling = self._tmpdir.parent / "another-session"
+            assert not _is_within_session(sibling)
+            assert not _is_within_session(sibling / "pasted" / "paste_x.md")
+
+    def test_no_session_bound_trusts_only_the_working_directory(self):
+        """A harness with no session must not accidentally trust a default one."""
+        with self._patch_session_dir(None):
+            assert not _is_within_session(self._tmpdir)
 
     def test_writing_to_the_session_temp_dir_is_not_an_outside_path(self):
         with self._patch_temp():
@@ -387,14 +425,56 @@ class TestFileToolConfirmation(BaseTest):
         self.temp = self._tmpdir / "session-tmp"
         self.outside = self._write_file("outside.txt", "outside content\n")
 
-    def _call(self, tool, args, answer=False, unsafe=False):
+    def _call(self, tool, args, answer=False, unsafe=False, pasted_dir=None):
         output = _RecordingOutput(answer=answer)
         set_output(cast(OutputAdapter, output))
         self.addCleanup(set_output, None)
         with patch.dict(self.globals, {"get_config": lambda: _Config(unsafe)}):
             with patch("tools.terminal._session_temp_dir", return_value=self.temp):
-                result = self.handlers[tool](args)
+                with patch("tools.terminal._session_pasted_dir", return_value=pasted_dir):
+                    result = self.handlers[tool](args)
         return output, result
+
+    def test_a_pasted_file_does_not_prompt(self):
+        """Pasted text is the user's own writing, not agent state.
+
+        It lives under the session directory, so without this root the agent
+        could not read back a long prompt it had spilled to disk.
+        """
+        session = self._tmpdir / "session"
+        pasted = session / "pasted"
+        pasted.mkdir(parents=True)
+        paste = pasted / "paste_20260101_120000_000000.md"
+        paste.write_text("a long prompt\n")
+        output, result = self._call(
+            "read_file", {"path": str(paste)}, pasted_dir=pasted
+        )
+        assert output.confirmations == []
+        assert result["content"] == "a long prompt\n"
+
+    def test_a_plan_file_still_prompts(self):
+        """Plans are read through ``/plan-read``; the path is around that."""
+        session = self._tmpdir / "session"
+        (session / "plans").mkdir(parents=True)
+        plan = session / "plans" / "PLAN.md"
+        plan.write_text("# Plan\n")
+        output, result = self._call(
+            "read_file", {"path": str(plan)}, pasted_dir=session / "pasted"
+        )
+        assert len(output.confirmations) == 1
+        assert result["user_cancelled"] is True
+
+    def test_another_sessions_pasted_dir_still_prompts(self):
+        session = self._tmpdir / "session"
+        other = self._tmpdir / "other-session"
+        (other / "pasted").mkdir(parents=True)
+        paste = other / "pasted" / "paste_x.md"
+        paste.write_text("theirs\n")
+        output, result = self._call(
+            "read_file", {"path": str(paste)}, pasted_dir=session / "pasted"
+        )
+        assert len(output.confirmations) == 1
+        assert result["user_cancelled"] is True
 
     def test_a_file_in_the_working_directory_does_not_prompt(self):
         output, result = self._call("read_file", {"path": "tests/conftest.py"})

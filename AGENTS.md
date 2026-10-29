@@ -423,18 +423,42 @@ identically in the REPL and the IPC/daemon path), never a bare
   missed path only means a missed prompt, never a blocked command;
   over-flagging is deliberate, so a command that reads `/etc/hostname` prompts
   just as one that writes there does.
+- **The session's open directories are `pasted/` and `tmp/`, and nothing else.**
+  `_is_within_session()` counts the working directory plus two directories of
+  the current session (`~/.local/share/wisemonkey/sessions/<name>`):
+  `pasted/` (long prompts the REPL spilled to a file -- the user's own text)
+  and `tmp/` (the scratch space tool subprocesses get as `TMPDIR`). Everything
+  else in the session directory is **agent state reached through its own
+  tool**, so a path to it still asks: `plans/` via `/plan-read`, `notes.json`
+  and `user_profile.json` via the memory tools, `chat_history.json` written
+  internally, the vector store via `search_knowledge`. Reaching those by path
+  is reaching around the tool -- and the model has no business rewriting the
+  history the agent is reading from. A sibling session's directory is outside
+  too, `pasted/` included. Roots come from
+  `Memory.pasted_dir`/`Memory.temp_dir` (`current_session_pasted_dir()`,
+  `current_session_temp_dir()`) and never from a path pattern.
 - **Scratch space is inside the session.** Every tool subprocess gets
   `TMPDIR=<session_dir>/tmp` (`tools.terminal._tool_env()`, used by both
   `run_command` and `spawn`), created `0700` on first use. A command that writes
   to `$TMPDIR` -- anything using `mktemp` or `tempfile` -- therefore lands in
-  the session rather than in the shared, world-readable `/tmp`. That directory
-  is the *second* thing `_is_within_session()` counts as inside (the other being
-  the working directory), so a literal path under it needs no prompt, while a
-  literal `/tmp` path still asks. It is derived from the session and never a
-  hard-coded literal: the check stays one rule rather than a list of trusted
-  locations to which `/var/tmp`, `~/Downloads` and the rest would be appended
-  one at a time. A scratch directory that cannot be created is not a reason to
-  refuse the command -- the child keeps the inherited `TMPDIR`.
+  the session rather than in the shared, world-readable `/tmp`, so a literal
+  path under it needs no prompt while a literal `/tmp` path still asks. Both
+  roots are derived from the session and never hard-coded literals: the check
+  stays one rule rather than a list of trusted locations to which `/var/tmp`,
+  `~/Downloads` and the rest would be appended one at a time. A scratch
+  directory that cannot be created is not a reason to refuse the command -- the
+  child keeps the inherited `TMPDIR`.
+- **Scratch space is inside the session.** Every tool subprocess gets
+  `TMPDIR=<session_dir>/tmp` (`tools.terminal._tool_env()`, used by both
+  `run_command` and `spawn`), created `0700` on first use. A command that writes
+  to `$TMPDIR` -- anything using `mktemp` or `tempfile` -- therefore lands in
+  the session rather than in the shared, world-readable `/tmp`, so a literal
+  path under it needs no prompt while a literal `/tmp` path still asks. Both
+  roots are derived from the session and never hard-coded literals: the check
+  stays one rule rather than a list of trusted locations to which `/var/tmp`,
+  `~/Downloads` and the rest would be appended one at a time. A scratch
+  directory that cannot be created is not a reason to refuse the command -- the
+  child keeps the inherited `TMPDIR`.
 - **`fetch_url` / `web_search`** always prompt, because every call leaves the
   machine.
 - **The opt-out is one flag**: `agent.unsafe` (`/unsafe`) skips all of these, so

@@ -3,11 +3,14 @@
 Allows the agent to operate with files and directories in the file system,
 including searching by name and content.
 
-Security: the session is two directories -- the working directory it was
-started in, and the session's own scratch directory (``<session_dir>/tmp``).
-A tool that would reach anything else asks the user first, on the same rule
-``run_command`` applies to shell commands, so an outside path is an explicit
-decision whichever tool names it rather than only when it goes through a shell.
+Security: the session is three directories -- the working directory it was
+started in, and the ``pasted/`` and ``tmp/`` directories of its own session
+directory (``$XDG_DATA_HOME/wisemonkey/sessions/<name>/``). A tool that would
+reach anything else asks the user first, on the same rule ``run_command``
+applies to shell commands, so an outside path is an explicit decision whichever
+tool names it rather than only when it goes through a shell. The rest of the
+session directory -- plans, notes, chat history, the vector store -- is agent
+state reached through its own tools, so it is not a free path either.
 """
 
 import difflib

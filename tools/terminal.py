@@ -184,6 +184,17 @@ def _session_temp_dir() -> Path | None:
     return current_session_temp_dir()
 
 
+def _session_pasted_dir() -> Path | None:
+    """The current session's pasted-files directory, or ``None``.
+
+    Lazy import for the same reason as :func:`_session_temp_dir`: this module
+    must stay importable without touching the user's data directory.
+    """
+    from agent.memory import current_session_pasted_dir
+
+    return current_session_pasted_dir()
+
+
 def _tool_env() -> dict[str, str]:
     """The environment for a tool subprocess, with a session-private ``TMPDIR``.
 
@@ -212,27 +223,39 @@ def _tool_env() -> dict[str, str]:
 def _session_roots() -> list[Path]:
     """The directories that count as *inside* the session.
 
-    The working directory, plus the session's own scratch directory. That
-    second one is derived from the session, never a hard-coded literal: the
-    point of the check is that it is one rule (the session) rather than a list
-    of trusted locations someone will keep appending to.
+    The working directory, plus the session's two open directories: ``pasted/``
+    (long prompts spilled to a file) and ``tmp/`` (the scratch space tool
+    subprocesses get as ``TMPDIR``). Both are the user's own text rather than
+    agent state.
+
+    Everything else under the session directory is deliberately *not* a root.
+    ``plans/``, ``notes.json``, ``chat_history.json`` and the vector store are
+    agent state with a tool of their own -- ``/plan-read``, the memory tools,
+    the store itself -- so reaching them by path is reaching around that tool,
+    and the model has no business rewriting the file the agent is reading from.
+    Sibling sessions are outside too, for the same reason as any other path.
+
+    Roots are derived from the session, never hard-coded literals: the point of
+    the check is that it is one rule rather than a list of trusted locations
+    someone will keep appending to.
     """
     roots: list[Path] = []
     try:
         roots.append(Path.cwd().resolve())
     except OSError:
         pass
-    temp = _session_temp_dir()
-    if temp is not None:
+    for candidate in (_session_pasted_dir(), _session_temp_dir()):
+        if candidate is None:
+            continue
         try:
-            roots.append(temp.resolve())
+            roots.append(candidate.resolve())
         except (OSError, RuntimeError):
             pass
     return roots
 
 
 def _is_within_session(path: Path | str) -> bool:
-    """Whether *path* is the working directory or the session's scratch dir.
+    """Whether *path* is inside the working directory or a session open dir.
 
     A path that cannot be resolved counts as *outside*: the check exists to ask
     about what it cannot vouch for, and a needless prompt costs one keystroke
@@ -253,8 +276,10 @@ def _outside_session_paths(command: str) -> list[str]:
     Each token is expanded (``~``) and resolved against the working directory,
     so ``../sibling`` and ``/etc/passwd`` are reported while ``src/app.py`` is
     not. Symlinks are resolved, so a link pointing out of the session counts as
-    outside it, and the session's own scratch directory (``$TMPDIR``) counts as
-    inside, because the agent owns it.
+    outside it. The session's ``pasted/`` and ``tmp/`` directories count as
+    inside -- the user's own text and scratch space -- while the rest of the
+    session directory (plans, notes, chat history, the vector store) is
+    agent state with its own tools and therefore reaches the prompt.
     """
     outside: list[str] = []
     for raw in _candidate_paths(command):

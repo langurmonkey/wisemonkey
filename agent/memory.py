@@ -99,6 +99,9 @@ SESSION_METADATA_FILE = ".session-metadata"
 # command writing there is not asking for anything the agent does not already
 # hold, and a session's leftovers are cleaned up with the session.
 SESSION_TEMP_DIRNAME = "tmp"
+# Long prompts the REPL spilled to a file. Inside the session for the same
+# reason as tmp/: it is text the user wrote, not agent state.
+SESSION_PASTED_DIRNAME = "pasted"
 
 
 def current_session_temp_dir() -> Path | None:
@@ -114,6 +117,36 @@ def current_session_temp_dir() -> Path | None:
     except OSError as exc:
         log.warning("Session scratch directory unavailable: %s", exc)
         return None
+
+
+def current_session_dir() -> Path | None:
+    """The bound session's directory, or ``None`` when no session is bound.
+
+    Reads the singleton instead of building one: ``Memory()`` on an unbound
+    process binds a ``default`` session and lays out its directory, which is
+    not something a boundary check should be able to do. ``None`` therefore
+    means "this process has no session to speak of", and callers fall back to
+    the working directory alone.
+    """
+    mem = _instance
+    if mem is None or not getattr(mem, "_initialized", False):
+        return None
+    return getattr(mem, "session_dir", None)
+
+
+def current_session_pasted_dir() -> Path | None:
+    """The bound session's pasted-files directory, or ``None``.
+
+    Like :func:`current_session_dir`, it reads the singleton rather than
+    building one: a boundary check must not bind a session as a side effect.
+    """
+    mem = _instance
+    if mem is None or not getattr(mem, "_initialized", False):
+        return None
+    session_dir = getattr(mem, "session_dir", None)
+    if session_dir is None:
+        return None
+    return Path(session_dir) / SESSION_PASTED_DIRNAME
 
 
 def is_valid_session_name(name: str) -> bool:
@@ -357,6 +390,15 @@ class Memory:
         """
         return self.session_dir / SESSION_TEMP_DIRNAME
 
+    @property
+    def pasted_dir(self) -> Path:
+        """Directory holding long prompts the REPL spilled to a file.
+
+        Created on demand by :meth:`create_pasted_file`, not on access: a
+        session that never pasted anything has no reason to own one.
+        """
+        return self.session_dir / SESSION_PASTED_DIRNAME
+
     def switch_session(
         self,
         session,
@@ -584,10 +626,10 @@ class Memory:
     def create_pasted_file(self, content):
         """Save pasted content to a file in the session's pasted directory.
 
-        Creates session_dir/pasted/paste_$TIMESTAMP.md with the given content.
+        Creates <pasted_dir>/paste_$TIMESTAMP.md with the given content.
         Returns the file path as a string.
         """
-        pasted_dir = self.session_dir / "pasted"
+        pasted_dir = self.pasted_dir
         pasted_dir.mkdir(parents=True, exist_ok=True)
 
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
