@@ -1051,7 +1051,9 @@ def _cmd_plan_list(
     if not files:
         return False, "no session plans found", None, None
 
-    results = ""
+    from agent.utils import pretty_timedelta
+
+    entries: list[tuple[str, str, float]] = []
     for f in files:
         raw = f.read_text(encoding="utf-8")
         # Parse frontmatter for status
@@ -1062,15 +1064,29 @@ def _cmd_plan_list(
                 if ":" in line:
                     k, v = line.split(":", 1)
                     meta[k.strip()] = v.strip()
-        name_display = f.stem
-        status = meta.get("status", "unknown")
-        mod = datetime.datetime.fromtimestamp(f.stat().st_mtime)
-        from agent.utils import pretty_timedelta
+        entries.append((f.stem, meta.get("status", "unknown"), f.stat().st_mtime))
 
-        age = pretty_timedelta(mod)
-        results += f"  \u2022 [bold]{name_display}[/bold] \u2014 {status} ({age} ago)\n"
+    # Active plans first: they are the work in progress, and a one-line status
+    # buried in an alphabetical list is easy to miss. Newest first within each
+    # group, which is what the filename sort used to give.
+    entries.sort(key=lambda e: (e[1] != "active", -e[2], e[0]))
 
-    return True, f"{len(files)} plan(s) found", results, None
+    results = ""
+    for name, status, mtime in entries:
+        age = pretty_timedelta(datetime.datetime.fromtimestamp(mtime))
+        if status == "active":
+            results += (
+                f"  \u2022 [bold]{name}[/bold] \u2014 [ok]{status}[/ok] ({age} ago)\n"
+            )
+        else:
+            # Finished or abandoned work recedes instead of competing with it.
+            results += f"  [faint]\u2022 {name} \u2014 {status} ({age} ago)[/faint]\n"
+
+    active = sum(1 for _name, status, _mtime in entries if status == "active")
+    msg = f"{len(files)} plan(s) found"
+    if active:
+        msg += f" ({active} active)"
+    return True, msg, results, None
 
 
 @cmd(

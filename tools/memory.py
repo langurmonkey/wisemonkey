@@ -125,6 +125,11 @@ def list_session_plans_handler(args):
                 "status": status,
             }
         )
+    # Active first, newest first within each group: the same order `/plan-list`
+    # shows, so the model reads the list the way the user does. Two stable
+    # passes, because "active first, then name descending" is not one key.
+    plans.sort(key=lambda p: p["name"], reverse=True)
+    plans.sort(key=lambda p: p["status"] != "active")
     return {"plans": plans, "count": len(plans)}
 
 
