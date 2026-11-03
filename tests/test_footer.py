@@ -10,6 +10,7 @@ import struct
 import sys
 import termios
 import time
+import traceback
 import unittest
 from typing import IO, cast
 from unittest import mock
@@ -556,8 +557,18 @@ class TestRealStream(unittest.TestCase):
 
         pid, mfd = pty.fork()
         if pid == 0:  # pragma: no cover - child process
+            # Set the size from *this* side too: the parent's ioctl below can
+            # only run once the fork has returned, so the child may get there
+            # first and read a fresh pty as 0x0 -- at which point Footer.start()
+            # disarms itself for being too small and writes nothing at all.
+            fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
             try:
                 body()
+            except BaseException:
+                # Otherwise os._exit(0) swallows the traceback and the failure
+                # reads as "the footer wrote nothing".
+                traceback.print_exc()
+                raise
             finally:
                 os._exit(0)
         fcntl.ioctl(mfd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
@@ -939,8 +950,18 @@ class TestFooterInPty(unittest.TestCase):
     def _run(self, body):
         pid, mfd = pty.fork()
         if pid == 0:  # pragma: no cover - child process
+            # Set the size from *this* side too: the parent's ioctl below can
+            # only run once the fork has returned, so the child may get there
+            # first and read a fresh pty as 0x0 -- at which point Footer.start()
+            # disarms itself for being too small and writes nothing at all.
+            fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
             try:
                 body()
+            except BaseException:
+                # Otherwise os._exit(0) swallows the traceback and the failure
+                # reads as "the footer wrote nothing".
+                traceback.print_exc()
+                raise
             finally:
                 os._exit(0)
         fcntl.ioctl(
