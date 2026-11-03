@@ -23,7 +23,7 @@ STYLE_TAGS = {
     "accent", "accent-bold", "agent", "cmd", "code", "err", "error",
     "info", "kbd", "link", "list-desc", "list-item", "ok", "output-frame",
     "patch-add", "patch-remove", "path", "prompt", "server", "session-name",
-    "status", "thinking", "time", "title", "tool", "user", "warn", "weak",
+    "rule", "status", "thinking", "time", "title", "tool", "user", "warn", "weak",
 }
 
 

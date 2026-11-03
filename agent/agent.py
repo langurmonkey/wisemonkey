@@ -146,6 +146,10 @@ class Agent:
         # STAGE.START again, so this is what tells "processing the user's
         # prompt" (round 1) apart from "waiting for the model after tools".
         self._prompt_rounds = 0
+        # Set when a tool is announced, cleared when content is first streamed
+        # afterwards: it is what draws the rule that separates the answer from
+        # the tool log (see content_callback).
+        self._answer_rule_pending = False
 
         # Client/server phase 3: if a daemon server is already running for
         # this session, attach to it and run as a thin remote client. If not,
@@ -386,6 +390,10 @@ class Agent:
     def content_callback(self, content: str = ""):
         """Called when new chunks arrive in streaming mode."""
         if content:
+            # getattr: harnesses build an Agent without running __init__.
+            if getattr(self, "_answer_rule_pending", False):
+                self._answer_rule_pending = False
+                self._draw_answer_rule()
             self._live_chars += len(content)
             self._footer_live_tick()
         if self._md_stream is not None:
@@ -401,6 +409,7 @@ class Agent:
         # New turn: reset per-turn UI state.
         self._prompt_reported = False
         self._prompt_rounds = 0
+        self._answer_rule_pending = False
         if self.core is None or not self.core.config.get("agent.markdown_stream", True):
             return
         console = getattr(self.output, "_console", None)
@@ -423,6 +432,20 @@ class Agent:
         if self._md_stream is not None:
             self._md_stream.flush()
 
+    def _draw_answer_rule(self) -> None:
+        """Separate the answer from the tool log above it.
+
+        The model's final message cannot be recognised *before* it streams
+        (finality is "the round ended without tool calls"), so this marks the
+        closest observable thing: the model speaking again after a tool ran.
+        A turn that narrates between tool batches therefore gets a rule per
+        batch, which is the same sentence boundary a reader would draw.
+        """
+        self._flush_md_stream()
+        newline()
+        self.output.rule(style="rule")
+        newline()
+
     def tool_callback(self, tool_name: str, tool_args):
         self._flush_md_stream()
         newline()
@@ -433,6 +456,9 @@ class Agent:
             )
         else:
             info(f"🛠️ [tool]{tool_name}[/tool]")
+        # Whatever the model streams next comes after tool output, so it earns
+        # the separating rule.
+        self._answer_rule_pending = True
 
     def tool_result_callback(
         self, tool_id, tool_name, content, is_error, duration, kind="", hook=""

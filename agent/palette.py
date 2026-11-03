@@ -75,6 +75,10 @@ class Palette:
     text: str = "#c9d1d9"  # default body text, if a style ever needs one
     weak: str = "#8b949e"  # de-emphasised annotation
     faint: str = "#6e7681"  # separators, the dimmest readable grey
+    # The turn separator: dimmer than `faint`, because a rule spanning the
+    # whole width is a lot of ink for a line that carries no text. Still a
+    # step above invisible -- it has to be legible on a light terminal too.
+    rule: str = "#3d444d"
     kbd: str = "#ffd787"  # keycaps: the only yellow in the system
     bar_bg: str = "#21262d"  # background of the hint bar and status chips
 
@@ -162,10 +166,13 @@ class Palette:
             "code": f"{self.text} on {self.bar_bg}",
             "prompt": f"{self.ok} bold",
             "weak": self.weak,
-            # The dimmest readable grey: separators -- a horizontal rule, a
-            # table's border. A step below `weak`, which is an annotation the
-            # agent *wrote* and so still carries meaning.
+            # The dimmest readable grey for text-adjacent separators: a
+            # table's border, a list's greyed-out rows. A step below `weak`,
+            # which is an annotation the agent *wrote* and so still carries
+            # meaning. The full-width turn divider is `rule`, a step below
+            # this.
             "faint": self.faint,
+            "rule": self.rule,
             "thinking": self.thinking,
             "kbd": f"{self.kbd} bold on {self.bar_bg}",
             "link": f"{self.accent} underline",
