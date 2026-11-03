@@ -2542,7 +2542,7 @@ wheels = [
 
 [[package]]
 name = "wisemonkey"
-version = "2026.10.15"
+version = "2026.11.3"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
