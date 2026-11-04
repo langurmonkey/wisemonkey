@@ -736,8 +736,12 @@ class Core:
             gen_elapsed = now - first_chunk_time
         else:
             gen_elapsed = time.time() - start
+        # Clamp to a small epsilon rather than 1s. This value is a rate
+        # denominator as well as a duration: a floor of one second turned a
+        # sub-second round into "N tok/s" and made a fast turn look slow.
+        # A genuinely zero-width round is reported as 0.0s, which is honest.
         if gen_elapsed <= 0:
-            gen_elapsed = 1  # avoid division by zero
+            gen_elapsed = 1e-3
         
         # Convert indexed dict to list
         tc_list = list(tool_calls.values()) if tool_calls else None

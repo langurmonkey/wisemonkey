@@ -5,7 +5,9 @@ to the model after every tool batch), and the spinner + completion line must
 only appear for the *first* round of a turn.
 """
 
+import time
 import unittest
+from collections import deque
 from typing import Any, Callable, cast
 from unittest import mock
 
@@ -772,6 +774,64 @@ class TestLiveTokenCounter(unittest.TestCase):
         agent._statusline(500, 0, 1.0, prompt_tokens=12000)
         self.assertNotIn("$", agent.output.rules[-1])
 
+    # --- current (rolling) decode rate ------------------------------------
+
+    @staticmethod
+    def _seed_rate(agent, samples: list[tuple[float, int]]) -> None:
+        """Plant ``(age_seconds, chars)`` samples in the rate window."""
+        now = time.monotonic()
+        agent._rate_samples = deque((now - age, chars) for age, chars in samples)
+
+    def test_footer_shows_the_current_rate_after_the_delta(self):
+        agent = self._agent(used=1000)
+        agent._turn_in_progress = True
+        cast(_StatsMemory, agent.core.memory).stats = (4200, 200000, 2.1)
+        # 2000 chars (= 500 tokens) spread over the last 5 s -> ~100 tok/s.
+        self._seed_rate(agent, [(5.0, 1000), (2.5, 1000)])
+        line = agent._footer_status()
+        # The palette escapes split the string, so match the pieces.
+        self.assertIn("~", line)
+        self.assertIn("100", line.split("Δ+")[1])
+        self.assertIn("tok/s", line)
+        self.assertLess(line.index("Δ+"), line.index("tok/s"))
+
+    def test_footer_omits_the_rate_without_samples(self):
+        agent = self._agent()
+        agent._turn_in_progress = True
+        self.assertNotIn("tok/s", agent._footer_status())
+
+    def test_footer_omits_the_rate_outside_a_turn(self):
+        """The rate is per-turn state; it must not linger after the answer."""
+        agent = self._agent()
+        self._seed_rate(agent, [(4.0, 4000)])
+        self.assertNotIn("tok/s", agent._footer_status())
+
+    def test_rate_is_not_measured_from_a_single_burst(self):
+        """One chunk has a span of one round trip, not a decode rate."""
+        agent = self._agent()
+        self._seed_rate(agent, [(0.05, 4000)])
+        self.assertIsNone(agent._live_rate())
+
+    def test_rate_decays_to_none_after_the_window_expires(self):
+        agent = self._agent()
+        self._seed_rate(agent, [(6.0, 4000), (5.5, 4000)])
+        self.assertIsNone(agent._live_rate())
+
+    def test_content_callback_feeds_the_rate_window(self):
+        agent = self._agent()
+        agent._turn_in_progress = True
+        agent.content_callback("hello")
+        agent.content_callback(" world")
+        total = sum(chars for _, chars in agent._rate_samples)
+        self.assertEqual(total, len("hello world"))
+
+    def test_rate_prunes_stale_samples_out_of_the_window(self):
+        agent = self._agent()
+        now = time.monotonic()
+        win = deque([(now - 30.0, 100), (now - 1.0, 400)])
+        Agent._rate_prune(win, now)
+        self.assertEqual([c for _, c in win], [400])
+
     def test_live_tick_accumulates_streamed_characters(self):
         agent = self._agent()
         agent._turn_in_progress = True
@@ -802,6 +862,31 @@ class TestLiveTokenCounter(unittest.TestCase):
         )
         agent.content_callback("hello")
         self.assertEqual(getattr(agent.output, "n", 0), 0)
+
+    def test_statusline_shows_the_decode_rate(self):
+        agent = self._agent()
+        agent._statusline(1000, 0, 2.0)
+        self.assertIn("500 tok/s", agent.output.rules[-1])
+
+    def test_statusline_omits_the_rate_for_a_single_chunk_response(self):
+        """One chunk is one round trip, not a decode rate.
+
+        ``gen_time`` is then the width of a single chunk, so the ratio would be
+        off by orders of magnitude. It is omitted rather than guessed at.
+        """
+        agent = self._agent()
+        agent._statusline(1000, 0, 0.01)
+        self.assertNotIn("tok/s", agent.output.rules[-1])
+
+    def test_statusline_omits_the_rate_without_tokens(self):
+        agent = self._agent()
+        agent._statusline(0, 0, 2.0)
+        self.assertNotIn("tok/s", agent.output.rules[-1])
+
+    def test_statusline_omits_the_rate_without_generation_time(self):
+        agent = self._agent()
+        agent._statusline(1000, 0, 0.0)
+        self.assertNotIn("tok/s", agent.output.rules[-1])
 
     def test_fmt_k(self):
         self.assertEqual(Agent._fmt_k(823), "823")

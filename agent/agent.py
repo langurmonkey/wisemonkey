@@ -6,6 +6,7 @@ handling to the core.
 
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -136,6 +137,10 @@ class Agent:
         # real number replaces the estimate at turn end.
         self._turn_start_mem = 0
         self._live_chars = 0
+        # (timestamp, chars) samples of streamed text, pruned to RATE_WINDOW.
+        # This is what makes the live rate a *current* speed rather than the
+        # turn average, which only exists once the turn is over.
+        self._rate_samples: deque[tuple[float, int]] = deque()
         self._last_footer_tick = 0.0
         self._prompt_reported = False
         # Whether we pushed the kitty keyboard protocol in _create_prompt_session
@@ -395,6 +400,7 @@ class Agent:
                 self._answer_rule_pending = False
                 self._draw_answer_rule()
             self._live_chars += len(content)
+            self._rate_note(len(content))
             self._footer_live_tick()
         if self._md_stream is not None:
             # Live streaming markdown rendering: complete lines are rendered
@@ -533,6 +539,23 @@ class Agent:
         cost = (prompt_tokens * in_price + completion_tokens * out_price) / 1e6
         return f"${cost:.4f}"
 
+    # Below this many seconds of measured streaming the tok/s figure says more
+    # about the chunk size than about the model: a response that arrived in one
+    # chunk has a "generation time" of one network round trip. Omit it rather
+    # than print a number that is off by orders of magnitude.
+    MIN_RATE_WINDOW = 0.05
+
+    def _tok_per_sec(self, total_tokens, total_gen_time) -> str:
+        """Decode rate for the turn, or "" when it cannot be measured.
+
+        ``total_gen_time`` is first-chunk-to-last-chunk time summed over the
+        turn's rounds (core._send_to_llm), so prompt building, time-to-first-
+        token and tool execution are already excluded from the denominator.
+        """
+        if total_tokens <= 0 or total_gen_time < self.MIN_RATE_WINDOW:
+            return ""
+        return f"  {total_tokens / total_gen_time:.0f} tok/s"
+
     def _statusline(self, total_tokens, ntools, total_gen_time, prompt_tokens=0):
         if self.remote is not None:
             length, max, rate = self.remote.memory_stats()
@@ -542,14 +565,15 @@ class Agent:
         # number the user watches climb; without it the cumulative figure
         # looks identical whether the turn was trivial or enormous.
         delta = length - self._turn_start_mem
-        delta_s = f"   Δ+{self._fmt_k(delta)}" if delta > 0 else ""
+        delta_s = f"  Δ+{self._fmt_k(delta)}" if delta > 0 else ""
         cost = self._turn_cost(prompt_tokens, total_tokens)
-        cost_s = f"   {cost}" if cost else ""
-        prompt_s = f"   p:{self._fmt_k(prompt_tokens)}" if prompt_tokens else ""
+        cost_s = f"  {cost}" if cost else ""
+        prompt_s = f"  p:{self._fmt_k(prompt_tokens)}" if prompt_tokens else ""
+        rate_s = self._tok_per_sec(total_tokens, total_gen_time)
         title = (
-            f"  {total_gen_time:.1f}s   |   {total_tokens} tokens{prompt_s}"
-            f"{delta_s}   |   {ntools} tools{cost_s}"
-            f"   |   Mem: {length}/{max} tks ({rate:.2f}%)  "
+            f" {total_gen_time:.1f}s | {total_tokens} tokens{rate_s}{prompt_s}"
+            f"{delta_s} | {ntools} tools{cost_s}"
+            f" | Mem: {length}/{max} tks ({rate:.2f}%) "
         )
         self.output.rule(title=title, style="status")
         # Refresh the sticky footer with the final memory stats.
@@ -570,6 +594,67 @@ class Agent:
         self.output.print(
             f"  [warn]{incomplete_message(getattr(result, 'incomplete_reason', ''))}[/warn]"
         )
+
+    #: Seconds of streaming the live rate is averaged over. Long enough to
+    #: ride out chunk-size jitter, short enough to feel "current".
+    RATE_WINDOW = 5.0
+    #: Below this much measured streaming a rate is not meaningful: a response
+    #: that arrived in one chunk has a "span" of one round trip, and dividing
+    #: by it reports a speed the model never produced.
+    RATE_MIN_SPAN = 0.5
+
+    def _rate_samples_deque(self) -> deque[tuple[float, int]]:
+        """The rate window, created lazily.
+
+        ``getattr`` because harnesses build an Agent without running
+        ``__init__`` (tests/test_agent_stages.py does exactly that).
+        """
+        win = getattr(self, "_rate_samples", None)
+        if win is None:
+            win = self._rate_samples = deque()
+        return win
+
+    def _rate_note(self, chars: int) -> None:
+        """Record that ``chars`` more characters were just streamed."""
+        if chars <= 0:
+            return
+        win = self._rate_samples_deque()
+        now = time.monotonic()
+        win.append((now, chars))
+        self._rate_prune(win, now)
+
+    @classmethod
+    def _rate_prune(cls, win: deque[tuple[float, int]], now: float) -> None:
+        cutoff = now - cls.RATE_WINDOW
+        while win and win[0][0] < cutoff:
+            win.popleft()
+
+    def _live_rate(self) -> float | None:
+        """Current decode rate in tokens/s, or None when not measurable.
+
+        Averaged over the last ``RATE_WINDOW`` seconds of streaming, using the
+        same chars/4 estimate as the live token delta (exact per-chunk tiktoken
+        counts would cost more than a progress readout is worth; the exact
+        figure replaces it in the turn-end status line).
+
+        The span runs to *now*, not to the newest chunk, so the number decays
+        while the model is silent — during a tool call it fades towards zero
+        instead of freezing at the speed of the answer that caused the call.
+        The window empties on its own after RATE_WINDOW seconds of silence,
+        which is when the segment disappears.
+        """
+        win = self._rate_samples_deque()
+        if not win:
+            return None
+        now = time.monotonic()
+        self._rate_prune(win, now)
+        if not win:
+            return None
+        span = now - win[0][0]
+        if span < self.RATE_MIN_SPAN:
+            return None
+        chars = sum(c for _, c in win)
+        return (chars / 4) / span
 
     def _footer_status(self) -> str:
         """Build the sticky footer status line (model, session, memory).
@@ -596,6 +681,12 @@ class Agent:
             est = max(0, used - self._turn_start_mem) + self._live_chars // 4
             if est:
                 line += f"  {_DIM}Δ+{_RESET}{self._fmt_k(est)}"
+            # Current speed, after the delta: both are per-turn live figures,
+            # and the row already ends there. `~` because it is the chars/4
+            # estimate over a sliding window, not the provider's count.
+            rate = self._live_rate()
+            if rate is not None:
+                line += f"  {_DIM}~{_RESET}{rate:.0f}{_DIM} tok/s{_RESET}"
         return line
 
     def _footer_input(self) -> str:
@@ -1129,6 +1220,7 @@ class Agent:
                 self.output.footer_start()
                 self._turn_start_mem = self.core.memory.get_chat_stats()[0]
                 self._live_chars = 0
+                self._rate_samples_deque().clear()
                 # No newline here: footer_start() leaves the cursor at the
                 # bottom of the scroll region, so \r\n would advance the cursor
                 # onto the first footer row and overwrite the separator.
@@ -1566,6 +1658,7 @@ class Agent:
                 self.output.footer_start()
                 self._turn_start_mem = remote.memory_stats()[0]
                 self._live_chars = 0
+                self._rate_samples_deque().clear()
                 # No newline here: footer_start() leaves the cursor at the
                 # bottom of the scroll region, so \r\n would advance the cursor
                 # onto the first footer row and overwrite the separator.

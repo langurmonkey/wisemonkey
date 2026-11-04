@@ -382,6 +382,7 @@ def _cmd_notes_add(
 @cmd(
     "/sessions",
     "List all sessions with their size and last access",
+    aliases=["/session-ls", "/session-list", "/sessions-list"],
     examples=[
         ("/sessions", "List every session, most recently used first"),
     ],
@@ -425,9 +426,7 @@ def _cmd_sessions(
             # metadata timestamps are written naive, hence the normalize.
             if accessed.tzinfo is None:
                 accessed = accessed.astimezone()
-            ago = pretty_timedelta(
-                datetime.datetime.now().astimezone() - accessed
-            )
+            ago = pretty_timedelta(datetime.datetime.now().astimezone() - accessed)
             # `pretty_timedelta` returns None for a zero delta (its final
             # branch is a string literal, not a return), so "just now" has to
             # be spelled out here rather than crash on the f-string.
@@ -438,7 +437,9 @@ def _cmd_sessions(
         )
 
     lines.append("")
-    lines.append(f"[dim]{len(sessions)} session(s). Switch with [/dim][accent]/resume <name>[/accent]")
+    lines.append(
+        f"[dim]{len(sessions)} session(s). Switch with [/dim][accent]/resume <name>[/accent]"
+    )
     return True, None, "\n".join(lines), None
 
 
@@ -465,7 +466,12 @@ def _cmd_resume(
         return False, "unknown session name: -h (this is the help flag)", None, None
 
     if len(params) > 1:
-        return False, "too many parameters: /resume takes at most one session name", None, None
+        return (
+            False,
+            "too many parameters: /resume takes at most one session name",
+            None,
+            None,
+        )
 
     sessions = list_sessions()
     current = getattr(mem, "session", None)
@@ -1357,15 +1363,11 @@ def _key_variable_options(
         add(name)
 
     options.append((_NEW_KEY_NAME, "Enter a different variable name..."))
-    options.append(
-        (_NEW_KEY, "Enter a new API key (saved to the config .env file)")
-    )
+    options.append((_NEW_KEY, "Enter a new API key (saved to the config .env file)"))
     return options
 
 
-def _store_new_key(
-    ui, name: str, base_url: str, provider: str
-) -> tuple[str, str]:
+def _store_new_key(ui, name: str, base_url: str, provider: str) -> tuple[str, str]:
     """Ask for a key, write it to the config ``.env``; return (var, path).
 
     The value goes to ``~/.config/wisemonkey/.env`` (mode 600), never to
@@ -1385,9 +1387,7 @@ def _store_new_key(
 
     if not name:
         name = str(
-            ui.ask_string(
-                " Environment variable to store it in", default=fallback
-            )
+            ui.ask_string(" Environment variable to store it in", default=fallback)
             or ""
         ).strip()
     if not name:
@@ -1454,9 +1454,7 @@ def _configure_endpoint(
                 selected_entry = None
 
     if selected_entry is None:
-        new_url = ui.ask_string(
-            " Enter the endpoint URL", default=current_url
-        ).strip()
+        new_url = ui.ask_string(" Enter the endpoint URL", default=current_url).strip()
     else:
         new_url = selected_entry["base_url"]
     config.set("model.base_url", new_url)
@@ -1509,9 +1507,7 @@ def _configure_endpoint(
     if candidates:
         current_env = str(config.get("model.api_key_env", "") or "").strip()
         entry_env = (selected_entry or {}).get("api_key_env", "")
-        suggested_env = suggest_key_env(new_url) or _default_key_var(
-            selected_provider
-        )
+        suggested_env = suggest_key_env(new_url) or _default_key_var(selected_provider)
         key_options = _key_variable_options(
             base_url=new_url,
             current_env=current_env,
