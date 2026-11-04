@@ -8,6 +8,7 @@ only appear for the *first* round of a turn.
 import time
 import unittest
 from collections import deque
+from types import SimpleNamespace
 from typing import Any, Callable, cast
 from unittest import mock
 
@@ -264,6 +265,8 @@ class _RecordingOutput:
         self.errors: list[str] = []
         self.oks: list[str] = []
         self.rules: list[str] = []
+        # Terminal width stand-in; the status line picks a terse variant to fit.
+        self._console = SimpleNamespace(width=200)
 
     def err(self, msg: str) -> None:
         self.errors.append(msg)
@@ -734,8 +737,13 @@ class TestLiveTokenCounter(unittest.TestCase):
     streamed characters) and exactly in the status line at turn end.
     """
 
-    def _agent(self, used: int = 1000, pricing: dict[str, float] | None = None):
-        return _LiveTokenAgent(used=used, pricing=pricing)
+    def _agent(
+        self,
+        used: int = 1000,
+        pricing: dict[str, float] | None = None,
+        max_tokens: int = 200000,
+    ):
+        return _LiveTokenAgent(used=used, max_tokens=max_tokens, pricing=pricing)
 
     def test_statusline_shows_the_turn_delta(self):
         agent = self._agent(used=1000)
@@ -887,6 +895,67 @@ class TestLiveTokenCounter(unittest.TestCase):
         agent = self._agent()
         agent._statusline(1000, 0, 0.0)
         self.assertNotIn("tok/s", agent.output.rules[-1])
+
+    def test_statusline_fits_a_narrow_terminal(self):
+        """The title is shed to fit, never handed to Rich's truncation.
+
+        Rich cuts an over-long rule title with an ellipsis, so a narrow
+        terminal used to show ``(11…`` -- a number with no meaning left. The
+        status line drops its least valuable segments instead. Below the
+        floor (time and token count) it cannot fit at all and is left long.
+        """
+        agent = self._agent(used=13524, max_tokens=120000)
+        for width in range(22, 141):
+            agent.output._console.width = width
+            agent._statusline(690, 0, 4.9, prompt_tokens=40400)
+            title = agent.output.rules[-1]
+            self.assertLessEqual(
+                len(title), width - 2, f"overflow at width {width}: {title!r}"
+            )
+            self.assertIn("690 tokens", title)
+
+    def test_statusline_is_full_when_there_is_room(self):
+        agent = self._agent(used=13524, max_tokens=120000)
+        agent.output._console.width = 140
+        agent._statusline(690, 0, 4.9, prompt_tokens=40400)
+        title = agent.output.rules[-1]
+        self.assertIn("tks (11.27%)", title)
+        self.assertIn("141 tok/s", title)
+        self.assertIn("p:40.4k", title)
+
+    def test_statusline_drops_the_memory_units_before_its_value(self):
+        agent = self._agent(used=13524, max_tokens=120000)
+        # Wide enough for the numbers, too narrow for the fraction.
+        agent.output._console.width = 80
+        agent._statusline(690, 0, 4.9, prompt_tokens=40400)
+        title = agent.output.rules[-1]
+        self.assertIn("Mem: 13524/120000", title)
+        self.assertIn("tks", title)
+        self.assertNotIn("%", title)
+        # Narrower still: the unit follows, the numbers stay.
+        agent.output._console.width = 72
+        agent._statusline(690, 0, 4.9, prompt_tokens=40400)
+        title = agent.output.rules[-1]
+        self.assertIn("Mem: 13524/120000", title)
+        self.assertNotIn("tks", title)
+
+    def test_statusline_drops_the_memory_figure_last(self):
+        """The footer shows memory all turn; on a narrow line it goes."""
+        agent = self._agent(used=13524, max_tokens=120000)
+        agent.output._console.width = 60
+        agent._statusline(690, 0, 4.9, prompt_tokens=40400)
+        title = agent.output.rules[-1]
+        self.assertNotIn("Mem:", title)
+        # What matters is retained: time, tokens, rate and tool count.
+        self.assertIn("4.9s", title)
+        self.assertIn("690 tokens", title)
+        self.assertIn("141 tok/s", title)
+
+    def test_statusline_without_a_console_falls_back_to_80(self):
+        agent = self._agent(used=13524, max_tokens=120000)
+        del agent.output._console
+        agent._statusline(690, 0, 4.9, prompt_tokens=40400)
+        self.assertLessEqual(len(agent.output.rules[-1]), 78)
 
     def test_fmt_k(self):
         self.assertEqual(Agent._fmt_k(823), "823")

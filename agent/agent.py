@@ -556,6 +556,18 @@ class Agent:
             return ""
         return f"  {total_tokens / total_gen_time:.0f} tok/s"
 
+    def _statusline_width(self) -> int:
+        """Usable width for the status line's title.
+
+        A ``Rule`` puts a space either side of its title, so the title has
+        ``width - 2`` columns. Rich truncates an over-long title with an
+        ellipsis, which is how the memory figure used to be cut off mid-number;
+        the caller picks a terse enough variant instead.
+        """
+        console = getattr(self.output, "_console", None)
+        width = getattr(console, "width", 80) or 80
+        return max(20, width - 2)
+
     def _statusline(self, total_tokens, ntools, total_gen_time, prompt_tokens=0):
         if self.remote is not None:
             length, max, rate = self.remote.memory_stats()
@@ -570,11 +582,30 @@ class Agent:
         cost_s = f"  {cost}" if cost else ""
         prompt_s = f"  p:{self._fmt_k(prompt_tokens)}" if prompt_tokens else ""
         rate_s = self._tok_per_sec(total_tokens, total_gen_time)
-        title = (
-            f" {total_gen_time:.1f}s | {total_tokens} tokens{rate_s}{prompt_s}"
-            f"{delta_s} | {ntools} tools{cost_s}"
-            f" | Mem: {length}/{max} tks ({rate:.2f}%) "
-        )
+        # Segments in display order, tagged with how much they are worth.
+        # A title wider than the terminal is truncated by Rich with an
+        # ellipsis, which used to cut the memory figure mid-number; instead
+        # the least valuable segments are dropped until it fits. Time and
+        # token count are the floor and are never dropped.
+        segments: list[tuple[int, str]] = [
+            (99, f" {total_gen_time:.1f}s"),
+            (95, f" | {total_tokens} tokens"),
+            (40, rate_s),
+            (30, prompt_s),
+            (50, delta_s),
+            (55, f" | {ntools} tools{cost_s}"),
+            (20, f" | Mem: {length}/{max}"),
+            (15, " tks"),
+            (10, f" ({rate:.2f}%)"),
+        ]
+        budget = self._statusline_width()
+        kept = list(segments)
+        while len("".join(text for _, text in kept)) > budget:
+            cheapest = min(kept, key=lambda seg: seg[0])
+            if cheapest[0] >= 95:
+                break
+            kept.remove(cheapest)
+        title = "".join(text for _, text in kept)
         self.output.rule(title=title, style="status")
         # Refresh the sticky footer with the final memory stats.
         self._footer_refresh()
