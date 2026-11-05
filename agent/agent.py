@@ -743,6 +743,12 @@ class Agent:
         """
         if not self._turn_in_progress:
             return ""
+        # The focus can be on a question the agent asked (see
+        # `OutputAdapter.steer_focus`): the row then shows *that* field, since
+        # the caret can only honestly be in one place. getattr: harnesses build
+        # a minimal output stub that predates the question focus.
+        if getattr(self.output, "steer_focus", lambda: "line")() == "ask":
+            return self._footer_question_input()
         line = self.output.steer_line()
         queued = self.output.steer_pending()
         # The caret is a promise: it says a keystroke now would land here. It
@@ -781,6 +787,22 @@ class Agent:
             return ""
         # Nothing typed yet: the marker and the caret *are* the message.
         return f" {_ACCENT}❯{_RESET} {block_cursor()}"
+
+    def _footer_question_input(self) -> str:
+        """The input row while the focus is on a question the agent asked.
+
+        Everything the user had typed is still in the steering line; this row
+        is borrowed for as long as Tab has moved the keyboard onto the
+        question, because one row and one caret cannot honestly represent two
+        fields. Tab (or Escape) gives it back.
+        """
+        text, caret = self.output.steer_answer()
+        text, caret = steer_window(text, caret, max(20, term_width() - 4))
+        under = text[caret:]
+        return (
+            f" {_ACCENT}❓{_RESET} {_LABEL}{text[:caret]}{_RESET}"
+            f"{block_cursor(under[:1])}{_LABEL}{under[1:]}{_RESET}"
+        )
 
     # ── mid-turn steering ───────────────────────────────────────────────────
 

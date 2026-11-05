@@ -152,6 +152,22 @@ class _ReadlineFloatPrompt(_ReadlinePromptMixin, FloatPrompt):
 class _ReadlineConfirm(_ReadlinePromptMixin, Confirm):
     pass
 
+
+def _plain_text(markup: str) -> str:
+    """Render Rich *markup* down to plain text, or return it unchanged.
+
+    Used where a string is going to a sink that does not parse markup -- the
+    footer writes raw escape sequences straight to the terminal, so a
+    ``[bold]`` in a question would be printed rather than applied.
+    """
+    try:
+        from rich.text import Text
+
+        return Text.from_markup(markup).plain
+    except Exception:
+        return markup
+
+
 class OutputAdapter(Protocol):
     """Abstract interface for output adapters.
 
@@ -289,6 +305,14 @@ class OutputAdapter(Protocol):
         """Return the oldest queued steering line without consuming it."""
         return None
 
+    def steer_focus(self) -> str:
+        """Which field the keyboard is attached to: ``"line"`` or ``"ask"``."""
+        return "line"
+
+    def steer_answer(self) -> "tuple[str, int]":
+        """The pending question's answer text and caret, for the input row."""
+        return ("", 0)
+
     @contextmanager
     def steer_paused(self):
         """Temporarily hand the tty back to the rest of the REPL."""
@@ -377,6 +401,9 @@ class RichOutputAdapter(OutputAdapter):
         """
         if self._steer is not None:
             self._steer.stop()
+        # A question cannot outlive the turn it was asked in; make sure the
+        # row that announced it goes away with the reader.
+        self._footer.set_question("")
 
     def steer_take(self) -> "str | None":
         """Pop the oldest queued steering line, if any."""
@@ -408,6 +435,14 @@ class RichOutputAdapter(OutputAdapter):
     def steer_pending(self) -> "str | None":
         """Return the oldest queued steering line without consuming it."""
         return self._steer.pending() if self._steer else None
+
+    def steer_focus(self) -> str:
+        """Which field the keyboard is attached to: ``"line"`` or ``"ask"``."""
+        return self._steer.focus() if self._steer else "line"
+
+    def steer_answer(self) -> "tuple[str, int]":
+        """The pending question's answer text and caret, for the input row."""
+        return self._steer.answer() if self._steer else ("", 0)
 
     @contextmanager
     def steer_paused(self):
@@ -470,11 +505,9 @@ class RichOutputAdapter(OutputAdapter):
 
     def rule(self, style: str = "dim", title: str = "") -> None:
         self._console.rule(title=title, style=style)
-# A turn may ask the user something (confirmation, a question) or hand the
-    # terminal to a subprocess. Both need a normal tty, so mid-turn steering
-    # is suspended for the duration.
+    # ── questions asked mid-turn ─────────────────────────────────────────────
     #
-    # Three things are needed for these three prompts:
+    # Three things are needed for the prompts that hand the tty to readline:
     #
     # 1. `ensure_readline()`. `rich.prompt` reads through the builtin
     #    `input()`, and CPython only gives that a line editor when the
@@ -494,7 +527,16 @@ class RichOutputAdapter(OutputAdapter):
     #
     # `ask_choice` is prompt_toolkit: it renders and reads the line itself, so
     # it needs none of the three and keeps Shift+Enter.
+    #
+    # `ask_confirm` and `ask_string` skip all of that **while a turn is
+    # running**: they are answered through the steering reader (see
+    # `_ask_steered`). Taking the terminal away from a line the user is in
+    # the middle of typing is what made their next keystroke mean something
+    # else entirely.
     def ask_string(self, message: str, default: str = "") -> str:
+        answer = self._ask_steered("string", message, default)
+        if answer is not None:
+            return answer
         ensure_readline()
         with self.steer_paused(), legacy_key_encoding():
             return _ReadlinePrompt.ask(message, default=default, console=console)
@@ -523,9 +565,42 @@ class RichOutputAdapter(OutputAdapter):
             )
 
     def ask_confirm(self, message: str, default: bool = False) -> bool:
+        answer = self._ask_steered("confirm", message, default)
+        if answer is not None:
+            return answer == "yes"
         ensure_readline()
         with self.steer_paused(), legacy_key_encoding():
             return _ReadlineConfirm.ask(message, default=default, console=console)
+
+    def _ask_steered(self, kind: str, message: str, default) -> str | None:
+        """Ask through the steering reader; None means "use an ordinary prompt".
+
+        Mid-turn the steering line owns the keyboard, so the question is
+        announced on the footer and answered only once Tab moves the focus
+        onto it. That is the whole point: the user's next keystroke keeps
+        meaning what it meant a moment ago, which it does not when the tty is
+        handed to ``readline`` behind their back.
+
+        The steering path is used only when a reader is armed *and* the footer
+        is on screen; between turns (``/model``, ``/edit``) and without a
+        terminal, the Rich prompt is still the right one.
+        """
+        steer = self._steer
+        if steer is None or not steer.armed or not self._footer.active:
+            return None
+        # The footer writes straight to the terminal and never goes through
+        # Rich, so it gets the question's text, not its markup.
+        label = _plain_text(message)
+        self._footer.set_question(label)
+        try:
+            return steer.ask_question(kind, label, default)
+        finally:
+            self._footer.set_question("")
+            # The input row loses the question's caret as the focus returns to
+            # the line; redraw it now rather than at the next streamed chunk.
+            on_change = getattr(self, "_steer_on_change", None)
+            if on_change is not None:
+                on_change()
 
     def run_subprocess(self, cmd: list[str]):
         """Run a program with full terminal control.

@@ -31,6 +31,14 @@ rows, so a queued follow-up can be collected with very little machinery:
   pasted into the prompt as editable default text (``Agent._steer_requeue``),
   where it can be sent, edited or cleared with Ctrl+U. Auto-submitting it
   would start a turn from a mid-sentence remark the user never reviewed.
+* The reader is also how a tool's **confirmation** is answered, without ever
+  taking the keyboard away from the line being typed (:meth:`ask_question`).
+  The question is announced on the footer and waits; **Tab** moves the focus
+  onto it, Tab or Escape moves it back, and ``y``/``n``/Enter (or a typed
+  string) answer it there. Handing the tty to ``readline`` instead -- the
+  old behaviour -- meant the next character typed into a half-written
+  steering line was silently reinterpreted as the answer to a question the
+  user had not seen yet.
 
 It is deliberately *not* prompt_toolkit: no history, no completion, no
 key-binding framework. It exists to steer a running turn ("actually, use
@@ -209,6 +217,100 @@ def _word_right(buffer: list[str], pos: int) -> int:
     return index
 
 
+def _apply_action(action: str, buf: list[str], pos: int) -> int:
+    """Apply one line-editing *action* to *buf*; return the new caret.
+
+    Shared by the steering line and by a string answer typed while the focus
+    is on a pending question: they are the same editor over two buffers.
+    """
+    if action == "left":
+        return max(0, pos - 1)
+    if action == "right":
+        return min(len(buf), pos + 1)
+    if action == "home":
+        return 0
+    if action == "end":
+        return len(buf)
+    if action == "backspace":
+        if pos > 0:
+            del buf[pos - 1]
+            return pos - 1
+        return pos
+    if action == "delete":
+        if pos < len(buf):
+            del buf[pos]
+        return pos
+    if action == "word-left":
+        return _word_left(buf, pos)
+    if action == "word-right":
+        return _word_right(buf, pos)
+    if action == "kill-to-end":
+        del buf[pos:]
+        return pos
+    if action == "kill-word":
+        start = _word_left(buf, pos)
+        del buf[start:]
+        return start
+    if action == "clear":
+        buf.clear()
+        return 0
+    return pos
+
+
+#: The line-editing action a single control byte names, if any. One table, so
+#: the steering line and a question's answer field cannot drift apart.
+_EDIT_BYTES = {
+    0x7F: "backspace",
+    0x08: "backspace",  # Ctrl+H
+    0x04: "delete",  # Ctrl+D
+    0x15: "clear",  # Ctrl+U
+    0x0B: "kill-to-end",  # Ctrl+K
+    0x17: "kill-word",  # Ctrl+W
+    0x01: "home",  # Ctrl+A
+    0x02: "left",  # Ctrl+B
+    0x05: "end",  # Ctrl+E
+    0x06: "right",  # Ctrl+F
+}
+
+
+def _is_tab_sequence(sequence: str) -> bool:
+    """True for an escape sequence that means plain Tab or Shift+Tab.
+
+    The kitty keyboard protocol reports Tab as ``CSI 9 u`` (with a modifier
+    field once Shift is held) rather than as ``0x09``, exactly as it does for
+    every other functional key. The legacy Shift+Tab is ``CSI Z``.
+    """
+    body = sequence[1:]
+    if body[:1] != "[":
+        return False
+    body = body[1:]
+    if body == "Z":
+        return True
+    return body.endswith("u") and body[:-1].split(";")[0] == "9"
+
+
+class _PendingQuestion:
+    """A question the agent asked mid-turn, waiting to be answered.
+
+    The caller blocks on :attr:`event`; the reader thread fills :attr:`result`
+    and sets it. Everything is read and written under the owning
+    :class:`SteerInput`'s lock, except :attr:`event` itself.
+    """
+
+    __slots__ = ("kind", "message", "default", "buffer", "pos", "event", "result")
+
+    def __init__(self, kind: str, message: str, default) -> None:
+        self.kind = kind
+        self.message = message
+        self.default = default
+        # Only a string question uses these: a confirmation is answered by a
+        # single key and has nothing to edit.
+        self.buffer: list[str] = []
+        self.pos = 0
+        self.event = threading.Event()
+        self.result: str | None = None
+
+
 class SteerInput:
     """Collect queued follow-up lines from the tty while a turn is running.
 
@@ -252,6 +354,14 @@ class SteerInput:
         self._stop = False
         self._thread: threading.Thread | None = None
         self._armed = False
+        # A question the agent asked mid-turn (a tool's confirmation), waiting
+        # for the user to move the focus to it with Tab. It never takes the
+        # keyboard on its own: the next keystroke the user types must keep
+        # meaning what it meant a moment ago.
+        self._question: _PendingQuestion | None = None
+        # Which of the two input fields the keyboard is attached to:
+        # "line" (the steering line, the default) or "ask" (the question).
+        self._focus = "line"
 
     # ── state ────────────────────────────────────────────────────────────
 
@@ -315,7 +425,102 @@ class SteerInput:
         with self._lock:
             return self._pos
 
-    # ── lifecycle ─────────────────────────────────────────────────────────
+    def focus(self) -> str:
+        """Which field the keyboard is attached to: ``"line"`` or ``"ask"``."""
+        return self._focus
+
+    def question(self) -> tuple[str, str] | None:
+        """The pending question as ``(kind, message)``, or None."""
+        q = self._question
+        return None if q is None else (q.kind, q.message)
+
+    def answer(self) -> tuple[str, int]:
+        """The pending question's answer text and caret (for the footer)."""
+        with self._lock:
+            q = self._question
+            if q is None:
+                return "", 0
+            return "".join(q.buffer), q.pos
+
+    # ── asking the user without stealing the keyboard ──────────────────────
+
+    def ask_question(self, kind: str, message: str, default="") -> str | None:
+        """Ask *message* and block until the user answers; None if none came.
+
+        *kind* is ``"confirm"`` (the answer is ``"yes"``/``"no"``, and
+        *default* a bool) or ``"string"`` (the answer is what was typed, and
+        *default* the value returned for an empty one).
+
+        This is the whole point of the focus design: the question does **not**
+        take the terminal. The steering line keeps the keyboard, the question
+        is announced on the footer, and only Tab moves the focus onto it. A
+        modal prompt would mean the next character typed into a half-written
+        steering line was silently reinterpreted as the answer to a question
+        the user had not seen yet -- which is exactly what handing the tty to
+        ``readline`` did.
+
+        Returns None when nothing can answer (no reader armed, a question
+        already pending, or the turn ended first); the caller then falls back
+        to an ordinary prompt or a safe default.
+        """
+        if kind not in ("confirm", "string"):
+            return None
+        q = _PendingQuestion(kind, message, default)
+        with self._lock:
+            if self._question is not None or not self._armed:
+                return None
+            self._question = q
+            # Focus stays on the line: the question waits for an explicit Tab.
+            self._focus = "line"
+        self._changed()
+        try:
+            q.event.wait()
+        except BaseException:
+            # Ctrl+C while waiting. The turn unwinds on it, so the question
+            # must not survive: a left-behind one would refuse every later
+            # question and hang the tool that asked it.
+            self._resolve(q, None)
+            raise
+        return q.result
+
+    def _resolve(self, q: _PendingQuestion, value: str | None) -> bool:
+        """Answer *q* with *value* and wake whoever asked. False if stale."""
+        with self._lock:
+            if self._question is not q:
+                return False
+            self._question = None
+            self._focus = "line"
+            q.result = value
+        q.event.set()
+        self._changed()
+        return True
+
+    def _cancel_question(self) -> None:
+        """Answer any pending question with nothing, so no tool hangs on it."""
+        q = self._question
+        if q is not None:
+            self._resolve(q, None)
+
+    def _set_focus(self, focus: str) -> None:
+        """Move the focus, redrawing only if it actually moved."""
+        with self._lock:
+            if self._focus == focus:
+                return
+            self._focus = focus
+        self._changed()
+
+    def _toggle_focus(self) -> None:
+        """Tab: hand the keyboard between the steering line and a question."""
+        with self._lock:
+            if self._question is None:
+                return
+            self._focus = "line" if self._focus == "ask" else "ask"
+            # A string answer is typed at the end of whatever is already there.
+            if self._focus == "ask" and self._question.kind == "string":
+                self._question.pos = len(self._question.buffer)
+        self._changed()
+
+    # ── lifecycle ──────────────────────────────────────────────────────────
 
     def start(self) -> bool:
         """Arm the reader. Returns True if keystrokes are being captured."""
@@ -344,6 +549,7 @@ class SteerInput:
         Nothing is discarded here: the buffer, its caret and the queue are the
         user's, not the reader's.
         """
+        self._cancel_question()
         if not self._armed:
             return
         self._armed = False
@@ -361,18 +567,23 @@ class SteerInput:
         with self._lock:
             self._buffer.clear()
             self._pos = 0
+            self._focus = "line"
 
     def suspend(self) -> None:
         """Disarm temporarily, keeping the partial line exactly as it is.
 
-        A steered turn can be interrupted by the agent itself asking a
-        question (``ask_confirm``/``ask_string``) or by a subprocess taking
-        over the terminal. Those need the tty in its normal state, so the
-        reader has to go -- but the user is *mid-sentence*, not finished.
-        Discarding the line here is what made steering input vanish when a
-        tool asked for confirmation: the buffer was dropped on the way in and
-        the row came back empty once the tool had run. Only Enter submits and
-        only Ctrl+U clears; an interruption is neither.
+        A steered turn can be interrupted by a subprocess taking over the
+        terminal (``run_subprocess``, an editor). That needs the tty in its
+        normal state, so the reader has to go -- but the user is
+        *mid-sentence*, not finished. Discarding the line here is what made
+        steering input vanish when a tool took the terminal: the buffer was
+        dropped on the way in and the row came back empty once the tool had
+        run. Only Enter submits and only Ctrl+U clears; an interruption is
+        neither.
+
+        Questions the agent asks (``ask_confirm``/``ask_string``) no longer
+        come through here at all: they are answered on the footer through
+        :meth:`ask_question`, which keeps the reader armed.
 
         Paired with :meth:`resume`. :meth:`stop` is the other half of that
         distinction: it is for the end of a turn, when the prompt owns the
@@ -474,6 +685,9 @@ class SteerInput:
                 if self._esc_mode:
                     self._esc_mode = 0
                     self._esc_buf = b""
+                    # While the focus is on a question, a lone Escape is the
+                    # way back to the steering line.
+                    self._set_focus("line")
                 continue
             try:
                 data = os.read(fd, 64)
@@ -487,13 +701,17 @@ class SteerInput:
                 self._handle_byte(byte)
 
     def _handle_byte(self, byte: int) -> None:
-        """Apply a single input byte to the line buffer.
+        """Apply a single input byte to whichever field has the focus.
 
         Escape sequences are consumed whole, so an arrow key or a function key
         never leaks its bytes into the line as stray characters. The few that
         name a caret movement are decoded rather than dropped
         (:func:`_nav_action`); everything else -- F-keys, PageUp, any unknown
         sequence -- is swallowed exactly as before.
+
+        The two fields are the steering line (the default) and a question the
+        agent is waiting on. Tab is the only thing that moves the focus
+        between them, and it is free here: it was an ignored control byte.
         """
         if self._esc_mode:
             if self._esc_mode == 1:
@@ -505,9 +723,11 @@ class SteerInput:
                     # Escape the read loop has not timed out yet. Drop the
                     # ESC and let the byte do its ordinary job -- treating it
                     # as part of an escape swallowed whatever character
-                    # followed a stray Escape press.
+                    # followed a stray Escape press. On a focused question
+                    # that ESC was the way out.
                     self._esc_mode = 0
                     self._esc_buf = b""
+                    self._set_focus("line")
                     self._handle_byte(byte)
                 return
             self._esc_buf += bytes([byte])
@@ -519,12 +739,21 @@ class SteerInput:
             if is_ctrl_c_sequence(sequence):
                 self._interrupt()
                 return
+            if _is_tab_sequence(sequence):
+                self._toggle_focus()
+                return
             action = _nav_action(sequence)
             if action is not None:
                 self._edit(action)
             return
+        if byte == 0x09:  # Tab: the one key that moves the focus
+            self._toggle_focus()
+            return
         if byte == 0x1B:
             self._esc_mode = 1
+            return
+        if self._focus == "ask":
+            self._handle_ask_byte(byte)
             return
         if byte in (0x0D, 0x0A):  # Enter
             text = self.line().strip()
@@ -545,25 +774,9 @@ class SteerInput:
         # Line editing, in the readline spelling where one exists. All of it
         # goes through `_edit` so that "did anything move" is decided in one
         # place -- a no-op must not redraw the footer row.
-        if byte in (0x7F, 0x08):  # Backspace / Ctrl+H
-            self._edit("backspace")
-            return
-        if byte == 0x04:  # Ctrl+D: delete forwards
-            self._edit("delete")
-            return
-        if byte == 0x15:  # Ctrl+U: clear the line
-            self._edit("clear")
-            return
-        if byte == 0x0B:  # Ctrl+K: kill to the end
-            self._edit("kill-to-end")
-            return
-        if byte == 0x17:  # Ctrl+W: kill the word before the caret
-            self._edit("kill-word")
-            return
-        if byte in (0x01, 0x02, 0x05, 0x06):  # Ctrl+A/B/E/F: readline motion
-            self._edit(
-                {0x01: "home", 0x02: "left", 0x05: "end", 0x06: "right"}[byte]
-            )
+        action = _EDIT_BYTES.get(byte)
+        if action is not None:
+            self._edit(action)
             return
         if byte < 0x20 or byte == 0x7F:
             return  # other control characters: ignore
@@ -585,6 +798,52 @@ class SteerInput:
 
     # ── line editing ─────────────────────────────────────────────────────
 
+    # ── asking the user without stealing the keyboard ──────────────────────
+
+    def _handle_ask_byte(self, byte: int) -> None:
+        """A keystroke typed while the pending question has the focus."""
+        q = self._question
+        if q is None:
+            return
+        if byte in (0x03, 0x1A, 0x1C):
+            return  # Ctrl+C & co: never an answer, never buffered
+        if q.kind == "confirm":
+            if byte in (0x79, 0x59):  # y / Y
+                self._resolve(q, "yes")
+            elif byte in (0x6E, 0x4E):  # n / N
+                self._resolve(q, "no")
+            elif byte in (0x0D, 0x0A):  # Enter: the default answer
+                self._resolve(q, "yes" if q.default else "no")
+            return
+        if byte in (0x0D, 0x0A):  # Enter: submit the typed answer
+            with self._lock:
+                value = "".join(q.buffer)
+            self._resolve(q, value if value.strip() else str(q.default))
+            return
+        action = _EDIT_BYTES.get(byte)
+        if action is not None:
+            self._edit_answer(action)
+            return
+        if byte < 0x20 or byte == 0x7F:
+            return
+        try:
+            char = bytes([byte]).decode("utf-8")
+        except UnicodeDecodeError:
+            return
+        if not char.isprintable():
+            return
+        with self._lock:
+            if sum(len(c) for c in q.buffer) < self._max_len:
+                q.buffer.insert(q.pos, char)
+                q.pos += 1
+                changed = True
+            else:
+                changed = False
+        if changed:
+            self._changed()
+
+    # ── line editing ───────────────────────────────────────────────────────
+
     def _edit(self, action: str) -> None:
         """Apply a line-editing *action*, notifying only if something moved.
 
@@ -593,44 +852,31 @@ class SteerInput:
         A genuine no-op (Left at the start of the line, Backspace on an empty
         one) does not, which is what keeps a held-down key from redrawing the
         row a few hundred times a second for nothing.
+
+        The action lands on whichever field has the focus, so the same keys
+        edit the steering line and a question's answer.
         """
+        if self._focus == "ask":
+            self._edit_answer(action)
+            return
         with self._lock:
-            before = ("".join(self._buffer), self._pos)
-            self._apply(action)
-            moved = ("".join(self._buffer), self._pos) != before
+            before = (list(self._buffer), self._pos)
+            self._pos = _apply_action(action, self._buffer, self._pos)
+            moved = (self._buffer, self._pos) != before
         if moved:
             self._changed()
 
-    def _apply(self, action: str) -> None:
-        """Mutate the buffer for *action*. Call with ``_lock`` held."""
-        buf = self._buffer
-        if action == "left":
-            self._pos = max(0, self._pos - 1)
-        elif action == "right":
-            self._pos = min(len(buf), self._pos + 1)
-        elif action == "home":
-            self._pos = 0
-        elif action == "end":
-            self._pos = len(buf)
-        elif action == "backspace":
-            if self._pos > 0:
-                del buf[self._pos - 1]
-                self._pos -= 1
-        elif action == "delete":
-            if self._pos < len(buf):
-                del buf[self._pos]
-        elif action == "word-left":
-            self._pos = _word_left(buf, self._pos)
-        elif action == "word-right":
-            self._pos = _word_right(buf, self._pos)
-        elif action == "kill-to-end":
-            del buf[self._pos:]
-        elif action == "kill-word":
-            self._pos = _word_left(buf, self._pos)
-            del buf[self._pos:]
-        elif action == "clear":
-            buf.clear()
-            self._pos = 0
+    def _edit_answer(self, action: str) -> None:
+        """The same editor, applied to the pending question's answer."""
+        with self._lock:
+            q = self._question
+            if q is None:
+                return
+            before = (list(q.buffer), q.pos)
+            q.pos = _apply_action(action, q.buffer, q.pos)
+            moved = (q.buffer, q.pos) != before
+        if moved:
+            self._changed()
 
     def _interrupt(self) -> None:
         """Raise SIGINT in the main thread, on behalf of Ctrl+C.

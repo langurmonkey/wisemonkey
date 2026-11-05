@@ -305,6 +305,10 @@ class Footer:
         # Set via `set_thinking`; `start` clears it, since a new turn is not
         # reasoning.
         self._thinking = False
+        # The question the agent is waiting on, or "". It takes the key-hints
+        # row: that row is the footer's own, so announcing it costs no space
+        # and never displaces the steering line the user is typing.
+        self._question_text = ""
         self._debug_bytes = debug_bytes
         self._saved_stdout = None
         # Spinner state. `_spinner_text` is the stage label ("" = idle);
@@ -361,8 +365,10 @@ class Footer:
         No-op if stdout is not a TTY or the terminal is too small.
         """
         # A new turn means no reasoning is in progress: clear any indicator
-        # the previous turn left behind (it may have ended mid-reasoning).
+        # the previous turn left behind (it may have ended mid-reasoning). No
+        # question can be pending either, for the same reason.
         self._thinking = False
+        self._question_text = ""
         if self._active or not self._is_tty():
             return
         self._term_width, self._term_height = self._read_terminal_size()
@@ -429,6 +435,7 @@ class Footer:
         # thread: on its own it leaves the animation running for a
         # still-active indicator.
         self._thinking = False
+        self._question_text = ""
         self.set_spinner("")
         if not self._active:
             return
@@ -534,6 +541,61 @@ class Footer:
     def _transient(self) -> str:
         """The current transient-row content ("" when it was never drawn)."""
         return "" if self._input_text == _UNSET else self._input_text
+
+    def set_question(self, text: str) -> None:
+        """Announce (or clear, with "") a question awaiting the user's answer.
+
+        The question takes the key-hints row: it is the footer's own row, so
+        announcing it never displaces the steering line the user is typing,
+        and the row already carries the alternate bindings it is overriding.
+        The bell is part of the announcement -- the turn is *blocked* until
+        the question is answered, and a row at the bottom of the screen is
+        easy to miss.
+        """
+        with self._lock:
+            if text == self._question_text:
+                return
+            self._question_text = text
+        if text:
+            self._bell()
+        self.update_status(self._status_text, self._transient(), force=True)
+
+    def _bell(self) -> None:
+        """Emit BEL, so a pending question is noticed. No-op off a terminal."""
+        out = real_stream()
+        try:
+            with WRITE_LOCK:
+                out.write("\a")
+                out.flush()
+        except Exception:
+            pass
+
+    def _hint_line(self, width: int) -> str:
+        """Left-hand content of the key-hints row, already styled for the bar.
+
+        The row advertises the bindings for the current state. While a
+        question waits, that state is "answer it or leave it", and the
+        question itself is named here because every other row is in use. The
+        question is truncated to leave room for the keys: a long command line
+        in the question must not scroll the instructions off the row.
+        """
+        if not self._question_text:
+            return (
+                f" {_KEY}Ctrl{_RESET}{_BAR_BG}+{_KEY}C{_RESET}{_BAR_BG}:{_RESET}"
+                f"{_BAR_BG} cancel turn   {_DIM}|{_RESET}{_BAR_BG}   type + "
+                f"{_KEY}\u21b5{_RESET}{_BAR_BG} to steer {_RESET}"
+            )
+        tail = "   |   Tab to answer, Esc to leave it "
+        text = self._question_text
+        room = max(8, width - len(" \u2753 ") - len(tail) - 2)
+        if len(text) > room:
+            text = text[: room - 1] + "\u2026"
+        return (
+            f" {_ACCENT}\u2753{_RESET}{_BAR_BG} {_WHITE}{text}"
+            f"{_RESET}{_BAR_BG}   {_DIM}|{_RESET}{_BAR_BG}   "
+            f"{_KEY}Tab{_RESET}{_BAR_BG} to answer, {_KEY}Esc{_RESET}"
+            f"{_BAR_BG} to leave it {_RESET}"
+        )
 
     def _start_spinner_thread(self) -> None:
         stop = threading.Event()
@@ -662,21 +724,18 @@ class Footer:
                 # before the redraw and restore it afterwards instead.
                 sep = _DIM + "─" * width + _RESET
 
-                # Hint line: advertised key bindings for the current state.
-                # The dark gray bar extends the full terminal width: draw the
-                # hint, then the right-hand indicators, then pad with
-                # background-colored spaces.
-                hint_plain = " Ctrl+C: cancel turn   |   type + ↵ to steer "
-                hint = (
-                    f" {_KEY}Ctrl{_RESET}{_BAR_BG}+{_KEY}C{_RESET}{_BAR_BG}:{_RESET}"
-                    f"{_BAR_BG} cancel turn   {_DIM}|{_RESET}{_BAR_BG}   type + "
-                    f"{_KEY}↵{_RESET}{_BAR_BG} to steer {_RESET}"
-                )
+                # Hint line: advertised key bindings for the current state,
+                # or the pending question and how to answer it. The dark gray
+                # bar extends the full terminal width: draw the hint, then the
+                # right-hand indicators, then pad with background-colored
+                # spaces. The hint itself is clipped, since a question has no
+                # length limit and the row must never wrap.
+                hint = clip_ansi(self._hint_line(width), max(0, width - 2))
                 # Two spaces of right padding for the *content*: the spinner
                 # and the reasoning indicator end two columns short of the
                 # edge. The gray bar itself still fills the row to the very
                 # end (the trailing background spaces below).
-                right_width = max(0, width - len(hint_plain) - 2)
+                right_width = max(0, width - visible_len(hint) - 2)
                 right = clip_ansi(self._hints_right(), right_width)
                 pad = " " * max(0, right_width - visible_len(right))
 
