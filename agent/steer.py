@@ -452,12 +452,18 @@ class SteerInput:
         *default* the value returned for an empty one).
 
         This is the whole point of the focus design: the question does **not**
-        take the terminal. The steering line keeps the keyboard, the question
-        is announced on the footer, and only Tab moves the focus onto it. A
-        modal prompt would mean the next character typed into a half-written
-        steering line was silently reinterpreted as the answer to a question
-        the user had not seen yet -- which is exactly what handing the tty to
-        ``readline`` did.
+        take the terminal. A modal prompt would mean the next character typed
+        into a half-written steering line was silently reinterpreted as the
+        answer to a question the user had not seen yet -- which is exactly
+        what handing the tty to ``readline`` did.
+
+        The focus is decided by what the user has in flight. With nothing
+        typed and nothing queued there is nothing to protect, so the question
+        takes the keyboard at once and an answer needs no Tab: the common case
+        is a *fresh* prompt, and making it cost two keystrokes was pure
+        ceremony. A line in progress -- or a queued follow-up, which means the
+        user is actively steering this turn -- keeps the keyboard instead, and
+        Tab is the only way onto the question.
 
         Returns None when nothing can answer (no reader armed, a question
         already pending, or the turn ended first); the caller then falls back
@@ -470,8 +476,8 @@ class SteerInput:
             if self._question is not None or not self._armed:
                 return None
             self._question = q
-            # Focus stays on the line: the question waits for an explicit Tab.
-            self._focus = "line"
+            busy = bool(self._buffer) or bool(self._queue)
+            self._focus = "line" if busy else "ask"
         self._changed()
         try:
             q.event.wait()

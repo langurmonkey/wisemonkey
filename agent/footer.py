@@ -309,6 +309,14 @@ class Footer:
         # row: that row is the footer's own, so announcing it costs no space
         # and never displaces the steering line the user is typing.
         self._question_text = ""
+        # Whether the keyboard is currently *on* that question. The row
+        # advertises whichever keys apply: "Tab to answer" while the focus is
+        # still on the line, "Tab/Esc back to the line" once it has moved.
+        self._question_focused = False
+        # The answer's accepted values, e.g. "[y/N]" for a confirmation. Part
+        # of the question, not of the bindings: a question that does not say
+        # what it will accept makes the user guess.
+        self._question_options = ""
         self._debug_bytes = debug_bytes
         self._saved_stdout = None
         # Spinner state. `_spinner_text` is the stage label ("" = idle);
@@ -369,6 +377,8 @@ class Footer:
         # question can be pending either, for the same reason.
         self._thinking = False
         self._question_text = ""
+        self._question_focused = False
+        self._question_options = ""
         if self._active or not self._is_tty():
             return
         self._term_width, self._term_height = self._read_terminal_size()
@@ -436,6 +446,8 @@ class Footer:
         # still-active indicator.
         self._thinking = False
         self._question_text = ""
+        self._question_focused = False
+        self._question_options = ""
         self.set_spinner("")
         if not self._active:
             return
@@ -542,7 +554,9 @@ class Footer:
         """The current transient-row content ("" when it was never drawn)."""
         return "" if self._input_text == _UNSET else self._input_text
 
-    def set_question(self, text: str) -> None:
+    def set_question(
+        self, text: str, focused: bool = False, options: str = ""
+    ) -> None:
         """Announce (or clear, with "") a question awaiting the user's answer.
 
         The question takes the key-hints row: it is the footer's own row, so
@@ -551,13 +565,45 @@ class Footer:
         The bell is part of the announcement -- the turn is *blocked* until
         the question is answered, and a row at the bottom of the screen is
         easy to miss.
+
+        *focused* says whether the keyboard is already on the question (the
+        reader decides that: with nothing typed there is nothing to protect,
+        so it starts there). The row advertises whichever keys then apply.
+
+        *options* names the accepted answers, e.g. ``[y/N]``; it is drawn as
+        part of the question because a question that does not say what it
+        accepts makes the user guess. Plain text, no markup -- the footer
+        writes raw escape sequences.
         """
         with self._lock:
-            if text == self._question_text:
+            announce = bool(text) and text != self._question_text
+            focused = focused and bool(text)
+            if (
+                text == self._question_text
+                and focused == self._question_focused
+                and options == self._question_options
+            ):
                 return
             self._question_text = text
-        if text:
+            self._question_focused = focused
+            self._question_options = options if text else ""
+        if announce:
             self._bell()
+        self.update_status(self._status_text, self._transient(), force=True)
+
+    def set_question_focus(self, focused: bool) -> None:
+        """Move the keyboard's visible focus on or off the pending question.
+
+        Only the reader knows where the focus is, so this is how it tells the
+        footer: the hints row has to say "Tab to answer" while the focus is
+        still on the line and something else once it is on the question. A
+        no-op when there is no question, or when the focus did not change --
+        the reader notifies on every keystroke.
+        """
+        with self._lock:
+            if not self._question_text or focused == self._question_focused:
+                return
+            self._question_focused = focused
         self.update_status(self._status_text, self._transient(), force=True)
 
     def _bell(self) -> None:
@@ -585,16 +631,36 @@ class Footer:
                 f"{_BAR_BG} cancel turn   {_DIM}|{_RESET}{_BAR_BG}   type + "
                 f"{_KEY}\u21b5{_RESET}{_BAR_BG} to steer {_RESET}"
             )
-        tail = "   |   Tab to answer, Esc to leave it "
+        # Which keys matter depends on where the keyboard already is: moving
+        # onto the question, or getting the line back.
+        if self._question_focused:
+            styled = (
+                f"{_KEY}Tab{_RESET}{_BAR_BG}/{_KEY}Esc{_RESET}{_BAR_BG}"
+                f" back to the line "
+            )
+            plain = "Tab/Esc back to the line "
+        else:
+            styled = (
+                f"{_KEY}Tab{_RESET}{_BAR_BG} to answer, {_KEY}Esc{_RESET}"
+                f"{_BAR_BG} to leave it "
+            )
+            plain = "Tab to answer, Esc to leave it "
         text = self._question_text
-        room = max(8, width - len(" \u2753 ") - len(tail) - 2)
+        options = self._question_options
+        styled_options = (
+            f" {_DIM}{options}{_RESET}{_BAR_BG}" if options else ""
+        )
+        room = (
+            max(8, width - len(" \u2753 ") - len("   |   ") - len(plain) - 2)
+            - len(options)
+            - (1 if options else 0)
+        )
         if len(text) > room:
             text = text[: room - 1] + "\u2026"
         return (
-            f" {_ACCENT}\u2753{_RESET}{_BAR_BG} {_WHITE}{text}"
-            f"{_RESET}{_BAR_BG}   {_DIM}|{_RESET}{_BAR_BG}   "
-            f"{_KEY}Tab{_RESET}{_BAR_BG} to answer, {_KEY}Esc{_RESET}"
-            f"{_BAR_BG} to leave it {_RESET}"
+            f" {_ACCENT}\u2753{_RESET}{_BAR_BG} {_WHITE}{text}{_RESET}"
+            f"{_BAR_BG}{styled_options}   {_DIM}|{_RESET}{_BAR_BG}   "
+            f"{styled}{_RESET}"
         )
 
     def _start_spinner_thread(self) -> None:

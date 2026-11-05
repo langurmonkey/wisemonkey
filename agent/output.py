@@ -387,10 +387,20 @@ class RichOutputAdapter(OutputAdapter):
         interactive terminal, in which case steering is simply unavailable.
         """
         self.steer_stop()
-        self._steer = SteerInput(on_submit, on_change)
+
+        def change() -> None:
+            # The hints row advertises different keys depending on where the
+            # keyboard is, and only the reader knows: mirror its focus onto
+            # the footer before the frontend redraws.
+            if self._steer is not None:
+                self._footer.set_question_focus(self._steer.focus() == "ask")
+            if on_change is not None:
+                on_change()
+
+        self._steer = SteerInput(on_submit, change)
         # Kept separately so `steer_paused` can redraw the row when it re-arms
         # (see below); the reader thread is gone by then.
-        self._steer_on_change = on_change
+        self._steer_on_change = change
         return self._steer.start()
 
     def steer_stop(self) -> None:
@@ -591,7 +601,15 @@ class RichOutputAdapter(OutputAdapter):
         # The footer writes straight to the terminal and never goes through
         # Rich, so it gets the question's text, not its markup.
         label = _plain_text(message)
-        self._footer.set_question(label)
+        # Rich's own prompts append the accepted answers to the message, and a
+        # question on a one-line row needs that more than they do: it is the
+        # only place the keys can be named. Capitalised letter = the default
+        # that Enter takes.
+        if kind == "confirm":
+            options = "[Y/n]" if default else "[y/N]"
+        else:
+            options = f"({default})" if default else ""
+        self._footer.set_question(label, options=options)
         try:
             return steer.ask_question(kind, label, default)
         finally:

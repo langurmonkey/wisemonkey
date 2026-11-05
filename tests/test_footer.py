@@ -937,6 +937,106 @@ class TestFooterHintsRow(unittest.TestCase):
         self.assertFalse(self.footer._thinking)
 
 
+class TestFooterQuestionRow(unittest.TestCase):
+    """A pending question takes the hints row, and says which keys apply.
+
+    The keys are not the same in both states: "Tab to answer" while the focus
+    is still on the steering line, and how to get back once it has moved onto
+    the question. A row that advertised the wrong one would be worse than no
+    row at all.
+    """
+
+    def setUp(self) -> None:
+        self.saved = sys.stdout
+        self.tty = FakeTTY()
+        sys.stdout = self.tty
+        patcher = mock.patch.object(Footer, "_read_terminal_size", return_value=(80, 24))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.footer = Footer()
+        self.footer.start()
+
+    def tearDown(self) -> None:
+        self.footer.stop()
+        sys.stdout = self.saved
+
+    def _plain(self) -> str:
+        return re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", self.tty.getvalue())
+
+    def test_announcing_a_question_names_it_and_offers_tab(self):
+        self.footer.set_question("Run this command?")
+        out = self._plain()
+        self.assertIn("Run this command?", out)
+        self.assertIn("Tab to answer", out)
+        self.assertIn("Esc to leave it", out)
+
+    def test_announcing_a_question_rings_the_bell_once(self):
+        self.footer.set_question("Run this command?")
+        self.assertEqual(self.tty.getvalue().count("\a"), 1)
+        # Re-announcing the same question is not a new one.
+        self.footer.set_question("Run this command?")
+        self.assertEqual(self.tty.getvalue().count("\a"), 1)
+
+    def test_a_focused_question_advertises_the_way_back(self):
+        self.footer.set_question("Run this command?", focused=True)
+        out = self._plain()
+        self.assertIn("Run this command?", out)
+        self.assertIn("back to the line", out)
+        self.assertNotIn("Tab to answer", out)
+
+    def test_the_focus_can_move_after_the_announcement(self):
+        self.footer.set_question("Run this command?")
+        self.footer.set_question_focus(True)
+        self.assertIn("back to the line", self._plain())
+        self.footer.set_question_focus(False)
+        self.assertIn("Tab to answer", self._plain())
+
+    def test_focus_without_a_question_does_nothing(self):
+        self.tty.seek(0)
+        self.tty.truncate(0)
+        self.footer.set_question_focus(True)
+        self.assertFalse(self.footer._question_focused)
+        self.assertEqual(self.tty.getvalue(), "")
+
+    def test_the_question_is_truncated_to_leave_the_keys_visible(self):
+        self.footer.set_question("cd /very/long/path && " + "x" * 200)
+        out = self._plain()
+        self.assertIn("\u2026", out)
+        self.assertIn("Tab to answer", out)
+        row = self.footer._hint_line(80)
+        self.assertLessEqual(visible_len(row), 78)
+
+    def test_the_accepted_answers_are_part_of_the_question(self):
+        self.footer.set_question("Run this command?", options="[y/N]")
+        self.assertIn("Run this command? [y/N]", self._plain())
+
+    def test_the_options_are_kept_when_the_focus_moves(self):
+        self.footer.set_question("Run this command?", options="[y/N]")
+        self.footer.set_question_focus(True)
+        out = self._plain()
+        self.assertIn("[y/N]", out)
+        self.assertIn("back to the line", out)
+
+    def test_the_options_do_not_push_the_keys_off_the_row(self):
+        self.footer.set_question("x" * 200, options="[y/N]")
+        row = self.footer._hint_line(80)
+        self.assertLessEqual(visible_len(row), 78)
+        self.assertIn("[y/N]", row)
+
+    def test_clearing_the_question_clears_the_options(self):
+        self.footer.set_question("Run this command?", options="[y/N]")
+        self.footer.set_question("")
+        self.assertEqual(self.footer._question_options, "")
+
+    def test_a_new_turn_clears_a_leftover_question(self):
+        self.footer.set_question("Run this command?", focused=True)
+        self.footer.stop()
+        with mock.patch.object(Footer, "_read_terminal_size", return_value=(80, 24)):
+            self.footer.start()
+        self.assertEqual(self.footer._question_text, "")
+        self.assertFalse(self.footer._question_focused)
+
+
 class TestWriteLockIsShared(unittest.TestCase):
     def test_lock_is_reentrant(self):
         with WRITE_LOCK:

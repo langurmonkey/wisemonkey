@@ -2,6 +2,8 @@
 
 import os
 import sys
+import threading
+import time
 import unittest
 from typing import TYPE_CHECKING, Any, cast
 from unittest import mock
@@ -1008,6 +1010,121 @@ class TestEditLeavesTheTtyUsable(unittest.TestCase):
         self.assertIn("ICANON True", text, text)
         self.assertIn("ECHO True", text, text)
 
+class TestQuestionFocus(unittest.TestCase):
+    """Where the keyboard starts when a tool asks something mid-turn.
+
+    The rule: with nothing typed and nothing queued the question takes the
+    keyboard at once, so a fresh prompt needs no Tab. A line in progress (or
+    a queued follow-up) keeps it -- reinterpreting a half-written line is the
+    bug the focus design exists to avoid.
+    """
+
+    def setUp(self) -> None:
+        self.steer = SteerInput()
+        # There is no tty in a test; the reader only checks this flag before
+        # accepting a question.
+        self.steer._armed = True
+        self.addCleanup(self.steer.stop)
+
+    def _type(self, text: str) -> None:
+        for char in text:
+            self.steer._handle_byte(ord(char))
+
+    def _ask(self, kind: str = "confirm", default: Any = False) -> tuple[Any, dict]:
+        """Start a question in a thread; return it with a result holder."""
+
+        def run() -> None:
+            result["answer"] = self.steer.ask_question(kind, "Run it?", default)
+
+        result: dict = {}
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        for _ in range(400):
+            if self.steer._question is not None:
+                break
+            time.sleep(0.005)
+        self.assertIsNotNone(self.steer._question, "the question never started")
+        return thread, result
+
+    # a fresh prompt: no Tab needed
+
+    def test_an_empty_line_gives_the_question_the_keyboard(self):
+        thread, result = self._ask()
+        self.assertEqual(self.steer.focus(), "ask")
+        self.steer._handle_byte(ord("y"))
+        thread.join(2)
+        self.assertEqual(result["answer"], "yes")
+        self.assertEqual(self.steer.focus(), "line")
+
+    def test_the_answer_is_typed_straight_into_the_question(self):
+        thread, result = self._ask("string", "dflt")
+        self.assertEqual(self.steer.focus(), "ask")
+        self._type("hello")
+        self.steer._handle_byte(0x0D)
+        thread.join(2)
+        self.assertEqual(result["answer"], "hello")
+        self.assertEqual(self.steer.line(), "")
+
+    def test_enter_takes_the_default_when_nothing_was_typed(self):
+        thread, result = self._ask("string", "dflt")
+        self.steer._handle_byte(0x0D)
+        thread.join(2)
+        self.assertEqual(result["answer"], "dflt")
+
+    def test_confirm_enter_takes_its_default(self):
+        thread, result = self._ask("confirm", True)
+        self.steer._handle_byte(0x0D)
+        thread.join(2)
+        self.assertEqual(result["answer"], "yes")
+
+    # a line in flight keeps the keyboard
+
+    def test_a_half_written_line_keeps_the_keyboard(self):
+        self._type("note")
+        thread, result = self._ask()
+        self.assertEqual(self.steer.focus(), "line")
+        self._type("y")  # answer-shaped, but the line has the keyboard
+        self.assertEqual(self.steer.line(), "notey")
+        self.assertNotIn("answer", result)
+        # Tab is the only way onto the question, and the line survives it.
+        self.steer._handle_byte(0x09)
+        self.assertEqual(self.steer.focus(), "ask")
+        self.steer._handle_byte(ord("n"))
+        thread.join(2)
+        self.assertEqual(result["answer"], "no")
+        self.assertEqual(self.steer.line(), "notey")
+
+    def test_a_queued_follow_up_keeps_the_keyboard(self):
+        self._type("queued")
+        self.steer._handle_byte(0x0D)  # Enter submits and clears the buffer
+        self.assertEqual(self.steer.line(), "")
+        thread, result = self._ask()
+        self.assertEqual(self.steer.focus(), "line")
+        self.steer._handle_byte(0x09)
+        self.steer._handle_byte(ord("y"))
+        thread.join(2)
+        self.assertEqual(result["answer"], "yes")
+
+    def test_tab_toggles_back_to_the_line_without_answering(self):
+        thread, result = self._ask()
+        self.assertEqual(self.steer.focus(), "ask")
+        self.steer._handle_byte(0x09)
+        self.assertEqual(self.steer.focus(), "line")
+        self._type("ok")
+        self.assertEqual(self.steer.line(), "ok")
+        self.assertNotIn("answer", result)
+        self.steer._handle_byte(0x09)
+        self.steer._handle_byte(ord("y"))
+        thread.join(2)
+        self.assertEqual(result["answer"], "yes")
+
+    def test_stop_cancels_a_pending_question(self):
+        thread, result = self._ask()
+        self.steer.stop()
+        thread.join(2)
+        self.assertIsNone(result["answer"])
+
 
 if __name__ == "__main__":
+    unittest.main()
     unittest.main()
