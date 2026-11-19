@@ -253,14 +253,24 @@ class TestFooterGeometry(unittest.TestCase):
         self.saved = sys.stdout
         self.tty = FakeTTY()
         sys.stdout = self.tty
+        # The patch must outlive `start()`: `stop()` re-reads the size too, to
+        # blank the rows the footer actually occupies, so a mock scoped to the
+        # setup would leave the row numbers dependent on the terminal the tests
+        # happen to run in. Tests that resize nest their own patch over this
+        # one, which wins.
+        self.size = (80, 24)
+        patcher = mock.patch.object(
+            Footer, "_read_terminal_size", return_value=self.size
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self) -> None:
         sys.stdout = self.saved
 
     def _footer(self) -> Footer:
-        with mock.patch.object(Footer, "_read_terminal_size", return_value=(80, 24)):
-            footer = Footer()
-            footer.start()
+        footer = Footer()
+        footer.start()
         return footer
 
     def test_start_sets_scroll_region(self):
@@ -329,6 +339,30 @@ class TestFooterGeometry(unittest.TestCase):
         self.tty.truncate()
         footer.stop()
         self.assertTrue(self.tty.getvalue().rstrip().endswith(f"\x1b[{height};1H"))
+
+    def test_stop_follows_a_resize_that_happened_during_the_turn(self):
+        """Disarming must blank the rows the footer occupies *now*.
+
+        The height is re-read in ``stop()``: a resize between the last redraw
+        and the end of the turn would otherwise leave the footer blanking rows
+        that have moved (and parking the cursor above the bottom of the
+        screen), which is how a stray separator survived a turn.
+        """
+        footer = self._footer()
+        assert footer._term_height == 24
+        self.tty.seek(0)
+        self.tty.truncate()
+        with mock.patch.object(
+            Footer, "_read_terminal_size", return_value=(80, 30)
+        ):
+            footer.stop()
+        out = self.tty.getvalue()
+        # Rows 27..30 are the footer zone at the new height, and the cursor
+        # ends on the last row of the screen rather than the old one.
+        for row in range(27, 31):
+            self.assertIn(f"\x1b[{row};1H\x1b[2K", out)
+        self.assertTrue(out.rstrip().endswith("\x1b[30;1H"))
+        self.assertEqual(footer._term_height, 30)
 
     def test_blanking_writes_no_newlines(self):
         """The fix is addressed erases, so no newline may appear at all."""
