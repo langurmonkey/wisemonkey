@@ -214,9 +214,13 @@ class _LockedWriter:
     interleave mid-escape-sequence.
     """
 
-    def __init__(self, stream, log_path: str | None = None) -> None:
+    def __init__(self, stream, log_path: str | None = None, on_write=None) -> None:
         self._stream = stream
         self._log_path = log_path
+        # Called before every write, so a resize can be repaired *before* the
+        # text that would land in the wrong place is sent. The footer uses it
+        # to re-apply the scroll region; see `Footer._sync_geometry`.
+        self._on_write = on_write
 
     @property
     def rich_proxied_file(self):
@@ -235,6 +239,14 @@ class _LockedWriter:
         return getattr(self._stream, name)
 
     def write(self, text: str):
+        hook = self._on_write
+        if hook is not None:
+            # Before the lock: the hook may itself write (re-applying the
+            # scroll region), and it must finish before this chunk is sent.
+            try:
+                hook()
+            except Exception:
+                pass
         with WRITE_LOCK:
             if self._log_path is not None:
                 try:
@@ -297,6 +309,10 @@ class Footer:
         self._active = False
         self._term_height = 24
         self._term_width = 80
+        # The geometry the scroll region was last set to, or None when no
+        # region is set (never armed, disarmed, or the terminal is too small
+        # to reserve rows). Every write compares the live size against this.
+        self._geometry: tuple[int, int] | None = None
         self._status_text = ""
         # `_UNSET` marks "the transient row has not been drawn yet", which is
         # distinct from "" ("drawn, and empty").
@@ -344,6 +360,103 @@ class Footer:
         except (OSError, ValueError):
             size = shutil.get_terminal_size((80, 24))
             return size.columns, size.lines
+
+    # Geometry
+
+    def _sync_geometry(self) -> bool:
+        """Re-establish the scroll region when the terminal was resized.
+
+        The region is set once, in :meth:`start`, and the terminal does *not*
+        move it when the window changes size: it keeps the old absolute
+        margins. A **shrink** leaves the bottom margin below the last screen
+        row, so the region degrades to "the whole screen" -- streamed text
+        scrolls straight through the footer rows, every redraw paints a fresh
+        separator, and each scroll carries the previous one up into the
+        answer. That is the "wall of horizontal lines" a mid-turn resize
+        produces. A **grow** is the mirror image: the margin stays where it
+        was, the rows below it are never used, and the answer stops short of
+        the footer.
+
+        Both are repaired here rather than in :meth:`update_status` alone,
+        because output can resume long before the next redraw: a tool that
+        runs for a minute while the user resizes would otherwise print its
+        result into the broken geometry. The output writer therefore calls
+        this before every write (see :class:`_LockedWriter`), so the text that
+        would have landed below the footer is never sent.
+
+        Returns True when the geometry changed.
+        """
+        size = self._read_terminal_size()
+        if size == self._geometry:
+            return False
+        with self._lock:
+            old = self._geometry
+            if size == old:
+                return False
+            self._term_width, self._term_height = size
+            # Set *before* writing: those writes come straight back through
+            # `_LockedWriter`, and the re-entrant check has to see the new
+            # geometry instead of applying it twice.
+            self._geometry = size
+            if self._term_height <= FOOTER_LINES + 1:
+                self._release_region()
+            else:
+                self._apply_geometry(old)
+        return True
+
+    def _release_region(self) -> None:
+        """Give the whole screen back: it is too small to reserve rows."""
+        out = real_stream()
+        with WRITE_LOCK:
+            out.write("\x1b[r")
+            # Resetting the region homes the cursor; leave it at the bottom,
+            # where streamed output continues in a footer-less screen.
+            out.write(f"\x1b[{self._term_height};1H")
+            out.flush()
+
+    def _apply_geometry(self, old: tuple[int, int] | None) -> None:
+        """Move the scroll region to the current terminal height."""
+        top = self._term_height - FOOTER_LINES + 1
+        out = real_stream()
+        # The cursor may only be restored when its old position is provably
+        # still inside the content region: the window gained rows and kept its
+        # width. Otherwise -- a shrink, or a width change that reflowed text
+        # downwards -- the restored row can be *below* the new bottom margin,
+        # which is exactly how the answer ended up being written under the
+        # footer.
+        keep = (
+            old is not None
+            and self._term_width == old[0]
+            and self._term_height > old[1]
+        )
+        with WRITE_LOCK:
+            if keep:
+                out.write("\x1b7")
+            # Drop the stale margins first. A bottom margin past the last
+            # screen row is not something every terminal recovers from, and
+            # DECSTBM homes the cursor, which bothers neither path below.
+            out.write("\x1b[r")
+            out.write(f"\x1b[1;{top - 1}r")
+            if keep:
+                out.write("\x1b8")
+            else:
+                # Park on the last content row and start a fresh line there.
+                # The newline is what guarantees the next streamed character
+                # lands *above* the footer; the row may still hold a partial
+                # line after the reflow, and scrolling one line away is better
+                # than overwriting the middle of it.
+                out.write(f"\x1b[{top - 1};1H")
+                out.write("\r\n")
+            out.flush()
+
+    def _on_stream_write(self) -> None:
+        """Repair the geometry before a chunk of output is written."""
+        if not self._active:
+            return
+        if self._sync_geometry():
+            # The reserved rows held reflowed text; repaint them over the new
+            # geometry rather than waiting for the next animation tick.
+            self.update_status(self._status_text, self._transient(), force=True)
 
     # Lifecycle
 
@@ -397,7 +510,9 @@ class Footer:
                 path = None
         else:
             path = None
-        sys.stdout = _LockedWriter(self._saved_stdout, path)
+        sys.stdout = _LockedWriter(
+            self._saved_stdout, path, on_write=self._on_stream_write
+        )
 
         footer_top = self._term_height - FOOTER_LINES + 1
         out = real_stream()
@@ -413,6 +528,7 @@ class Footer:
             self._restore_stdout()
             return
         self._active = True
+        self._geometry = (self._term_width, self._term_height)
 
     def _blank_footer_rows(self, out) -> None:
         """Erase each reserved row without moving the cursor off the screen.
@@ -452,6 +568,10 @@ class Footer:
         if not self._active:
             return
         self._active = False
+        # Re-read before blanking: the window may have been resized since the
+        # last redraw, and the reserved rows are addressed from the height.
+        self._term_width, self._term_height = self._read_terminal_size()
+        self._geometry = None
         out = real_stream()
         try:
             # Reset the scroll region to the full screen.
@@ -754,18 +874,23 @@ class Footer:
         right of the key-hints row instead, so an animation frame never
         competes with what the user is typing.
 
-        The terminal size is re-read on every redraw so a resize mid-turn
-        cannot leave stale geometry behind. The cursor position is saved
-        before the redraw and restored afterwards, so streamed output that
-        left the cursor mid-line (a reasoning block) continues where it was.
-        No-op when the footer is not armed, or when neither line changed
-        (pass *force* to bypass that, which the spinner does on every tick).
+        The terminal size is re-read on every redraw, and a change re-applies
+        the scroll region (see :meth:`_sync_geometry`): the terminal keeps the
+        old absolute margins across a resize, which is what made the answer
+        land below the footer. The cursor position is saved before the redraw
+        and restored afterwards, so streamed output that left the cursor
+        mid-line (a reasoning block) continues where it was.
+
+        No-op when the footer is not armed, or when neither line changed and
+        the geometry did not move (pass *force* to bypass that, which the
+        spinner does on every tick).
         """
         if not self._active:
             return
+        resized = self._sync_geometry()
         with self._lock:
             transient = input_line
-            if not force and (
+            if not force and not resized and (
                 status_line == self._status_text
                 and transient == self._input_text
             ):
@@ -773,8 +898,6 @@ class Footer:
             self._status_text = status_line
             self._input_text = transient
             try:
-                # Re-read the size: the window may have been resized mid-turn.
-                self._term_width, self._term_height = self._read_terminal_size()
                 if self._term_height <= FOOTER_LINES + 1:
                     return
                 footer_top = self._term_height - FOOTER_LINES + 1

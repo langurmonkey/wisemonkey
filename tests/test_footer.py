@@ -439,10 +439,102 @@ class TestFooterRendering(unittest.TestCase):
         out = self.tty.getvalue()
         self.assertIn("\x1b[7;1H", out)  # 10 - 4 + 1 = 7
 
-    def test_resize_to_too_small_keeps_footer_quiet(self):
+    def test_resize_to_too_small_releases_the_region(self):
+        """A terminal too short for the footer must get its whole screen back.
+
+        Keeping the old margins would leave the bottom one below the last
+        screen row, so streamed text would scroll through rows the footer no
+        longer draws on.
+        """
         with mock.patch.object(Footer, "_read_terminal_size", return_value=(40, 3)):
             self.footer.update_status("status", "input")
-        self.assertEqual(self.tty.getvalue(), "")
+        out = self.tty.getvalue()
+        self.assertIn("\x1b[r", out)
+        # No footer row is drawn, and nothing addresses a row past the screen.
+        rows = [int(m.group(1)) for m in re.finditer(r"\x1b\[(\d+);1H", out)]
+        self.assertLessEqual(max(rows), 3)
+        self.assertNotIn("cancel turn", out)
+
+    def test_a_resize_reapplies_the_scroll_region(self):
+        """The terminal keeps the old margins across a resize; we must not.
+
+        The region is set once, in ``start()``. When the window shrinks the
+        old bottom margin ends up below the last row, the region degrades to
+        the whole screen, and streamed text scrolls through the footer -- the
+        "wall of horizontal lines" artifact. The redraw has to re-apply the
+        margins for the new height.
+        """
+        with mock.patch.object(
+            Footer, "_read_terminal_size", return_value=(80, 30)
+        ):
+            self.footer.update_status("s", "i")
+        out = self.tty.getvalue()
+        self.assertIn("\x1b[1;26r", out)  # 30 - 4
+        self.assertEqual(self.footer._term_height, 30)
+        # The reserved rows moved with the window: the separator is drawn on
+        # the new first footer row, not the old one.
+        self.assertIn("\x1b[27;1H", out)
+
+    def test_a_shrink_reanchors_the_cursor_above_the_footer(self):
+        """After a shrink the old cursor row can be *inside* the footer.
+
+        Restoring it (DECRC) is what made the answer appear below the footer,
+        so the repair parks the cursor on the last content row and starts a
+        fresh line there instead.
+        """
+        with mock.patch.object(
+            Footer, "_read_terminal_size", return_value=(80, 12)
+        ):
+            self.footer.update_status("s", "i")
+        out = self.tty.getvalue()
+        self.assertIn("\x1b[1;8r", out)  # 12 - 4
+        self.assertIn("\x1b[8;1H\r\n", out)
+        # The re-anchor must come before the redraw's own cursor save, so the
+        # redraw restores a position that is inside the new region.
+        self.assertLess(out.index("\x1b[8;1H\r\n"), out.index("\x1b7"))
+
+    def test_a_width_change_also_reanchors_the_cursor(self):
+        """Reflow can push the cursor down into the footer without a height change."""
+        with mock.patch.object(
+            Footer, "_read_terminal_size", return_value=(40, 24)
+        ):
+            self.footer.update_status("s", "i")
+        out = self.tty.getvalue()
+        self.assertIn("\x1b[20;1H\r\n", out)
+
+    def test_a_grow_keeps_the_cursor_where_the_stream_left_it(self):
+        """Growing only adds rows, so the old position is still inside the region."""
+        with mock.patch.object(
+            Footer, "_read_terminal_size", return_value=(80, 30)
+        ):
+            self.footer.update_status("s", "i")
+        out = self.tty.getvalue()
+        self.assertIn("\x1b7\x1b[r\x1b[1;26r\x1b8", out)
+        self.assertNotIn("\r\n", out)
+
+    def test_a_resize_forces_a_redraw_even_when_nothing_changed(self):
+        self.footer.update_status("same", "")
+        first = len(self.tty.getvalue())
+        with mock.patch.object(
+            Footer, "_read_terminal_size", return_value=(80, 30)
+        ):
+            self.footer.update_status("same", "")
+        self.assertGreater(len(self.tty.getvalue()), first)
+
+    def test_output_written_while_armed_repairs_the_geometry_first(self):
+        """A tool can print for a minute while the user resizes; the next
+        write must not land in the broken layout."""
+        self.tty.seek(0)
+        self.tty.truncate()
+        with mock.patch.object(
+            Footer, "_read_terminal_size", return_value=(80, 14)
+        ):
+            sys.stdout.write("tool output\n")
+        out = self.tty.getvalue()
+        self.assertIn("\x1b[1;10r", out)       # region re-applied
+        self.assertIn("tool output\n", out)
+        # The repair precedes the text, so the text is written above the footer.
+        self.assertLess(out.index("\x1b[1;10r"), out.index("tool output"))
 
     def test_cursor_saved_and_restored_around_redraw(self):
         """A redraw must not clobber the streamed cursor column.
