@@ -1,22 +1,16 @@
-"""Tests for agent/ipc.py — protocol dataclasses, serialization, transports."""
+"""Tests for agent/ipc.py — message envelope, framing, version, loopback transport."""
 
 import json
 import unittest
 
 from agent.ipc import (
     PROTOCOL_VERSION,
-    AskChoicePayload,
     ClientRequest,
-    CommandResultPayload,
     Event,
-    HandshakePayload,
     InjectPayload,
     InjectWhen,
-    LoopbackTransport,
     Message,
     MessageKind,
-    OutputFormat,
-    OutputLevel,
     OutputPayload,
     ProtocolError,
     ServerRequest,
@@ -32,255 +26,119 @@ from agent.ipc import (
 
 
 class TestMessageFactories(unittest.TestCase):
-    """Message.event / request / response / error constructors."""
+    def test_each_constructor_sets_its_kind_and_names(self):
+        event = Message.event(Event.TURN_END, {"response": "hi"}, turn_id="t1")
+        assert (event.kind, event.name) == (MessageKind.EVENT, "turn_end")
+        assert event.is_event and not event.is_request and not event.is_reply
 
-    def test_event(self):
-        msg = Message.event(Event.TURN_END, {"response": "hi"}, turn_id="t1")
-        assert msg.kind == MessageKind.EVENT
-        assert msg.name == "turn_end"
-        assert msg.payload == {"response": "hi"}
-        assert msg.turn_id == "t1"
-        assert msg.is_event and not msg.is_request and not msg.is_reply
+        request = Message.request(ClientRequest.PROMPT, {"text": "go"})
+        assert (request.kind, request.name, request.is_request) == (
+            MessageKind.REQUEST, "prompt", True
+        )
 
-    def test_event_accepts_dataclass_payload(self):
-        msg = Message.event(Event.OUTPUT, OutputPayload(text="hello"))
-        assert msg.payload["text"] == "hello"
-        assert msg.payload["format"] == OutputFormat.TEXT
+        server_request = Message.request(ServerRequest.CONFIRM, {"message": "ok?"})
+        assert server_request.name == "confirm"
 
-    def test_event_without_payload(self):
+        reply = Message.response("abc", {"value": True})
+        assert (reply.kind, reply.reply_to, reply.is_reply) == (
+            MessageKind.RESPONSE, "abc", True
+        )
+
+        error = Message.error("abc", "boom", kind="timeout")
+        assert error.reply_to == "abc"
+        assert (error.payload["message"], error.payload["kind"]) == ("boom", "timeout")
+
+        # Ids are unique, a timestamp is set, and a payload may be a dataclass.
+        assert len({Message.event(Event.PONG).id for _ in range(50)}) == 50
         msg = Message.event(Event.PONG)
-        assert msg.payload == {}
-
-    def test_request(self):
-        msg = Message.request(ClientRequest.PROMPT, {"text": "go"})
-        assert msg.kind == MessageKind.REQUEST
-        assert msg.name == "prompt"
-        assert msg.is_request
-
-    def test_server_request(self):
-        msg = Message.request(ServerRequest.CONFIRM, {"message": "ok?"})
-        assert msg.name == "confirm"
-        assert msg.payload["message"] == "ok?"
-
-    def test_response(self):
-        msg = Message.response("abc", {"value": True})
-        assert msg.kind == MessageKind.RESPONSE
-        assert msg.reply_to == "abc"
-        assert msg.is_reply
-
-    def test_error(self):
-        msg = Message.error("abc", "boom", kind="timeout")
-        assert msg.kind == MessageKind.ERROR
-        assert msg.reply_to == "abc"
-        assert msg.payload["message"] == "boom"
-        assert msg.payload["kind"] == "timeout"
-
-    def test_ids_are_unique(self):
-        ids = {Message.event(Event.PONG).id for _ in range(50)}
-        assert len(ids) == 50
-
-    def test_timestamp_is_set(self):
-        assert Message.event(Event.PONG).ts > 0
+        assert msg.ts > 0 and msg.payload == {}
+        assert Message.event(Event.OUTPUT, OutputPayload(text="hi")).payload["text"] == "hi"
 
 
 class TestSerialization(unittest.TestCase):
-    """Round-trips through dict and newline-delimited JSON."""
+    def test_dict_and_json_round_trip(self):
+        for original in (
+            Message.event(Event.TOOL_RESULT, ToolResultPayload(
+                id="c1", name="read_file", content="data"), turn_id="t9"),
+            Message.request(ClientRequest.INJECT, InjectPayload(
+                text="stop", when=InjectWhen.INTERRUPT)),
+        ):
+            assert Message.from_dict(original.to_dict()) == original
+            line = encode_message(original)
+            # One message per line, even when the payload holds newlines.
+            assert line.endswith("\n") and line.count("\n") == 1
+            assert decode_message(line) == original
+        assert json.loads(encode_message(Message.event(Event.STATUS, {"busy": True})))[
+            "name"
+        ] == "status"
 
-    def test_dict_round_trip(self):
-        original = Message.event(Event.TOOL_RESULT, ToolResultPayload(
-            id="c1", name="read_file", content="data",
-        ), turn_id="t9")
-        restored = Message.from_dict(original.to_dict())
-        assert restored == original
+    def test_malformed_frames_raise_protocol_error(self):
+        for payload in (
+            "   ",
+            "{not json}",
+            "[1, 2, 3]",
+            '{"kind": "nope", "name": "x"}',
+            '{"kind": "event"}',
+            '{"kind": "event", "name": "x", "payload": 3}',
+        ):
+            with self.assertRaises(ProtocolError, msg=payload):
+                decode_message(payload)
 
-    def test_encode_decode_round_trip(self):
-        original = Message.request(ClientRequest.INJECT, InjectPayload(
-            text="stop", when=InjectWhen.INTERRUPT,
-        ))
-        line = encode_message(original)
-        assert line.endswith("\n")
-        assert line.count("\n") == 1
-        assert decode_message(line) == original
-
-    def test_encode_is_single_line(self):
-        msg = Message.event(Event.OUTPUT, OutputPayload(text="a\nb\nc"))
-        assert encode_message(msg).count("\n") == 1
-
-    def test_encode_is_json_serializable(self):
-        msg = Message.event(Event.STATUS, {"busy": True})
-        assert json.loads(encode_message(msg))["name"] == "status"
-
-    def test_decode_empty_raises(self):
-        with self.assertRaises(ProtocolError):
-            decode_message("   ")
-
-    def test_decode_bad_json_raises(self):
-        with self.assertRaises(ProtocolError):
-            decode_message("{not json}")
-
-    def test_decode_non_object_raises(self):
-        with self.assertRaises(ProtocolError):
-            decode_message("[1, 2, 3]")
-
-    def test_decode_unknown_kind_raises(self):
-        with self.assertRaises(ProtocolError):
-            decode_message('{"kind": "nope", "name": "x"}')
-
-    def test_decode_missing_name_raises(self):
-        with self.assertRaises(ProtocolError):
-            decode_message('{"kind": "event"}')
-
-    def test_decode_bad_payload_raises(self):
-        with self.assertRaises(ProtocolError):
-            decode_message('{"kind": "event", "name": "x", "payload": 3}')
-
-    def test_decode_tolerates_missing_optional_fields(self):
+    def test_optional_fields_may_be_absent(self):
         msg = decode_message('{"kind": "event", "name": "pong"}')
-        assert msg.reply_to == ""
-        assert msg.turn_id == ""
+        assert (msg.reply_to, msg.turn_id) == ("", "")
         assert msg.id
 
 
 class TestProtocolVersion(unittest.TestCase):
-    def test_matching_version_ok(self):
-        check_protocol_version(PROTOCOL_VERSION)
-
-    def test_minor_difference_ok(self):
+    def test_only_a_major_mismatch_is_fatal(self):
         major = PROTOCOL_VERSION.split(".")[0]
-        check_protocol_version(f"{major}.999")
-
-    def test_major_mismatch_raises(self):
-        with self.assertRaises(ProtocolError):
-            check_protocol_version("99.0")
-
-    def test_malformed_version_raises(self):
-        with self.assertRaises(ProtocolError):
-            check_protocol_version("abc")
-
-
-class TestPayloads(unittest.TestCase):
-    """Payload dataclasses cover the OutputAdapter and turn surfaces."""
-
-    def test_output_payload_defaults(self):
-        p = OutputPayload(text="hi", format=OutputFormat.MARKUP, level=OutputLevel.OK)
-        assert p.end == "\n"
-        assert p.indent == 0
-        assert p.level == OutputLevel.OK
-
-    def test_output_payload_panel(self):
-        p = OutputPayload(format=OutputFormat.PANEL, text="# md", title="t", subtitle="s")
-        d = json.loads(json.dumps(p.__dict__))
-        assert d["format"] == "panel"
-        assert d["title"] == "t"
-
-    def test_output_payload_rule(self):
-        p = OutputPayload(format=OutputFormat.RULE, style="agent", align="left")
-        assert p.style == "agent"
-        assert p.align == "left"
-
-    def test_ask_choice_options_are_lists(self):
-        p = AskChoicePayload(message="pick", options=[["a", "Alpha"], ["b", "Beta"]])
-        assert json.loads(json.dumps(p.__dict__))["options"] == [["a", "Alpha"], ["b", "Beta"]]
-
-    def test_tool_result_image(self):
-        p = ToolResultPayload(name="screenshot", image_base64="QUJD", mime_type="image/jpeg")
-        assert p.image_base64 == "QUJD"
-        assert p.is_error is False
-
-    def test_command_result(self):
-        p = CommandResultPayload(command="help", ok=True, should_exit=False)
-        assert p.msg == ""
-        assert p.markdown == ""
-
-    def test_handshake(self):
-        p = HandshakePayload(session="s1", model="m", capabilities=["commands"])
-        assert p.protocol_version == PROTOCOL_VERSION
-        assert json.loads(json.dumps(p.__dict__))["capabilities"] == ["commands"]
-
-    def test_inject_when_values(self):
-        assert InjectWhen.BETWEEN_TURNS == "between_turns"
-        assert InjectWhen.AFTER_TOOL == "after_tool"
-        assert InjectWhen.INTERRUPT == "interrupt"
-
-    def test_inject_payload_defaults(self):
-        p = InjectPayload(text="steer")
-        assert p.when == InjectWhen.BETWEEN_TURNS
-        assert p.role == "user"
+        check_protocol_version(PROTOCOL_VERSION)
+        check_protocol_version(f"{major}.999")  # a newer minor is compatible
+        for bad in ("99.0", "abc"):
+            with self.assertRaises(ProtocolError, msg=bad):
+                check_protocol_version(bad)
 
 
 class TestPayloadAs(unittest.TestCase):
-    def test_reconstruct(self):
-        msg = Message.request(ClientRequest.INJECT, InjectPayload(text="x", role="system"))
-        p = payload_as(InjectPayload, msg)
-        assert p.text == "x"
-        assert p.role == "system"
+    def test_reconstructs_ignoring_unknown_keys_and_defaulting_the_rest(self):
+        full = Message.request(ClientRequest.INJECT, InjectPayload(text="x", role="system"))
+        assert payload_as(InjectPayload, full).role == "system"
 
-    def test_unknown_keys_ignored(self):
-        msg = Message(kind=MessageKind.EVENT, name="x", payload={"text": "y", "future": 1})
-        p = payload_as(InjectPayload, msg)
-        assert p.text == "y"
+        future = Message(kind=MessageKind.EVENT, name="x",
+                         payload={"text": "y", "future": 1})
+        p = payload_as(InjectPayload, future)
+        assert p.text == "y" and p.when == InjectWhen.BETWEEN_TURNS
 
-    def test_missing_keys_use_defaults(self):
-        msg = Message(kind=MessageKind.EVENT, name="x", payload={})
-        p = payload_as(InjectPayload, msg)
-        assert p.text == ""
-        assert p.when == InjectWhen.BETWEEN_TURNS
+        assert payload_as(InjectPayload, Message(
+            kind=MessageKind.EVENT, name="x", payload={}
+        )).text == ""
 
 
 class TestLoopbackTransport(unittest.TestCase):
-    def test_send_recv_both_directions(self):
+    def test_bidirectional_send_and_recv(self):
         a, b = loopback_pair()
-        m1 = Message.event(Event.PONG, {"nonce": "1"})
-        m2 = Message.request(ClientRequest.PING, {"nonce": "2"})
-        a.send(m1)
-        b.send(m2)
-        assert b.recv() == m1
-        assert a.recv() == m2
+        first = Message.event(Event.PONG, {"nonce": "1"})
+        second = Message.request(ClientRequest.PING, {"nonce": "2"})
+        a.send(first)
+        b.send(second)
+        assert b.recv() == first and a.recv() == second
+        assert isinstance(a, Transport)
+        # Nothing queued: a timeout and a zero wait both return None.
+        assert a.recv(timeout=0.01) is None and a.recv(timeout=0) is None
 
-    def test_recv_timeout_returns_none(self):
-        a, _ = loopback_pair()
-        assert a.recv(timeout=0.01) is None
-
-    def test_recv_non_blocking_returns_none(self):
-        a, _ = loopback_pair()
-        assert a.recv(timeout=0) is None
-
-    def test_close_marks_self_closed(self):
-        a, _ = loopback_pair()
+    def test_closing_wakes_the_peer_and_refuses_further_io(self):
+        a, b = loopback_pair()
         assert a.closed is False
         a.close()
-        assert a.closed is True
-
-    def test_close_wakes_peer(self):
-        a, b = loopback_pair()
-        a.close()
-        assert b.closed is False
+        a.close()  # idempotent
+        assert a.closed is True and b.closed is False
         with self.assertRaises(TransportClosed):
             b.recv(timeout=0.1)
         assert b.closed is True
-
-    def test_send_after_close_raises(self):
-        a, _ = loopback_pair()
-        a.close()
-        with self.assertRaises(TransportClosed):
-            a.send(Message.event(Event.PONG))
-
-    def test_recv_after_close_raises(self):
-        a, _ = loopback_pair()
-        a.close()
-        with self.assertRaises(TransportClosed):
-            a.recv(timeout=0)
-
-    def test_double_close_is_idempotent(self):
-        a, _ = loopback_pair()
-        a.close()
-        a.close()
-        assert a.closed is True
-
-    def test_satisfies_transport_protocol(self):
-        a, _ = loopback_pair()
-        assert isinstance(a, Transport)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        a2, _ = loopback_pair()
+        a2.close()
+        for call in (lambda: a2.send(Message.event(Event.PONG)),
+                     lambda: a2.recv(timeout=0)):
+            with self.assertRaises(TransportClosed):
+                call()

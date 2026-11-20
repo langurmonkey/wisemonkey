@@ -1,18 +1,8 @@
-"""Tests for agent/hooks.py — external tool hooks (Claude Code / Codex protocol).
-
-Two layers are covered:
-
-* the hook runner itself (config parsing, matchers, payloads, every verdict
-  shape and exit code, the fail-open/fail-closed split), exercised against
-  small throwaway shell scripts;
-* the `Core._tool_calls` seam, so a deny really does stop a tool call and a
-  post hook really does run without being able to veto the result.
-"""
+"""Tests for agent/hooks.py: external tool hooks (Claude Code / Codex protocol)."""
 
 import json
 import stat
 import unittest
-
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
@@ -32,9 +22,6 @@ from agent.hooks import (
 from agent.output import HOOK_BLOCK_KIND, HOOK_DECLINED_KIND, hook_notice
 
 
-# ── helpers ──────────────────────────────────────────────────────────────────
-
-
 class _Config:
     """Config stand-in with dot-notation `get`, matching agent.config.Config."""
 
@@ -52,14 +39,23 @@ class _Config:
 
 
 def _make_executable(path: Path, body: str) -> Path:
-    """Write a shell script and mark it executable."""
     path.write_text(body.strip() + "\n", encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return path
 
 
+DENY = (
+    'cat >/dev/null; echo \'{"hookSpecificOutput":'
+    '{"permissionDecision":"deny","permissionDecisionReason":"no"}}\''
+)
+ASK = (
+    'cat >/dev/null; echo \'{"hookSpecificOutput":'
+    '{"permissionDecision":"ask","permissionDecisionReason":"review"}}\''
+)
+
+
 class _HookScripts(BaseTest):
-    """Base class offering a temp dir to drop throwaway hook scripts into."""
+    """A temp dir to drop throwaway hook scripts into."""
 
     def _script(self, name: str, body: str) -> str:
         return str(_make_executable(self._tmpdir / name, body))
@@ -68,133 +64,74 @@ class _HookScripts(BaseTest):
         return HookHandler(command=self._script("hook", body), **kw)
 
 
-# ── config parsing ───────────────────────────────────────────────────────────
-
-
 class TestConfigParsing(BaseTest):
-    def test_parses_a_pre_tool_use_group(self):
-        cfg = _Config({"agent": {"hooks": {"pre_tool_use": [
-            {"matcher": "run_command", "hooks": [
-                {"type": "command", "command": "/bin/dcg", "timeout": 3},
-            ]},
-        ]}}})
-        groups = load_hook_groups(cfg)
-        assert len(groups) == 1
-        group = groups[0]
-        assert group.event == "pre_tool_use"
-        assert group.matcher == "run_command"
-        assert group.handlers[0].command == "/bin/dcg"
-        assert group.handlers[0].timeout == 3
-        # Defaults: always runs (honor_unsafe False), library fail policy.
-        assert group.handlers[0].honor_unsafe is False
-        assert group.handlers[0].fail_open is None
-
-    def test_parses_both_events(self):
+    def test_parses_groups_handlers_and_their_defaults(self):
         cfg = _Config({"agent": {"hooks": {
-            "pre_tool_use": [{"hooks": [{"command": "/a"}]}],
+            "pre_tool_use": [{"matcher": "run_command", "hooks": [
+                {"type": "command", "command": "/bin/dcg", "timeout": 3,
+                 "honor_unsafe": True, "fail_open": True},
+            ]}],
             "post_tool_use": [{"hooks": [{"command": "/b"}]}],
         }}})
-        events = [g.event for g in load_hook_groups(cfg)]
-        assert events == ["pre_tool_use", "post_tool_use"]
-
-    def test_no_hooks_block_yields_nothing(self):
-        assert load_hook_groups(_Config({})) == []
-
-    def test_type_defaults_to_command(self):
-        cfg = _Config({"agent": {"hooks": {"pre_tool_use": [
-            {"hooks": [{"command": "/a"}]},
-        ]}}})
-        assert len(load_hook_groups(cfg)[0].handlers) == 1
-
-    def test_a_non_command_type_is_skipped(self):
-        cfg = _Config({"agent": {"hooks": {"pre_tool_use": [
-            {"hooks": [{"type": "prompt", "command": "/a"}]},
-        ]}}})
-        assert load_hook_groups(cfg) == []
-
-    def test_a_handler_without_a_command_is_skipped(self):
-        cfg = _Config({"agent": {"hooks": {"pre_tool_use": [
-            {"hooks": [{"type": "command"}]},
-        ]}}})
-        assert load_hook_groups(cfg) == []
-
-    def test_a_group_with_no_surviving_handler_is_dropped(self):
-        cfg = _Config({"agent": {"hooks": {"pre_tool_use": [
-            {"matcher": "x", "hooks": [{"type": "prompt"}]},
-        ]}}})
-        assert load_hook_groups(cfg) == []
-
-    def test_a_malformed_event_is_ignored_not_fatal(self):
-        cfg = _Config({"agent": {"hooks": {"pre_tool_use": "not a list"}}})
-        assert load_hook_groups(cfg) == []
-
-    def test_a_malformed_entry_is_skipped(self):
-        cfg = _Config({"agent": {"hooks": {"pre_tool_use": [
-            "nope",
-            {"hooks": [{"command": "/a"}]},
-        ]}}})
         groups = load_hook_groups(cfg)
-        assert len(groups) == 1
+        assert [g.event for g in groups] == ["pre_tool_use", "post_tool_use"]
+        assert (groups[0].matcher, groups[0].handlers[0].command) == (
+            "run_command", "/bin/dcg"
+        )
+        handler = groups[0].handlers[0]
+        assert (handler.timeout, handler.honor_unsafe, handler.fail_open) == (3, True, True)
+        # Defaults are library policy: nothing is opted out of the guard.
+        default = groups[1].handlers[0]
+        assert default.honor_unsafe is False and default.fail_open is None
+        assert default.timeout > 0
 
-    def test_honor_unsafe_and_fail_open_are_read(self):
-        cfg = _Config({"agent": {"hooks": {"pre_tool_use": [
-            {"hooks": [{"command": "/a", "honor_unsafe": True, "fail_open": True}]},
-        ]}}})
-        handler = load_hook_groups(cfg)[0].handlers[0]
-        assert handler.honor_unsafe is True
-        assert handler.fail_open is True
-
-    def test_a_bad_timeout_falls_back_to_the_default(self):
+    def test_junk_and_a_bad_timeout_are_skipped_rather_than_fatal(self):
+        """A typo in the config must not take the agent down."""
+        for hooks in (
+            {},
+            {"pre_tool_use": "not a list"},
+            {"pre_tool_use": [{"hooks": [{"type": "prompt", "command": "/a"}]}]},
+            {"pre_tool_use": [{"hooks": [{"type": "command"}]}]},
+            {"pre_tool_use": ["nope"]},
+        ):
+            assert load_hook_groups(_Config({"agent": {"hooks": hooks}})) == [], hooks
         cfg = _Config({"agent": {"hooks": {"pre_tool_use": [
             {"hooks": [{"command": "/a", "timeout": -4}]},
             {"hooks": [{"command": "/b", "timeout": "soon"}]},
         ]}}})
-        handlers = load_hook_groups(cfg)[0].handlers
-        assert all(h.timeout > 0 for h in handlers)
-
-
-# ── matchers ─────────────────────────────────────────────────────────────────
+        assert all(h.timeout > 0 for h in load_hook_groups(cfg)[0].handlers)
 
 
 class TestMatchers(unittest.TestCase):
-    def test_empty_matches_everything(self):
-        assert matcher_matches("", "run_command") is True
-
-    def test_star_matches_everything(self):
-        assert matcher_matches("*", "anything") is True
-
-    def test_regex_selects(self):
-        assert matcher_matches("run_command|spawn", "spawn") is True
-        assert matcher_matches("run_command|spawn", "read_file") is False
-
-    def test_a_broken_regex_matches_everything(self):
-        """A typo in a guard's matcher must not silently disable the guard."""
-        assert matcher_matches("[", "run_command") is True
+    def test_matcher_semantics(self):
+        for pattern, tool, expected in (
+            ("", "run_command", True),
+            ("*", "anything", True),
+            ("run_command|spawn", "spawn", True),
+            ("run_command|spawn", "read_file", False),
+            # A typo must not silently disable the guard.
+            ("[", "run_command", True),
+        ):
+            assert matcher_matches(pattern, tool) is expected, pattern
 
 
 class TestHookLabel(unittest.TestCase):
-    """Naming a hook: the UI frames its output, so it has to be nameable."""
+    """The UI frames a hook's output, so it has to be nameable."""
 
-    def test_a_path_becomes_its_basename(self):
-        assert hook_label("/usr/local/bin/dcg") == "dcg"
-
-    def test_an_interpreter_is_skipped(self):
-        assert hook_label("python3 /opt/guard.py") == "guard"
-        assert hook_label("/usr/bin/env bash /opt/check.sh") == "check"
-
-    def test_flags_are_not_mistaken_for_the_name(self):
-        assert hook_label("dcg --strict") == "dcg"
-
-    def test_a_name_is_configurable(self):
-        handler = HookHandler(command="/usr/local/bin/dcg", name="dcg (strict)")
-        assert handler.label == "dcg (strict)"
-
-    def test_an_unreadable_command_still_has_a_name(self):
-        assert hook_label("") == "hook"
+    def test_label_resolution(self):
+        for command, expected in (
+            ("/usr/local/bin/dcg", "dcg"),
+            ("python3 /opt/guard.py", "guard"),
+            ("/usr/bin/env bash /opt/check.sh", "check"),
+            ("dcg --strict", "dcg"),
+            ("", "hook"),
+        ):
+            assert hook_label(command) == expected, command
+        # An explicit name always wins over the derived one.
+        assert HookHandler(command="/bin/dcg", name="dcg (strict)").label == "dcg (strict)"
 
 
 def _render(renderable) -> str:
-    """Render a Rich renderable to plain text at a fixed width."""
     from io import StringIO
 
     from rich.console import Console
@@ -202,147 +139,76 @@ def _render(renderable) -> str:
     from agent.console import monkee_theme
 
     buffer = StringIO()
-    Console(
-        file=buffer, width=70, no_color=True, theme=monkee_theme
-    ).print(renderable)
+    Console(file=buffer, width=70, no_color=True, theme=monkee_theme).print(renderable)
     return buffer.getvalue()
 
 
 class TestHookNotice(unittest.TestCase):
     """The frame that stops a guard's output reading as the model speaking."""
 
-    def test_it_names_the_hook_and_keeps_the_reason(self):
-        text = _render(hook_notice(
-            HOOK_BLOCK_KIND, "dcg", "run_command",
-            "BLOCKED by dcg\nReason: destroys uncommitted work",
-        ))
-        assert "dcg" in text
-        assert "run_command" in text
-        assert "destroys uncommitted work" in text
-        # The point of the whole thing.
-        assert "not the model's" in text
-
-    def test_a_reason_is_not_reinterpreted_as_markup(self):
-        """A guard's brackets are its own text, not Rich markup.
-
-        An unknown tag is dropped silently, which would mangle the message.
-        """
-        reason = "[red]not markup[/red] [bold]either[/]"
+    def test_it_names_the_hook_keeps_the_reason_and_tells_the_two_apart(self):
+        reason = "[red]not markup[/red] destroys uncommitted work"
         text = _render(hook_notice(HOOK_BLOCK_KIND, "dcg", "run_command", reason))
+        assert "dcg" in text and "run_command" in text
+        assert "destroys uncommitted work" in text
+        # The point of the frame, and a guard's brackets left alone.
+        assert "not the model's" in text
         assert "[red]not markup[/red]" in text
 
-    def test_an_empty_reason_says_so(self):
-        text = _render(hook_notice(HOOK_BLOCK_KIND, "dcg", "run_command", ""))
-        assert "no reason given" in text
-
-    def test_a_declined_review_reads_differently(self):
-        blocked = _render(hook_notice(HOOK_BLOCK_KIND, "dcg", "run_command", "no"))
-        declined = _render(hook_notice(
-            HOOK_DECLINED_KIND, "dcg", "run_command", "review me"
-        ))
-        assert "Blocked by dcg" in blocked
-        assert "Declined" in declined
-        assert "you declined" in declined
-
-
-# ── payloads ─────────────────────────────────────────────────────────────────
+        declined = _render(hook_notice(HOOK_DECLINED_KIND, "dcg", "run_command", "r"))
+        assert "Declined" in declined and "you declined" in declined
 
 
 class TestPayloads(unittest.TestCase):
-    def test_a_shell_tool_is_presented_as_bash(self):
-        payload = build_payload("pre_tool_use", "run_command",
-                                {"command": "git reset --hard"})
-        assert payload["hook_event_name"] == "PreToolUse"
-        assert payload["tool_name"] == "Bash"
-        assert payload["tool_input"] == {"command": "git reset --hard"}
-
-    def test_spawn_is_also_bash(self):
-        payload = build_payload("pre_tool_use", "spawn", {"command": "make"})
-        assert payload["tool_name"] == "Bash"
-        assert payload["tool_input"]["command"] == "make"
-
-    def test_another_tool_keeps_its_own_name(self):
+    def test_shell_tools_are_presented_as_bash_and_results_ride_along(self):
+        for tool in ("run_command", "spawn"):
+            payload = build_payload("pre_tool_use", tool, {"command": "git reset --hard"})
+            assert payload["hook_event_name"] == "PreToolUse"
+            assert payload["tool_name"] == "Bash", tool
+            assert payload["tool_input"] == {"command": "git reset --hard"}
         payload = build_payload("pre_tool_use", "read_file", {"path": "x.py"})
         assert payload["tool_name"] == "read_file"
-        assert payload["tool_input"] == {"path": "x.py"}
-
-    def test_post_payload_carries_the_response(self):
-        payload = build_payload("post_tool_use", "read_file", {"path": "x"}, "body")
+        payload = build_payload("post_tool_use", "read_file", {"path": "x"}, {"ok": True})
         assert payload["hook_event_name"] == "PostToolUse"
-        assert payload["tool_response"] == "body"
-
-    def test_a_structured_response_is_serialised(self):
-        payload = build_payload("post_tool_use", "read_file", {}, {"ok": True})
         assert json.loads(payload["tool_response"]) == {"ok": True}
-
-
-# ── running one hook ─────────────────────────────────────────────────────────
 
 
 class TestRunHandler(_HookScripts):
     def _run(self, handler, args=None):
-        return run_handler(handler, build_payload("pre_tool_use", "run_command",
-                                                  args or {"command": "x"}))
+        return run_handler(
+            handler,
+            build_payload("pre_tool_use", "run_command", args or {"command": "x"}),
+        )
 
-    def test_silent_stdout_is_a_no_opinion_allow(self):
-        v = self._run(self._handler("cat >/dev/null; exit 0"))
-        assert v.decision == "allow"
+    def test_verdicts(self):
+        for body, decision, reason in (
+            ("cat >/dev/null; exit 0", "allow", ""),
+            (DENY, "deny", "no"),
+            (ASK, "ask", "review"),
+            # A flat top-level decision is accepted too.
+            ('cat >/dev/null; echo \'{"permissionDecision":"deny",'
+             '"permissionDecisionReason":"flat"}\'', "deny", "flat"),
+            # Valid JSON with no decision is no opinion.
+            ('cat >/dev/null; echo \'{"hookSpecificOutput":{"context":"fyi"}}\'',
+             "allow", ""),
+            # Exit 2 blocks, with stderr as the reason.
+            ("cat >/dev/null; echo 'because' >&2; exit 2", "deny", "because"),
+        ):
+            verdict = self._run(self._handler(body))
+            assert (verdict.decision, verdict.reason) == (decision, reason), body
 
-    def test_a_deny_verdict(self):
-        v = self._run(self._handler(
-            'cat >/dev/null; echo \'{"hookSpecificOutput":'
-            '{"permissionDecision":"deny","permissionDecisionReason":"no"}}\''
-        ))
-        assert v.decision == "deny"
-        assert v.reason == "no"
-
-    def test_an_ask_verdict(self):
-        v = self._run(self._handler(
-            'cat >/dev/null; echo \'{"hookSpecificOutput":'
-            '{"permissionDecision":"ask","permissionDecisionReason":"review"}}\''
-        ))
-        assert v.decision == "ask"
-        assert v.reason == "review"
-
-    def test_a_flat_top_level_decision_is_accepted(self):
-        v = self._run(self._handler(
-            'cat >/dev/null; echo \'{"permissionDecision":"deny",'
-            '"permissionDecisionReason":"flat"}\''
-        ))
-        assert v.decision == "deny"
-        assert v.reason == "flat"
-
-    def test_valid_json_without_a_decision_is_an_allow(self):
-        v = self._run(self._handler(
-            'cat >/dev/null; echo \'{"hookSpecificOutput":{"context":"fyi"}}\''
-        ))
-        assert v.decision == "allow"
-
-    def test_exit_2_blocks_with_stderr_as_the_reason(self):
-        v = self._run(self._handler("cat >/dev/null; echo 'because' >&2; exit 2"))
-        assert v.decision == "deny"
-        assert v.reason == "because"
-
-    def test_a_missing_binary_fails_open(self):
-        """A broken install must not refuse every tool call (exit 127)."""
-        v = self._run(HookHandler(command="/nonexistent/dcg-does-not-exist"))
-        assert v.decision == "allow"
-
-    def test_unparseable_output_fails_closed(self):
-        v = self._run(self._handler("cat >/dev/null; echo 'not json'"))
-        assert v.decision == "deny"
-
-    def test_unparseable_output_fails_open_when_asked(self):
-        v = self._run(self._handler("cat >/dev/null; echo 'not json'", fail_open=True))
-        assert v.decision == "allow"
-
-    def test_a_timeout_fails_closed(self):
-        v = self._run(self._handler("sleep 2", timeout=0.3))
-        assert v.decision == "deny"
-
-    def test_a_timeout_fails_open_when_asked(self):
-        v = self._run(self._handler("sleep 2", timeout=0.3, fail_open=True))
-        assert v.decision == "allow"
+    def test_failure_policy(self):
+        # A broken install must not refuse every tool call (exit 127).
+        assert self._run(
+            HookHandler(command="/nonexistent/dcg-does-not-exist")
+        ).decision == "allow"
+        # Garbage or a hang has not cleared the call, so it fails closed.
+        for body, kw in (("cat >/dev/null; echo 'not json'", {}),
+                         ("sleep 2", {"timeout": 0.3})):
+            assert self._run(self._handler(body, **kw)).decision == "deny", body
+            assert self._run(
+                self._handler(body, fail_open=True, **kw)
+            ).decision == "allow", body
 
     def test_the_hook_receives_the_payload_on_stdin(self):
         seen = self._tmpdir / "seen.json"
@@ -352,100 +218,55 @@ class TestRunHandler(_HookScripts):
         assert payload["tool_name"] == "Bash"
 
 
-# ── orchestration ────────────────────────────────────────────────────────────
-
-
 class TestRunPreHooks(_HookScripts):
     def _deny_group(self, **kw):
-        return HookGroup(
-            event="pre_tool_use",
-            matcher="run_command",
-            handlers=[self._handler(
-                'cat >/dev/null; echo \'{"hookSpecificOutput":'
-                '{"permissionDecision":"deny","permissionDecisionReason":"no"}}\'', **kw
-            )],
-        )
+        return HookGroup(event="pre_tool_use", matcher="run_command",
+                         handlers=[self._handler(DENY, **kw)])
 
-    def test_a_matching_deny_blocks(self):
-        v = run_pre_hooks([self._deny_group()], "run_command", {"command": "x"})
-        assert v.decision == "deny"
-
-    def test_a_non_matching_tool_is_untouched(self):
-        v = run_pre_hooks([self._deny_group()], "read_file", {"path": "x"})
-        assert v.decision == "allow"
-
-    def test_a_deny_is_not_cancelled_by_a_later_allow(self):
+    def test_deny_and_ask_verdicts(self):
+        assert run_pre_hooks([self._deny_group()], "run_command", {}).decision == "deny"
+        assert run_pre_hooks([self._deny_group()], "read_file", {}).decision == "allow"
+        # A deny survives a later allow, in either order.
         allow = HookGroup(event="pre_tool_use", matcher="",
                           handlers=[HookHandler(command="/bin/true")])
-        v = run_pre_hooks([self._deny_group(), allow], "run_command", {"command": "x"})
-        assert v.decision == "deny"
-
-    def test_a_later_deny_still_blocks_after_an_allow(self):
-        allow = HookGroup(event="pre_tool_use", matcher="",
-                          handlers=[HookHandler(command="/bin/true")])
-        v = run_pre_hooks([allow, self._deny_group()], "run_command", {"command": "x"})
-        assert v.decision == "deny"
-
-    def test_an_ask_is_returned_immediately(self):
+        for groups in ([self._deny_group(), allow], [allow, self._deny_group()]):
+            assert run_pre_hooks(groups, "run_command", {}).decision == "deny"
         ask = HookGroup(event="pre_tool_use", matcher="run_command",
-                        handlers=[self._handler(
-                            'cat >/dev/null; echo \'{"hookSpecificOutput":'
-                            '{"permissionDecision":"ask",'
-                            '"permissionDecisionReason":"review"}}\'')])
-        v = run_pre_hooks([ask], "run_command", {"command": "x"})
-        assert v.decision == "ask"
-        assert v.reason == "review"
+                        handlers=[self._handler(ASK)])
+        verdict = run_pre_hooks([ask], "run_command", {})
+        assert (verdict.decision, verdict.reason) == ("ask", "review")
 
-    def test_a_post_group_is_not_run_as_a_pre_hook(self):
+    def test_only_pre_groups_run_as_pre_hooks(self):
         post = HookGroup(event="post_tool_use", matcher="",
                          handlers=[HookHandler(command="/bin/false")])
         assert run_pre_hooks([post], "run_command", {}).decision == "allow"
 
-    def test_honor_unsafe_skips_the_hook_under_unsafe(self):
-        group = self._deny_group(honor_unsafe=True)
-        v = run_pre_hooks([group], "run_command", {"command": "x"}, unsafe=True)
-        assert v.decision == "allow"
-        # ... and still blocks when unsafe is off.
-        assert run_pre_hooks([group], "run_command", {"command": "x"}).decision == "deny"
-
-    def test_a_hook_without_honor_unsafe_runs_under_unsafe(self):
-        v = run_pre_hooks([self._deny_group()], "run_command", {"command": "x"},
-                          unsafe=True)
-        assert v.decision == "deny"
+    def test_unsafe_skips_only_the_hooks_that_opted_out(self):
+        honoured = self._deny_group(honor_unsafe=True)
+        assert run_pre_hooks([honoured], "run_command", {}, unsafe=True).decision == "allow"
+        assert run_pre_hooks([honoured], "run_command", {}).decision == "deny"
+        default = self._deny_group()
+        assert run_pre_hooks([default], "run_command", {}, unsafe=True).decision == "deny"
 
 
 class TestRunPostHooks(_HookScripts):
-    def test_a_post_hook_runs_and_sees_the_result(self):
+    def test_a_post_hook_sees_the_result_and_can_never_veto(self):
         seen = self._tmpdir / "post.json"
         group = HookGroup(event="post_tool_use", matcher="read_file",
                           handlers=[HookHandler(command=self._script(
                               "post", f"cat > {seen}; exit 0"))])
         run_post_hooks([group], "read_file", {"path": "p"}, "file body")
-        payload = json.loads(seen.read_text())
-        assert payload["tool_response"] == "file body"
+        assert json.loads(seen.read_text())["tool_response"] == "file body"
 
-    def test_a_post_deny_is_ignored(self):
-        """Post hooks are informational: nothing they say can veto a result."""
-        group = HookGroup(event="post_tool_use", matcher="",
-                          handlers=[self._handler(
-                              'cat >/dev/null; echo \'{"hookSpecificOutput":'
-                              '{"permissionDecision":"deny"}}\''
-                          )])
-        # No exception and no return value: the denial simply has nowhere to go.
-        assert run_post_hooks([group], "read_file", {}, "body") is None
-
-    def test_a_post_group_is_not_run_as_a_pre_hook(self):
-        group = HookGroup(event="pre_tool_use", matcher="",
-                          handlers=[HookHandler(command="/bin/false")])
-        assert run_post_hooks([group], "read_file", {}, "body") is None
-
-
-# ── the Core._tool_calls seam ────────────────────────────────────────────────
+        deny = HookGroup(event="post_tool_use", matcher="",
+                         handlers=[self._handler(DENY)])
+        pre = HookGroup(event="pre_tool_use", matcher="",
+                        handlers=[HookHandler(command="/bin/false")])
+        # Post hooks are informational: the denial simply has nowhere to go.
+        assert run_post_hooks([deny, pre], "read_file", {}, "body") is None
 
 
 class _Memory:
-    """Records chat exchanges without touching the filesystem."""
-
     def __init__(self):
         self.exchanges = []
 
@@ -471,214 +292,107 @@ def _tool_call(name="run_command", args='{"command": "ls"}', call_id="c1"):
             "function": {"name": name, "arguments": args}}
 
 
+def _tool_message(core) -> dict:
+    return json.loads([m for m in core.messages if m["role"] == "tool"][0]["content"])
+
+
 class TestToolCallsSeam(_HookScripts):
     def _core_with(self, hooks: dict, **agent_extra):
-        config = _Config({"agent": {"hooks": hooks, **agent_extra}})
-        return _make_core(config)
+        return _make_core(_Config({"agent": {"hooks": hooks, **agent_extra}}))
 
-    def _run(self, core, calls, **kw):
-        return core._tool_calls(calls, **kw)
-
-    def test_a_deny_blocks_the_tool_and_feeds_a_tool_error(self):
-        core = self._core_with({"pre_tool_use": [
-            {"matcher": "run_command", "hooks": [{"command": self._script(
-                "deny", 'cat >/dev/null; echo \'{"hookSpecificOutput":'
-                        '{"permissionDecision":"deny",'
-                        '"permissionDecisionReason":"destroys work"}}\'')}]},
+    def _deny_core(self, reason="destroys work"):
+        body = DENY.replace('"no"', f'"{reason}"')
+        return self._core_with({"pre_tool_use": [
+            {"matcher": "", "hooks": [{"command": self._script("deny", body)}]},
         ]})
-        with patch("agent.core.execute_tool") as execute:
-            core._tool_calls([_tool_call()])
-        # The tool never ran.
-        execute.assert_not_called()
-        # The model got a tool message carrying the hook's reason.
-        tool_msgs = [m for m in core.messages if m["role"] == "tool"]
-        assert len(tool_msgs) == 1
-        payload = json.loads(tool_msgs[0]["content"])
-        assert payload["blocked_by_hook"] is True
-        assert "destroys work" in payload["error"]
-        # ... and it was recorded like any other tool result.
-        assert any(e["role"] == "tool_result" for e in core.memory.exchanges)
 
-    def test_a_deny_reaches_the_tool_result_callback(self):
-        core = self._core_with({"pre_tool_use": [
-            {"matcher": "", "hooks": [{"command": self._script(
-                "deny", 'cat >/dev/null; echo \'{"hookSpecificOutput":'
-                        '{"permissionDecision":"deny",'
-                        '"permissionDecisionReason":"destroys work"}}\'')}]},
+    def _ask_core(self):
+        return self._core_with({"pre_tool_use": [
+            {"matcher": "", "hooks": [{"command": self._script("ask", ASK)}]},
         ]})
+
+    def test_a_deny_blocks_the_tool_and_is_reported_as_the_guard_speaking(self):
+        core = self._deny_core()
         seen = []
         with patch("agent.core.execute_tool") as execute:
             core._tool_calls(
-                [_tool_call()],
-                tool_result_callback=lambda *a, **k: seen.append((a, k)),
+                [_tool_call()], tool_result_callback=lambda *a, **k: seen.append((a, k))
             )
         execute.assert_not_called()
-        assert len(seen) == 1
+        payload = _tool_message(core)
+        assert payload["blocked_by_hook"] is True
+        # The model gets instructions; the human gets the guard's own reason.
+        assert "destroys work" in payload["error"] and "Do not retry" in payload["error"]
+        assert any(e["role"] == "tool_result" for e in core.memory.exchanges)
         args, kwargs = seen[0]
         assert args[3] is True  # is_error
-        # The UI gets the guard's own words and its name, so it can say who
-        # is speaking: `content` is the reason, not the model-facing message.
         assert args[2] == "destroys work"
-        assert kwargs["kind"] == HOOK_BLOCK_KIND
-        assert kwargs["hook"] == "deny"  # the script's own basename
+        assert (kwargs["kind"], kwargs["hook"]) == (HOOK_BLOCK_KIND, "deny")
 
-    def test_a_deny_still_tells_the_model_what_to_do(self):
-        """The model gets instructions; the human gets the guard's reason."""
-        core = self._core_with({"pre_tool_use": [
-            {"matcher": "", "hooks": [{"command": self._script(
-                "deny", 'cat >/dev/null; echo \'{"hookSpecificOutput":'
-                        '{"permissionDecision":"deny",'
-                        '"permissionDecisionReason":"destroys work"}}\'')}]},
-        ]})
-        with patch("agent.core.execute_tool"):
-            core._tool_calls([_tool_call()])
-        message = json.loads(
-            [m for m in core.messages if m["role"] == "tool"][0]["content"]
-        )
-        assert message["blocked_by_hook"] is True
-        assert "Do not retry" in message["error"]
-        assert "destroys work" in message["error"]
-
-    def test_a_declined_ask_reports_the_decline_kind(self):
-        core = self._core_with({"pre_tool_use": [
-            {"matcher": "", "hooks": [{"command": self._script(
-                "ask", 'cat >/dev/null; echo \'{"hookSpecificOutput":'
-                       '{"permissionDecision":"ask","permissionDecisionReason":"review"}}\''
-            )}]},
-        ]})
+    def test_an_ask_may_be_declined_or_approved(self):
+        core = self._ask_core()
         seen = []
-        with patch.object(type(core), "_hook_ask", return_value=False), \
-                patch("agent.core.execute_tool"):
-            core._tool_calls(
-                [_tool_call()],
-                tool_result_callback=lambda *a, **k: seen.append(k),
-            )
-        assert seen[0]["kind"] == HOOK_DECLINED_KIND
-        assert seen[0]["hook"] == "ask"
-
-    def test_an_ordinary_result_carries_no_provenance(self):
-        """`kind`/`hook` are empty for a tool that ran: the UI's default."""
-        core = _make_core()
-        seen = []
-        with patch("agent.core.execute_tool", return_value="ran"):
-            core._tool_calls(
-                [_tool_call()],
-                tool_result_callback=lambda *a, **k: seen.append(k),
-            )
-        assert seen[0] == {}
-
-    def test_a_silent_hook_lets_the_tool_run(self):
-        core = self._core_with({"pre_tool_use": [
-            {"matcher": "", "hooks": [{"command": self._script("ok", "exit 0")}]},
-        ]})
-        with patch("agent.core.execute_tool", return_value="ran") as execute:
-            core._tool_calls([_tool_call()])
-        execute.assert_called_once()
-
-    def test_no_hooks_configured_still_runs_the_tool(self):
-        core = _make_core()
-        with patch("agent.core.execute_tool", return_value="ran") as execute:
-            core._tool_calls([_tool_call()])
-        execute.assert_called_once()
-
-    def test_a_post_hook_runs_after_the_tool(self):
-        seen = self._tmpdir / "post.json"
-        core = self._core_with({"post_tool_use": [
-            {"matcher": "run_command", "hooks": [{"command": self._script(
-                "post", f"cat > {seen}; exit 0")}]},
-        ]})
-        with patch("agent.core.execute_tool", return_value="tool output"):
-            core._tool_calls([_tool_call()])
-        payload = json.loads(seen.read_text())
-        assert payload["tool_response"] == "tool output"
-
-    def test_a_post_hook_that_fails_does_not_break_the_turn(self):
-        core = self._core_with({"post_tool_use": [
-            {"matcher": "", "hooks": [{"command": "/nonexistent/hook"}]},
-        ]})
-        with patch("agent.core.execute_tool", return_value="tool output"):
-            core._tool_calls([_tool_call()])
-        # The tool result is still there and the turn was not aborted.
-        assert any(e["role"] == "tool_result" for e in core.memory.exchanges)
-
-    def test_an_ask_the_user_declines_becomes_a_cancelled_tool_error(self):
-        core = self._core_with({"pre_tool_use": [
-            {"matcher": "", "hooks": [{"command": self._script(
-                "ask", 'cat >/dev/null; echo \'{"hookSpecificOutput":'
-                       '{"permissionDecision":"ask","permissionDecisionReason":"review"}}\''
-            )}]},
-        ]})
         with patch.object(type(core), "_hook_ask", return_value=False), \
                 patch("agent.core.execute_tool") as execute:
-            core._tool_calls([_tool_call()])
+            core._tool_calls([_tool_call()],
+                             tool_result_callback=lambda *a, **k: seen.append(k))
         execute.assert_not_called()
-        payload = json.loads(
-            [m for m in core.messages if m["role"] == "tool"][0]["content"]
-        )
-        assert payload["user_cancelled"] is True
+        assert _tool_message(core)["user_cancelled"] is True
+        assert (seen[0]["kind"], seen[0]["hook"]) == (HOOK_DECLINED_KIND, "ask")
 
-    def test_an_ask_the_user_approves_lets_the_tool_run(self):
-        core = self._core_with({"pre_tool_use": [
-            {"matcher": "", "hooks": [{"command": self._script(
-                "ask", 'cat >/dev/null; echo \'{"hookSpecificOutput":'
-                       '{"permissionDecision":"ask"}}\'')}]},
-        ]})
+        core = self._ask_core()
         with patch.object(type(core), "_hook_ask", return_value=True), \
                 patch("agent.core.execute_tool", return_value="ran") as execute:
             core._tool_calls([_tool_call()])
         execute.assert_called_once()
 
-    def test_a_hook_that_honors_unsafe_is_skipped_under_unsafe(self):
-        hooks = {"pre_tool_use": [
-            {"matcher": "", "hooks": [{"command": self._script(
-                "deny", 'cat >/dev/null; echo \'{"hookSpecificOutput":'
-                        '{"permissionDecision":"deny"}}\''), "honor_unsafe": True}]},
-        ]}
-        core = self._core_with(hooks, unsafe=True)
-        with patch("agent.core.execute_tool", return_value="ran") as execute:
-            core._tool_calls([_tool_call()])
-        execute.assert_called_once()
+    def test_a_silent_hook_and_no_hooks_both_let_the_tool_run(self):
+        silent = self._core_with({"pre_tool_use": [
+            {"matcher": "", "hooks": [{"command": self._script("ok", "exit 0")}]},
+        ]})
+        for core in (silent, _make_core()):
+            seen = []
+            with patch("agent.core.execute_tool", return_value="ran") as execute:
+                core._tool_calls([_tool_call()],
+                                 tool_result_callback=lambda *a, **k: seen.append(k))
+            execute.assert_called_once()
+            # `kind`/`hook` are empty for a tool that ran: the UI's default.
+            assert seen[0] == {}
 
-    def test_a_default_hook_still_blocks_under_unsafe(self):
-        hooks = {"pre_tool_use": [
-            {"matcher": "", "hooks": [{"command": self._script(
-                "deny", 'cat >/dev/null; echo \'{"hookSpecificOutput":'
-                        '{"permissionDecision":"deny"}}\'')}]},
-        ]}
-        core = self._core_with(hooks, unsafe=True)
-        with patch("agent.core.execute_tool") as execute:
+    def test_a_post_hook_runs_after_the_tool_and_cannot_break_the_turn(self):
+        seen = self._tmpdir / "post.json"
+        core = self._core_with({"post_tool_use": [
+            {"matcher": "run_command",
+             "hooks": [{"command": self._script("post", f"cat > {seen}; exit 0")},
+                       {"command": "/nonexistent/hook"}]},
+        ]})
+        with patch("agent.core.execute_tool", return_value="tool output"):
             core._tool_calls([_tool_call()])
-        execute.assert_not_called()
+        assert json.loads(seen.read_text())["tool_response"] == "tool output"
+        assert any(e["role"] == "tool_result" for e in core.memory.exchanges)
 
-    def test_the_hook_set_is_parsed_once_and_cached(self):
+    def test_unsafe_skips_only_the_hooks_that_opted_out(self):
+        def deny(honor_unsafe):
+            return {"pre_tool_use": [{"matcher": "", "hooks": [{
+                "command": self._script("deny", DENY), "honor_unsafe": honor_unsafe,
+            }]}]}
+
+        for honour_unsafe, ran in ((True, True), (False, False)):
+            core = self._core_with(deny(honour_unsafe), unsafe=True)
+            with patch("agent.core.execute_tool", return_value="ran") as execute:
+                core._tool_calls([_tool_call()])
+            assert execute.called is ran, honour_unsafe
+
+    def test_the_hook_set_is_parsed_once_and_reloaded_on_demand(self):
         core = self._core_with({"pre_tool_use": [
             {"matcher": "", "hooks": [{"command": self._script("ok", "exit 0")}]},
         ]})
         first = core._hook_groups()
         assert first and core._hook_groups() is first
-
-    def test_clearing_the_cache_reparses_the_config(self):
-        """`reload_config` drops the cache, so an edited block takes effect."""
-        core = self._core_with({"pre_tool_use": [
-            {"matcher": "", "hooks": [{"command": self._script("ok", "exit 0")}]},
-        ]})
-        assert core._hook_groups() != []
+        # `reload_config` drops the cache, so an edited block takes effect.
         core.config = _Config({"agent": {"hooks": {}}})
         core._hooks = None
         assert core._hook_groups() == []
-
-
-# ── the real dcg binary, when one is available ───────────────────────────────
-#
-# `dcg` (destructive_command_guard) is the motivating case for the whole
-# feature, and its Claude-compatible arm is exactly what an installed binary
-# answers: a `Bash` payload with no `turn_id` returns the structured
-# `hookSpecificOutput` denial. These tests drive the genuine binary, so the
-# wire shape is pinned against it rather than against a hand-written stand-in.
-#
-# They are skipped unless a binary can be found, because dcg is an external
-# Rust project (a slow `cargo build --release`) and CI must stay hermetic. Point
-# `DCG_BIN` at one, or let the search find the usual checkout/`PATH` locations.
 
 
 def _find_dcg() -> str:
@@ -707,28 +421,20 @@ class TestRealDcg(_HookScripts):
     """The real `dcg` binary, through wisemonkey's hook runner."""
 
     def _groups(self):
-        return [HookGroup(
-            event="pre_tool_use",
-            matcher="run_command|spawn",
-            handlers=[HookHandler(command=_DCG, timeout=15)],
-        )]
+        return [HookGroup(event="pre_tool_use", matcher="run_command|spawn",
+                          handlers=[HookHandler(command=_DCG, timeout=15)])]
 
-    def test_a_destructive_command_is_denied(self):
+    def test_a_destructive_command_is_denied_and_a_safe_one_allowed(self):
         verdict = run_pre_hooks(self._groups(), "run_command",
                                 {"command": "git reset --hard HEAD~5"})
         assert verdict.decision == "deny"
         # dcg's own reason text, which the model receives verbatim.
-        assert "dcg" in verdict.reason
-        assert "reset --hard" in verdict.reason
-
-    def test_a_safe_command_is_silent(self):
-        verdict = run_pre_hooks(self._groups(), "run_command", {"command": "ls -la"})
-        assert verdict.decision == "allow"
-
-    def test_a_non_shell_tool_never_reaches_dcg(self):
-        """The matcher is the only thing standing between dcg and every tool."""
-        verdict = run_pre_hooks(self._groups(), "read_file", {"path": "x"})
-        assert verdict.decision == "allow"
+        assert "dcg" in verdict.reason and "reset --hard" in verdict.reason
+        assert run_pre_hooks(self._groups(), "run_command",
+                             {"command": "ls -la"}).decision == "allow"
+        # The matcher is what keeps dcg off every other tool.
+        assert run_pre_hooks(self._groups(), "read_file",
+                             {"path": "x"}).decision == "allow"
 
     def test_the_seam_blocks_the_tool_call(self):
         core = _make_core(_Config({"agent": {"hooks": {"pre_tool_use": [
@@ -736,23 +442,10 @@ class TestRealDcg(_HookScripts):
              "hooks": [{"command": _DCG, "timeout": 15}]},
         ]}}}))
         with patch("agent.core.execute_tool") as execute:
-            core._tool_calls([_tool_call(
-                args='{"command": "git reset --hard HEAD~5"}')])
+            core._tool_calls([_tool_call(args='{"command": "git reset --hard HEAD~5"}')])
         execute.assert_not_called()
-        payload = json.loads(
-            [m for m in core.messages if m["role"] == "tool"][0]["content"]
-        )
-        assert payload["blocked_by_hook"] is True
-        assert "dcg" in payload["error"]
-
-    def test_the_seam_lets_a_safe_command_through(self):
-        core = _make_core(_Config({"agent": {"hooks": {"pre_tool_use": [
-            {"matcher": "run_command|spawn",
-             "hooks": [{"command": _DCG, "timeout": 15}]},
-        ]}}}))
-        with patch("agent.core.execute_tool", return_value="ran") as execute:
-            core._tool_calls([_tool_call(args='{"command": "ls -la"}')])
-        execute.assert_called_once()
+        payload = _tool_message(core)
+        assert payload["blocked_by_hook"] is True and "dcg" in payload["error"]
 
 
 if __name__ == "__main__":

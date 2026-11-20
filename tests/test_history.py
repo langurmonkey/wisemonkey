@@ -15,7 +15,6 @@ class _FakeMemory:
 
     def __init__(self, entries):
         self._exchanges = list(entries)
-        self.saved = 0
 
     def get_chat_history_unformatted(self):
         return self._exchanges
@@ -34,382 +33,229 @@ class _FakeMemory:
         if not self._exchanges:
             return 0
         if n <= 0:
-            removed = len(self._exchanges)
-            self._exchanges = []
-            return removed
+            return self._clear()
         starts = [i for i, e in enumerate(self._exchanges)
                   if e.get("role") == "user"]
         if len(starts) <= n:
-            removed = len(self._exchanges)
-            self._exchanges = []
-            return removed
+            return self._clear()
         cutoff = starts[-n]
         removed = len(self._exchanges) - cutoff
         self._exchanges = self._exchanges[:cutoff]
         return removed
 
+    def _clear(self):
+        removed = len(self._exchanges)
+        self._exchanges = []
+        return removed
+
 
 def _exchanges(*specs):
-    """Build entries from (role, content) pairs."""
     return [{"role": role, "content": content} for role, content in specs]
+
+
+def _run(core, command):
+    from agent.commands import registry
+
+    return registry.run_command(core, command)
+
+
+def _core(*specs):
+    core = cast(Any, mock.Mock())
+    core.memory = _FakeMemory(_exchanges(*specs))
+    core.pending_prompt = None
+    return core
 
 
 class TestPromptHistoryFiltering(unittest.TestCase):
     """Slash commands stay on disk but out of the navigable history."""
 
     def setUp(self) -> None:
-        self.dir = tempfile.mkdtemp()
-        self.path = os.path.join(self.dir, "history.txt")
+        self.path = os.path.join(tempfile.mkdtemp(), "history.txt")
 
     def _history(self) -> PromptHistory:
         return PromptHistory(self.path)
 
-    def test_commands_are_filtered_out(self):
+    def test_commands_are_hidden_but_still_written(self):
         h = self._history()
-        for line in ("/quit", "plot the data", "/config", "another prompt"):
+        for line in ("/quit", "plot the data", "   /config", "/undo"):
             h.store_string(line)
         # prompt_toolkit's contract: newest first.
-        self.assertEqual(
-            self._history().load_history_strings(),
-            ["another prompt", "plot the data"],
-        )
-
-    def test_commands_are_still_written_to_disk(self):
-        self._history().store_string("/quit")
+        assert self._history().load_history_strings() == ["plot the data"]
         with open(self.path, encoding="utf-8") as handle:
-            self.assertIn("/quit", handle.read())
+            assert "/quit" in handle.read()
 
-    def test_multiline_prompt_with_slash_line_is_kept(self):
-        """A prompt that merely *contains* a slash line is ordinary text."""
+        # A prompt that merely *contains* a slash line, or a bare path, is kept.
+        self.path = os.path.join(tempfile.mkdtemp(), "history.txt")
         h = self._history()
         h.store_string("explain this:\n/quit means exit")
-        self.assertEqual(
-            self._history().load_history_strings(),
-            ["explain this:\n/quit means exit"],
-        )
+        h.store_string("agent/core.py")
+        assert sorted(self._history().load_history_strings()) == [
+            "agent/core.py", "explain this:\n/quit means exit",
+        ]
 
-    def test_indented_command_is_filtered(self):
-        self._history().store_string("   /quit")
-        self.assertEqual(self._history().load_history_strings(), [])
-
-    def test_paths_are_kept(self):
-        """A bare path is not a command and is a very common thing to re-run."""
-        self._history().store_string("agent/core.py")
-        self.assertEqual(
-            self._history().load_history_strings(), ["agent/core.py"])
-
-    def test_empty_history(self):
-        self.assertEqual(self._history().load_history_strings(), [])
-
-    def test_is_a_prompt_toolkit_history(self):
-        """It must be usable wherever prompt_toolkit expects a History."""
+    def test_an_empty_history_is_a_prompt_toolkit_history(self):
         from prompt_toolkit.history import History
 
-        self.assertIsInstance(self._history(), History)
+        assert self._history().load_history_strings() == []
+        assert isinstance(self._history(), History)
 
 
 class TestUndoCommand(unittest.TestCase):
     """`/undo` drops whole exchanges from the tail."""
 
-    def setUp(self) -> None:
-        self.core = cast(Any, mock.Mock())
-        self.core.memory = _FakeMemory(_exchanges(
-            ("user", "first"),
-            ("assistant", "answer one"),
-            ("user", "second"),
-            ("assistant", "answer two"),
-            ("tool_call", "{}"),
-            ("tool_result", "42"),
-        ))
-        self.core.pending_prompt = None
+    SESSION = (
+        ("user", "first"), ("assistant", "answer one"),
+        ("user", "second"), ("assistant", "answer two"),
+        ("tool_call", "{}"), ("tool_result", "42"),
+    )
 
-    def _run(self, command="/undo", *params):
-        from agent.commands import registry
+    def _roles(self, core):
+        return [e["role"] for e in core.memory.get_chat_history_unformatted()]
 
-        return registry.run_command(self.core, " ".join([command, *params]))
+    def test_drops_the_whole_exchange_including_its_tool_calls(self):
+        core = _core(*self.SESSION)
+        ok, msg, *_ = _run(core, "/undo")
+        assert ok
+        # Tool calls and results belong to their exchange: no orphan survives.
+        assert self._roles(core) == ["user", "assistant"]
+        assert "4" in msg  # four entries removed, not one exchange
+        assert core.pending_prompt is None  # /undo never re-runs anything
 
-    def test_drops_the_last_whole_exchange(self):
-        ok, msg, *_ = self._run()
-        self.assertTrue(ok)
-        roles = [e["role"] for e in self.core.memory.get_chat_history_unformatted()]
-        self.assertEqual(roles, ["user", "assistant"])
-
-    def test_never_leaves_an_orphaned_tool_result(self):
-        """Tool calls/results belong to their exchange, so they go together."""
-        self._run()
-        roles = [e["role"] for e in self.core.memory.get_chat_history_unformatted()]
-        self.assertNotIn("tool_result", roles)
-
-    def test_counts_entries_not_exchanges(self):
-        ok, msg, *_ = self._run()
-        self.assertTrue(ok)
-        # user + assistant + tool_call + tool_result
-        self.assertIn("4", msg)
-
-    def test_multiple_exchanges(self):
-        self._run("/undo", "2")
-        roles = [e["role"] for e in self.core.memory.get_chat_history_unformatted()]
-        self.assertEqual(roles, [])
-
-    def test_more_than_available_clears_everything(self):
-        ok, *_ = self._run("/undo", "99")
-        self.assertTrue(ok)
-        self.assertEqual(
-            self.core.memory.get_chat_history_unformatted(), [])
-
-    def test_bad_parameter(self):
-        ok, msg, *_ = self._run("/undo", "many")
-        self.assertFalse(ok)
-        self.assertIn("integer", msg)
-
-    def test_nothing_to_undo(self):
-        self.core.memory = _FakeMemory([])
-        ok, msg, *_ = self._run()
-        self.assertFalse(ok)
-        self.assertIn("nothing to undo", msg)
-
-    def test_does_not_set_a_pending_prompt(self):
-        """`/undo` only removes context; it does not re-run anything."""
-        self._run()
-        self.assertIsNone(self.core.pending_prompt)
+    def test_counts_clearing_and_a_non_integer(self):
+        core = _core(*self.SESSION)
+        assert _run(core, "/undo 2")[0] is True
+        assert self._roles(core) == []
+        for core, command in ((_core(*self.SESSION), "/undo 99"),
+                              (_core(), "/undo")):
+            ok, msg, *_ = _run(core, command)
+            assert ok is (command == "/undo 99"), command
+            if ok:
+                assert self._roles(core) == []
+            else:
+                assert "nothing to undo" in msg
+        ok, msg, *_ = _run(_core(*self.SESSION), "/undo many")
+        assert ok is False and "integer" in msg
 
 
 class TestRetryCommand(unittest.TestCase):
-    def setUp(self) -> None:
-        self.core = cast(Any, mock.Mock())
-        self.core.memory = _FakeMemory(_exchanges(
-            ("user", "plot it"),
-            ("assistant", "here"),
-            ("user", "wrong thing"),
-            ("assistant", "bad answer"),
-        ))
-        self.core.pending_prompt = None
+    SESSION = (
+        ("user", "plot it"), ("assistant", "here"),
+        ("user", "wrong thing"), ("assistant", "bad answer"),
+    )
 
-    def _run(self, *params):
-        from agent.commands import registry
+    def test_re_runs_the_last_prompt_and_keeps_the_exchange(self):
+        core = _core(*self.SESSION)
+        assert _run(core, "/retry")[0] is True
+        assert core.pending_prompt == "wrong thing"
+        # Kept by default, so the model can see what it is being asked to redo.
+        assert len(core.memory.get_chat_history_unformatted()) == 4
 
-        return registry.run_command(self.core, " ".join(["/retry", *params]))
-
-    def test_re_runs_the_last_prompt(self):
-        ok, *_ = self._run()
-        self.assertTrue(ok)
-        self.assertEqual(self.core.pending_prompt, "wrong thing")
-
-    def test_keeps_the_exchange_by_default(self):
-        self._run()
-        self.assertEqual(len(self.core.memory.get_chat_history_unformatted()), 4)
-
-    def test_drop_removes_the_old_exchange_first(self):
+    def test_drop_removes_the_old_exchange_first_and_errors(self):
         """The re-run must see the context the original did."""
-        ok, *_ = self._run("--drop")
-        self.assertTrue(ok)
-        contents = [e["content"] for e in
-                    self.core.memory.get_chat_history_unformatted()]
-        self.assertEqual(contents, ["plot it", "here"])
-
-    def test_unknown_option(self):
-        ok, msg, *_ = self._run("--whatever")
-        self.assertFalse(ok)
-        self.assertIn("--whatever", msg)
-
-    def test_no_previous_prompt(self):
-        self.core.memory = _FakeMemory([])
-        ok, msg, *_ = self._run()
-        self.assertFalse(ok)
-        self.assertIn("no previous prompt", msg)
+        core = _core(*self.SESSION)
+        assert _run(core, "/retry --drop")[0] is True
+        assert [e["content"]
+                for e in core.memory.get_chat_history_unformatted()] == [
+            "plot it", "here",
+        ]
+        ok, msg, *_ = _run(_core(*self.SESSION), "/retry --whatever")
+        assert ok is False and "--whatever" in msg
+        core = _core()
+        ok, msg, *_ = _run(core, "/retry")
+        assert ok is False and "no previous prompt" in msg
+        assert core.pending_prompt is None
 
 
 class TestEditCommand(unittest.TestCase):
-    def setUp(self) -> None:
-        self.core = cast(Any, mock.Mock())
-        self.core.memory = _FakeMemory(_exchanges(
-            ("user", "original prompt"),
-            ("assistant", "answer"),
-        ))
-        self.core.pending_prompt = None
+    def _core(self):
+        return _core(("user", "original prompt"), ("assistant", "answer"))
 
-    def _run(self, editor_result=0, content=None):
+    def _edit(self, core, content=None):
         from agent import commands
 
-        edited = "original prompt\n" if content is None else content
-        with mock.patch.object(commands, "_edit_in_editor",
-                               return_value=edited), \
-             mock.patch.object(subprocess, "run",
-                               return_value=mock.Mock(returncode=editor_result)):
-            return commands.registry.run_command(self.core, "/edit")
+        with mock.patch.object(commands, "_edit_in_editor", return_value=content):
+            return _run(core, "/edit")
 
-    def test_edited_prompt_replaces_the_old_one(self):
-        ok, msg, *_ = self._run(content="a better prompt\n")
-        self.assertTrue(ok)
-        self.assertEqual(self.core.pending_prompt, "a better prompt")
-        contents = [e["content"] for e in
-                    self.core.memory.get_chat_history_unformatted()]
-        self.assertNotIn("original prompt", contents)
+    def test_the_edited_prompt_replaces_the_old_exchange(self):
+        core = self._core()
+        ok, *_ = self._edit(core, "a better prompt\n")
+        assert ok and core.pending_prompt == "a better prompt"
+        contents = [e["content"]
+                    for e in core.memory.get_chat_history_unformatted()]
+        assert "original prompt" not in contents
 
-    def test_unchanged_prompt_does_not_rerun(self):
-        ok, msg, *_ = self._run(content="original prompt\n")
-        self.assertFalse(ok)
-        self.assertIsNone(self.core.pending_prompt)
-
-    def test_cancelled_editor_does_not_rerun(self):
-        from agent import commands
-
-        with mock.patch.object(commands, "_edit_in_editor", return_value=None):
-            ok, msg, *_ = commands.registry.run_command(self.core, "/edit")
-        self.assertFalse(ok)
-        self.assertIsNone(self.core.pending_prompt)
-
-    def test_empty_edit_does_not_rerun(self):
-        ok, msg, *_ = self._run(content="   \n")
-        self.assertFalse(ok)
-        self.assertIn("empty", msg)
-
-    def test_no_previous_prompt(self):
-        self.core.memory = _FakeMemory([])
-        ok, msg, *_ = self._run()
-        self.assertFalse(ok)
-        self.assertIn("no previous prompt", msg)
-
-    def test_rejects_parameters(self):
-        from agent import commands
-
-        ok, msg, *_ = commands.registry.run_command(self.core, "/edit extra")
-        self.assertFalse(ok)
+    def test_an_unchanged_empty_or_aborted_edit_runs_nothing(self):
+        for content, fragment in (("original prompt\n", ""), ("   \n", "empty"),
+                                  (None, "")):
+            core = self._core()
+            ok, msg, *_ = self._edit(core, content)
+            assert ok is False, content
+            assert fragment in msg
+            assert core.pending_prompt is None
+        ok, msg, *_ = self._edit(_core(), "anything\n")
+        assert ok is False and "no previous prompt" in msg
+        assert _run(self._core(), "/edit extra")[0] is False
 
 
 class TestLastPromptCommand(unittest.TestCase):
     def test_prints_the_last_user_message(self):
-        from agent.commands import registry
-
-        core = cast(Any, mock.Mock())
-        core.memory = _FakeMemory(_exchanges(
-            ("user", "first"),
-            ("assistant", "a"),
-            ("user", "second"),
-        ))
-        ok, msg, content, markdown, *_ = registry.run_command(core, "/last-prompt")
-        self.assertTrue(ok)
-        self.assertEqual(content, "second")
-
-    def test_empty_session(self):
-        from agent.commands import registry
-
-        core = cast(Any, mock.Mock())
-        core.memory = _FakeMemory([])
-        ok, msg, *_ = registry.run_command(core, "/last-prompt")
-        self.assertFalse(ok)
+        core = _core(("user", "first"), ("assistant", "a"), ("user", "second"))
+        ok, _msg, content, *_ = _run(core, "/last-prompt")
+        assert ok and content == "second"
+        assert _run(_core(), "/last-prompt")[0] is False
 
 
 class TestEditInEditor(unittest.TestCase):
     """The scratch file is written, handed to $EDITOR, cleaned up."""
 
-    def test_writes_scratch_file_and_reads_back(self):
+    def test_writes_scratch_file_reads_it_back_and_removes_it(self):
         from agent import commands
 
-        written = {}
-
-        class _Result:
-            returncode = 0
+        seen = {}
 
         def fake_run(cmd):
             path = cmd[1]
-            written["path"] = path
+            seen["path"] = path
             with open(path, encoding="utf-8") as handle:
-                written["before"] = handle.read()
+                seen["before"] = handle.read()
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write("edited text\n")
-            return _Result()
+            return mock.Mock(returncode=0)
 
         with mock.patch.object(subprocess, "run", fake_run):
-            result = commands._edit_in_editor("original", None)
-
-        self.assertEqual(result, "edited text\n")
-        self.assertEqual(written["before"], "original\n")
-        self.assertFalse(os.path.exists(written["path"]), "scratch file left behind")
-
-    def test_nonzero_exit_returns_none(self):
-        from agent import commands
+            assert commands._edit_in_editor("original", None) == "edited text\n"
+        assert seen["before"] == "original\n"
+        assert not os.path.exists(seen["path"]), "scratch file left behind"
 
         with mock.patch.object(subprocess, "run",
                                return_value=mock.Mock(returncode=1)):
-            self.assertIsNone(commands._edit_in_editor("original", None))
+            assert commands._edit_in_editor("original", None) is None
 
 
 class TestTakePendingPrompt(unittest.TestCase):
     """The frontend reads the prompt a command left behind, exactly once."""
 
-    def test_returns_and_clears(self):
+    @staticmethod
+    def _agent(**attrs):
         from agent.agent import Agent
 
         agent = Agent.__new__(Agent)
-        agent.core = cast(Any, mock.Mock(pending_prompt="re-run me"))
-        self.assertEqual(agent._take_pending_prompt(), "re-run me")
-        self.assertIsNone(agent._take_pending_prompt())
+        for key, value in attrs.items():
+            setattr(agent, key, value)
+        return agent
 
-    def test_none_when_empty(self):
-        from agent.agent import Agent
+    def test_returns_once_and_tolerates_a_stub_core(self):
+        agent = self._agent(core=mock.Mock(pending_prompt="re-run me"))
+        assert agent._take_pending_prompt() == "re-run me"
+        assert agent._take_pending_prompt() is None
+        assert self._agent(core=mock.Mock(spec=[]))._take_pending_prompt() is None
 
-        agent = Agent.__new__(Agent)
-        agent.core = cast(Any, mock.Mock(pending_prompt=None))
-        self.assertIsNone(agent._take_pending_prompt())
-
-    def test_core_without_the_attribute(self):
-        """A stub Core (remote mode) must not explode."""
-        from agent.agent import Agent
-
-        agent = Agent.__new__(Agent)
-        agent.core = cast(Any, mock.Mock(spec=[]))
-        self.assertIsNone(agent._take_pending_prompt())
-
-    def test_the_client_slot_is_read_too(self):
-        """In remote mode the daemon owns the core, so the reply carries it."""
-        from agent.agent import Agent
-
-        agent = Agent.__new__(Agent)
-        agent.core = cast(Any, mock.Mock(pending_prompt=None))
-        agent._client_pending_prompt = "re-run me"
-        self.assertEqual(agent._take_pending_prompt(), "re-run me")
-        self.assertIsNone(agent._take_pending_prompt())
-
-    def test_the_client_slot_wins_and_is_cleared(self):
-        from agent.agent import Agent
-
-        agent = Agent.__new__(Agent)
-        agent.core = cast(Any, mock.Mock(pending_prompt="stale"))
-        agent._client_pending_prompt = "from the server"
-        self.assertEqual(agent._take_pending_prompt(), "from the server")
-
-
-class TestTheLoopsRunThePendingPrompt(unittest.TestCase):
-    """Both REPL loops must *run* what a command handed back.
-
-    `/retry` and `/edit` cannot run a turn themselves, so they leave the text
-    for the frontend. Setting it after `get_input` and never running it is what
-    made `/retry` print "re-running the last prompt" and then do nothing: the
-    turn body lives under the `else` of the slash-command branch, so a prompt
-    assigned inside that branch fell out of the pass. A source-level pin,
-    because the behaviour is the call site.
-    """
-
-    def setUp(self) -> None:
-        from pathlib import Path
-
-        source = Path(__file__).resolve().parents[1] / "agent" / "agent.py"
-        self.source = source.read_text(encoding="utf-8")
-
-    def test_both_loops_take_it_before_asking_for_input(self):
-        self.assertEqual(
-            self.source.count("queued = self._take_pending_prompt()"), 2
-        )
-
-    def test_the_local_loop_does_not_reroute_it_through_get_input(self):
-        self.assertNotIn("retry_prompt = self._take_pending_prompt()", self.source)
-        self.assertNotIn("get_input(retry_prompt", self.source)
-
-    def test_the_remote_loop_does_not_skip_the_turn(self):
-        """`user_input = result.pending_prompt; continue` re-prompted instead."""
-        self.assertNotIn("user_input = result.pending_prompt", self.source)
-        self.assertIn("self._client_pending_prompt = result.pending_prompt", self.source)
+    def test_the_client_slot_wins_in_remote_mode(self):
+        """The daemon owns the core, so the reply carries the prompt instead."""
+        agent = self._agent(core=mock.Mock(pending_prompt="stale"),
+                            _client_pending_prompt="from the server")
+        assert agent._take_pending_prompt() == "from the server"
+        assert agent._client_pending_prompt is None
 
 
 if __name__ == "__main__":

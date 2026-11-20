@@ -1,21 +1,10 @@
-"""Tests for mid-turn injection on the server side.
-
-The daemon owns the turn, so it owns the queue of steering lines: the client
-enqueues them, the running turn drains them at a tool seam, and delivery is
-confirmed with an ``injected`` event. The client's own copy is only dropped on
-that event, which is what makes a line that never gets delivered safe.
-"""
+"""Tests for mid-turn injection on the server side."""
 
 import threading
 import unittest
 from typing import Any
 
-from agent.ipc import (
-    ClientRequest,
-    InjectPayload,
-    InjectWhen,
-    Message,
-)
+from agent.ipc import ClientRequest, InjectPayload, InjectWhen, Message
 from agent.server import WisemonkeyServer
 
 
@@ -37,98 +26,55 @@ class _FakeServer(WisemonkeyServer):
         self.sent.append(message)
 
 
-def make_server() -> _FakeServer:
-    return _FakeServer()
-
-
 class TestInjectHandler(unittest.TestCase):
     def setUp(self) -> None:
-        self.server = make_server()
+        self.server = _FakeServer()
 
-    def test_line_is_queued(self):
-        self.server._handle_inject(_message(InjectPayload(
-            text="use pandas", when=InjectWhen.AFTER_TOOL)))
-        self.assertEqual(self.server._injections, ["use pandas"])
+    def _inject(self, text, when=InjectWhen.AFTER_TOOL):
+        self.server._handle_inject(_message(InjectPayload(text=text, when=when)))
+        return self.server.sent[-1]
 
-    def test_reply_is_ok(self):
-        self.server._handle_inject(_message(InjectPayload(
-            text="hello", when=InjectWhen.AFTER_TOOL)))
-        reply = self.server.sent[-1]
-        self.assertEqual(reply.kind, "response")
-        self.assertEqual(reply.reply_to, "req-1")
+    def test_an_after_tool_line_is_queued_and_acknowledged_in_order(self):
+        for text in ("one", "two"):
+            reply = self._inject(text)
+            assert reply.kind == "response" and reply.reply_to == "req-1"
+        assert self.server._take_injections() == ["one", "two"]
 
-    def test_several_lines_queue_in_order(self):
-        for text in ("one", "two", "three"):
-            self.server._handle_inject(_message(InjectPayload(
-                text=text, when=InjectWhen.AFTER_TOOL)))
-        self.assertEqual(self.server.sent[0].kind, "response")
-        self.assertEqual(
-            self.server._take_injections(), ["one", "two", "three"])
-
-    def test_empty_text_is_rejected(self):
-        self.server._handle_inject(_message(InjectPayload(
-            text="   ", when=InjectWhen.AFTER_TOOL)))
-        self.assertEqual(self.server._injections, [])
-        self.assertEqual(self.server.sent[-1].kind, "error")
-
-    def test_between_turns_is_refused(self):
-        """The client runs such a line itself once the turn returns."""
-        self.server._handle_inject(_message(InjectPayload(
-            text="later", when=InjectWhen.BETWEEN_TURNS)))
-        self.assertEqual(self.server._injections, [])
-        self.assertEqual(self.server.sent[-1].kind, "error")
-        self.assertIn("between_turns", self.server.sent[-1].payload["message"])
-
-    def test_interrupt_is_refused(self):
-        """Not implemented: cancelling the stream is a much larger UX change."""
-        self.server._handle_inject(_message(InjectPayload(
-            text="stop", when=InjectWhen.INTERRUPT)))
-        self.assertEqual(self.server._injections, [])
-        self.assertEqual(self.server.sent[-1].kind, "error")
-
-    def test_unknown_timing_is_refused(self):
-        self.server._handle_inject(_message(InjectPayload(
-            text="soon", when="whenever")))
-        self.assertEqual(self.server._injections, [])
-        self.assertEqual(self.server.sent[-1].kind, "error")
+    def test_every_other_timing_is_refused(self):
+        """The client runs a between-turns line itself; interrupt is unbuilt."""
+        for text, when in (("   ", InjectWhen.AFTER_TOOL),
+                           ("later", InjectWhen.BETWEEN_TURNS),
+                           ("stop", InjectWhen.INTERRUPT),
+                           ("soon", "whenever")):
+            assert self._inject(text, when).kind == "error", (text, when)
+            assert self.server._injections == [], (text, when)
+        assert "between_turns" in self._inject(
+            "later", InjectWhen.BETWEEN_TURNS
+        ).payload["message"]
 
 
 class TestTakeInjections(unittest.TestCase):
     def setUp(self) -> None:
-        self.server = make_server()
+        self.server = _FakeServer()
 
-    def test_drains_everything(self):
-        self.server._injections = ["a", "b"]
-        self.assertEqual(self.server._take_injections(), ["a", "b"])
-        self.assertEqual(self.server._injections, [])
-
-    def test_empty_queue(self):
-        self.assertEqual(self.server._take_injections(), [])
-
-    def test_queue_is_emptied(self):
-        """A second drain must not re-deliver the same lines."""
-        self.server._injections = ["a"]
-        self.assertEqual(self.server._take_injections(), ["a"])
-        self.assertEqual(self.server._take_injections(), [])
-
-    def test_concurrent_takes_do_not_lose_lines(self):
-        """The client's reader thread and the turn thread touch this queue."""
-        original = [f"line-{i}" for i in range(50)]
-        self.server._injections = list(original)
+    def test_a_drain_is_complete_under_concurrency_and_never_repeats(self):
+        expected = [f"line-{i}" for i in range(50)]
+        self.server._injections = list(expected)
         got: list[str] = []
-        got_lock = threading.Lock()
+        lock = threading.Lock()
 
         def drain() -> None:
             mine = self.server._take_injections()
-            with got_lock:
+            with lock:
                 got.extend(mine)
 
         threads = [threading.Thread(target=drain) for _ in range(4)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-        self.assertEqual(sorted(got), sorted(original))
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert sorted(got) == sorted(expected)
+        assert self.server._take_injections() == []
 
 
 if __name__ == "__main__":

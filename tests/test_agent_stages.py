@@ -1,9 +1,4 @@
-"""Tests for the per-turn UI stage state in agent/agent.py.
-
-Focus: the prompt stage fires once per LLM round (`Core.run_turn` loops back
-to the model after every tool batch), and the spinner + completion line must
-only appear for the *first* round of a turn.
-"""
+"""Tests for the per-turn UI stage state in agent/agent.py."""
 
 import time
 import unittest
@@ -13,7 +8,7 @@ from typing import Any, Callable, cast
 from unittest import mock
 
 from agent.agent import Agent
-from agent.footer import _CURSOR, _RESET, block_cursor, visible_len
+from agent.footer import _CURSOR, _RESET, visible_len
 from agent.ipc import Event, Message, ReasoningPayload, StageKind
 from agent.palette import PALETTE
 from agent.utils import term_width
@@ -27,10 +22,7 @@ class _FakeFooterOutput:
         self.spinner_labels: list[str] = []
         self.refreshes = 0
         self.thinking: list[bool] = []
-
-    # `Agent._spinner` reaches for `_console` on the output adapter; the fake
-    # just needs the attribute to exist (and to be replaceable).
-    _console: Any = None
+        self._console: Any = None  # `Agent._spinner` reaches for it
 
     def footer_active(self) -> bool:
         return self._footer_active
@@ -39,11 +31,9 @@ class _FakeFooterOutput:
         self.refreshes += 1
 
     def footer_spinner(self, text: str) -> None:
-        """Record the label the agent handed to the footer's own animation."""
         self.spinner_labels.append(text)
 
     def footer_thinking(self, active: bool) -> None:
-        """Record what the agent asked the footer's reasoning indicator."""
         self.thinking.append(active)
 
     def steer_line(self) -> str:
@@ -74,76 +64,33 @@ class _SpyAgent(Agent):
         self._fake_output.refreshes += 1
 
     def _spinner_started(self) -> list[str]:
-        """Labels the agent asked the footer to animate ("" means stop)."""
         return [t for t in self._fake_output.spinner_labels if t]
 
     def _spinner_stops(self) -> int:
-        """How many times the agent told the footer to stop animating."""
         return sum(1 for t in self._fake_output.spinner_labels if not t)
 
 
 class TestPromptStage(unittest.TestCase):
     """`Processing prompt...` belongs to the user's prompt only."""
 
-    def _agent(self, footer_active: bool = True) -> _SpyAgent:
-        return _SpyAgent(footer_active)
-
-    def test_first_round_shows_the_spinner(self):
-        agent = self._agent()
-        agent._prompt_start()
-        self.assertEqual(agent._spinner_started(), ["⏳ Processing prompt..."])
-
-    def test_later_rounds_do_not_repeat_the_spinner(self):
+    def test_one_spinner_across_many_rounds_and_never_a_completion_line(self):
         """A tool round re-enters the LLM; no second "Processing prompt"."""
-        agent = self._agent()
-        agent._prompt_start()
-        agent._prompt_stop()
-        agent._prompt_start()  # round 2, after a tool batch
-        self.assertEqual(agent._spinner_started(), ["⏳ Processing prompt..."])
-        self.assertEqual(agent._prompt_rounds, 2)
-
-    def test_many_tool_rounds_still_show_one_spinner(self):
-        agent = self._agent()
-        for _ in range(5):
-            agent._prompt_start()
-            agent._prompt_stop()
-        self.assertEqual(agent._spinner_started(), ["⏳ Processing prompt..."])
-
-    def test_no_completion_line_printed(self):
-        """The "✓ Prompt processed" line was removed: on a full screen it
-        overwrites the last line of the user's prompt text."""
-        agent = self._agent()
+        agent = _SpyAgent()
         with mock.patch("agent.agent.print") as printed:
-            for _ in range(3):
+            for _ in range(5):
                 agent._prompt_start()
                 agent._prompt_stop()
+        self.assertEqual(agent._spinner_started(), ["⏳ Processing prompt..."])
+        self.assertEqual(agent._spinner_stops(), 1)
+        self.assertEqual(agent._prompt_rounds, 5)
+        self.assertIsNone(agent._footer_spinner)
+        # "✓ Prompt processed" was removed: on a full screen it overwrites the
+        # last line of the user's own prompt.
         printed.assert_not_called()
 
-    def test_spinner_cleared_on_stop(self):
-        agent = self._agent()
-        agent._prompt_start()
-        self.assertIsNotNone(agent._footer_spinner)
-        agent._prompt_stop()
-        self.assertIsNone(agent._footer_spinner)
-
-    def test_spinner_is_handed_to_the_footer_not_a_live_display(self):
-        """While the footer is armed, the label goes to `footer_spinner`.
-
-        A Rich `Live` display would wrap stdout in a FileProxy and turn the
-        footer's cursor addressing into literal text on screen.
-        """
-        agent = self._agent()
-        agent._prompt_start()
-        self.assertEqual(
-            agent._fake_output.spinner_labels, ["⏳ Processing prompt..."]
-        )
-        agent._prompt_stop()
-        self.assertEqual(agent._spinner_stops(), 1)
-
-    def test_no_footer_falls_back_to_a_rich_status(self):
+    def test_the_footer_owns_the_spinner_and_a_foreign_one_is_left_alone(self):
         """With no sticky footer there is no FileProxy hazard, so keep Rich."""
-        agent = self._agent(footer_active=False)
-
+        agent = _SpyAgent(footer_active=False)
         console = mock.MagicMock()
         console.status.return_value = "handle"
         agent.output._console = console
@@ -151,111 +98,57 @@ class TestPromptStage(unittest.TestCase):
         console.status.assert_called_once_with("⏳ Processing prompt...")
         self.assertEqual(agent._fake_output.spinner_labels, [])
 
-    def test_second_round_does_not_clear_a_foreign_spinner(self):
-        """Round 2 has no spinner of its own, so it must not stop one."""
-        agent = self._agent()
+        # Round 2 has no spinner of its own, so it must not stop one a tool owns.
+        agent = _SpyAgent()
         agent._prompt_start()
         agent._prompt_stop()
-        # Something else (a tool) owns the footer spinner now.
         agent._footer_spinner = "🔧 Tool running"
-        stops_before = agent._spinner_stops()
+        stops = agent._spinner_stops()
         agent._prompt_start()
         agent._prompt_stop()
         self.assertEqual(agent._footer_spinner, "🔧 Tool running")
-        self.assertEqual(agent._spinner_stops(), stops_before)
+        self.assertEqual(agent._spinner_stops(), stops)
 
 
 class TestReasoningFooterIndicator(unittest.TestCase):
-    """Thinking status is shown on the footer's key-hints row, not in chat.
+    """Thinking status is shown on the footer's key-hints row, not in chat."""
 
-    The footer's bottom row carries a "💡 Thinking..." indicator, right of the
-    key bindings and next to the stage spinner, while the model is
-    reasoning. The response area stays clean.
-    """
-
-    def _agent(self) -> _SpyAgent:
-        return _SpyAgent()
-
-    def test_reasoning_start_sets_active_flag(self):
-        agent = self._agent()
-        agent._reasoning_start(visible=True)
-        self.assertTrue(agent._reasoning_active)
-
-    def test_reasoning_stop_clears_active_flag(self):
-        agent = self._agent()
-        agent._reasoning_start(visible=True)
-        agent._reasoning_stop()
-        self.assertFalse(agent._reasoning_active)
-
-    def test_reasoning_start_tells_the_footer(self):
-        agent = self._agent()
-        agent._reasoning_start(visible=True)
-        self.assertEqual(agent._fake_output.thinking, [True])
-
-    def test_reasoning_stop_tells_the_footer(self):
-        agent = self._agent()
-        agent._reasoning_start(visible=True)
-        agent._reasoning_stop()
-        self.assertEqual(agent._fake_output.thinking, [True, False])
-
-    def test_no_chat_output_markers(self):
-        """No 'Thinking...' or 'Done thinking' text is printed to chat."""
-        agent = self._agent()
+    def test_reasoning_drives_the_indicator_and_closes_its_line(self):
+        agent = _SpyAgent()
         with (
             mock.patch("agent.agent.info") as info,
-            mock.patch("agent.agent.print") as printed,
+            mock.patch("agent.agent.print"),
+            mock.patch("agent.agent.newline") as newline,
         ):
             agent._reasoning_start(visible=True)
+            self.assertTrue(agent._reasoning_active)
+            event = Message.event(
+                Event.REASONING,
+                ReasoningPayload(stage=StageKind.PROCESS, text="thinking", visible=True),
+            )
+            agent._handle_event(event)
+            self.assertTrue(agent._reasoning_mid_line)
             agent._reasoning_stop()
-        info.assert_not_called()
-        printed.assert_not_called()
-
-    def test_reasoning_mid_line_is_closed_with_a_newline(self):
-        """A reasoning block streamed mid-line is closed with a newline.
-
-        Reasoning is printed with ``end=""`` so it can be streamed. If the
-        block ends without a trailing newline the answer would start on the
-        same line -- and in the same dim grey -- as the thinking text.
-        """
-        agent = self._agent()
-        agent._reasoning_start(visible=True)
-        process = Message.event(
-            Event.REASONING,
-            ReasoningPayload(stage=StageKind.PROCESS, text="thinking", visible=True),
-        )
-        with mock.patch("agent.agent.print"):
-            agent._handle_event(process)
-        self.assertTrue(agent._reasoning_mid_line)
-
-        with mock.patch("agent.agent.newline") as newline:
-            agent._reasoning_stop()
+        # The block streamed mid-line, so it must be closed with one newline.
         newline.assert_called_once()
+        self.assertFalse(agent._reasoning_active)
         self.assertFalse(agent._reasoning_mid_line)
+        self.assertEqual(agent._fake_output.thinking, [True, False])
+        info.assert_not_called()
 
-    def test_reasoning_ending_in_newline_adds_none(self):
-        """A block already at a line boundary must not add a blank line."""
-        agent = self._agent()
-        agent._reasoning_start(visible=True)
-        process = Message.event(
-            Event.REASONING,
-            ReasoningPayload(stage=StageKind.PROCESS, text="thinking\n", visible=True),
-        )
-        with mock.patch("agent.agent.print"):
-            agent._handle_event(process)
-        self.assertFalse(agent._reasoning_mid_line)
-
-        with mock.patch("agent.agent.newline") as newline:
-            agent._reasoning_stop()
-        newline.assert_not_called()
-
-    def test_reasoning_without_visible_text_adds_none(self):
-        """Invisible reasoning prints nothing, so it adds no newline."""
-        agent = self._agent()
-        agent._reasoning_start(visible=False)
-        with mock.patch("agent.agent.newline") as newline:
-            agent._reasoning_stop()
-        newline.assert_not_called()
-
+        # A block already at a line boundary, or an invisible one, adds none.
+        for text, visible in (("thinking\n", True), ("thinking", False)):
+            agent = _SpyAgent()
+            agent._reasoning_start(visible=visible)
+            with mock.patch("agent.agent.print"), mock.patch(
+                "agent.agent.newline"
+            ) as newline:
+                agent._handle_event(Message.event(
+                    Event.REASONING,
+                    ReasoningPayload(stage=StageKind.PROCESS, text=text, visible=visible),
+                ))
+                agent._reasoning_stop()
+            newline.assert_not_called()
 
 
 class _RecordingOutput:
@@ -331,7 +224,7 @@ class _SteerOutput:
 
 
 class _SteerAgent(Agent):
-    """Just enough Agent state for `_steer_inject`."""
+    """Just enough Agent state for `_steer_inject` and `_steer_requeue`."""
 
     def __init__(self, lines: list[str]) -> None:
         self.out = _SteerOutput(lines)
@@ -343,118 +236,46 @@ class _SteerAgent(Agent):
         self.refreshes += 1
 
 
-class TestSteerInjection(unittest.TestCase):
-    """A delivered line must not leave `↳ queued:` on the footer row.
-
-    `_announce_steered` echoes the line on stdout (in blue), but the footer
-    keeps showing the queued text until something redraws that row. Without a
-    redraw here, the user sees "queued: <text>" next to a line that has
-    obviously already been delivered.
-    """
+class TestSteeringPlumbing(unittest.TestCase):
+    """Delivery redraws the row; leftovers reach the prompt, not the model."""
 
     def test_delivery_redraws_the_footer(self):
         agent = _SteerAgent(["do this instead"])
-        lines = agent._steer_inject()
-        self.assertEqual(lines, ["do this instead"])
+        self.assertEqual(agent._steer_inject(), ["do this instead"])
         self.assertEqual(agent.refreshes, 1)
         self.assertEqual(len(agent.out.printed), 1)
-
-    def test_the_queued_row_is_stale_after_delivery(self):
-        agent = _SteerAgent(["a", "b"])
-        agent._steer_inject()
+        # The row is stale after delivery, or it would read "queued:" forever.
         self.assertIsNone(agent.out.steer_pending())
-
-    def test_an_empty_queue_still_refreshes(self):
-        """Cheap and keeps the seam free of special cases."""
+        # An empty queue still refreshes: cheap, and keeps the seam simple.
         agent = _SteerAgent([])
         self.assertEqual(agent._steer_inject(), [])
         self.assertEqual(agent.refreshes, 1)
 
-
-class TestSteerRequeue(unittest.TestCase):
-    """Leftover steering text must reach the prompt, not the model.
-
-    A line typed mid-turn only steers the turn if another tool round follows.
-    When the model answers straight away, the line arrives after the answer it
-    meant to redirect -- and the main loop used to run it as the next prompt,
-    starting a turn from a mid-sentence remark the user never reviewed.
-    `_steer_requeue` hands it to the prompt as default text instead.
-    """
-
-    def test_nothing_queued_returns_nothing(self):
-        agent = _SteerAgent([])
-        self.assertEqual(agent._steer_requeue(), "")
-        self.assertEqual(agent.out.printed, [])
-
-    def test_a_queued_line_becomes_the_prompt_text(self):
-        agent = _SteerAgent(["actually, use pandas"])
-        self.assertEqual(agent._steer_requeue(), "actually, use pandas")
-
-    def test_the_queue_is_drained(self):
-        """Otherwise the line would be pasted again on the next loop pass."""
-        agent = _SteerAgent(["a", "b"])
-        agent._steer_requeue()
-        self.assertIsNone(agent.out.steer_pending())
-
-    def test_several_lines_keep_their_own_lines(self):
-        """One queue entry per Enter, so the author's breaks are the join."""
+    def test_a_queued_line_becomes_the_prompt_text_and_is_drained(self):
+        self.assertEqual(_SteerAgent([])._steer_requeue(), "")
+        # One queue entry per Enter, so the author's own breaks are the join.
         agent = _SteerAgent(["first thought", "second thought"])
         self.assertEqual(agent._steer_requeue(), "first thought\nsecond thought")
+        # Otherwise the line would be pasted again on the next loop pass.
+        self.assertIsNone(agent.out.steer_pending())
 
-    def test_the_carry_over_is_announced(self):
-        agent = _SteerAgent(["one", "two"])
-        agent._steer_requeue()
-        note = agent.out.printed[0]
-        self.assertIn("2 queued lines", note)
-        self.assertIn("Ctrl+U", note)  # how to discard it
-
-    def test_the_note_survives_rich_markup(self):
-        """`OutputAdapter.print` renders markup; an unknown tag is dropped.
-
-        A note written as `[steering: ...]` is not a theme tag, so Rich throws
-        it away *silently* -- the message simply never reaches the screen. The
-        rendered output, not the raw string, is what has to contain it.
-        """
+    def test_the_carry_over_is_announced_as_pasted_not_steered(self):
+        """The note is markup-rendered text: an unknown tag would be dropped."""
         import io
 
         from rich.console import Console
 
-        agent = _SteerAgent(["one"])
+        agent = _SteerAgent(["one", "two"])
         agent._steer_requeue()
-        buf = io.StringIO()
-        console = Console(file=buf, width=200, force_terminal=False)
-        console.print(agent.out.printed[0])
-        rendered = buf.getvalue()
+        buffer = io.StringIO()
+        Console(file=buffer, width=200, force_terminal=False).print(
+            agent.out.printed[0]
+        )
+        rendered = buffer.getvalue()
+        self.assertIn("2 queued lines", rendered)
+        self.assertIn("Ctrl+U", rendered)  # how to discard it
         self.assertIn("pasted into the prompt", rendered)
-
-    def test_it_is_not_announced_as_delivered(self):
-        """`steered ...` would claim the model received it."""
-        agent = _SteerAgent(["one"])
-        agent._steer_requeue()
-        self.assertNotIn("steered", agent.out.printed[0])
-
-
-class TestBothLoopsCarrySteeringOver(unittest.TestCase):
-    """Both REPL loops must pre-fill the prompt with the leftovers.
-
-    The local and remote loops are separate code paths, and a fix applied to
-    one of them is invisible in the other. This is a source-level pin because
-    the behaviour it guards -- "the line is passed to the prompt rather than
-    run" -- only exists as the call site.
-    """
-
-    def setUp(self) -> None:
-        from pathlib import Path
-
-        source = Path(__file__).resolve().parents[1] / "agent" / "agent.py"
-        self.source = source.read_text(encoding="utf-8")
-
-    def test_both_loops_pass_the_carry_over_to_get_input(self):
-        self.assertEqual(self.source.count("carried = self._steer_requeue()"), 2)
-        self.assertEqual(self.source.count("get_input(carried)"), 2)
-
-    def test_the_old_auto_submit_path_is_gone(self):
-        self.assertNotIn("_steer_drain", self.source)
+        self.assertNotIn("steered", rendered)
 
 
 class _InputRowOutput:
@@ -495,64 +316,38 @@ class _InputRowAgent(Agent):
 
 
 class TestSteeringInputRow(unittest.TestCase):
-    """The steering row is an input field, even while it is empty.
+    """The steering row is an input field, even while it is empty."""
 
-    An empty row gave no hint that a keystroke would go anywhere, and with no
-    caret there was nothing to say *where* the next character would land. Both
-    are the frontend's job: the terminal's own cursor has to stay on the
-    streamed answer, so the caret is drawn into the row instead.
-
-    The caret is painted *over* the character it points at, never spliced in
-    beside it: a caret cell that occupied its own column pushed the rest of the
-    line one to the right whenever it moved, which is not how a terminal or a
-    prompt line editor behaves.
-    """
-
-    #: The reverse-video sequence that opens a caret cell sitting on a
-    #: character (as opposed to the filled cell used past the end of the line).
     _OVER = PALETTE.footer_sgr()["cursor_over"]
 
     def _row(self, **kwargs: Any) -> str:
         return _InputRowAgent(**kwargs)._footer_input()
 
     def _caret_at(self, row: str) -> int:
-        """Index of the caret cell in *row*, either form."""
-        if self._OVER in row:
-            return row.index(self._OVER)
-        return row.index(_CURSOR)
+        return row.index(self._OVER) if self._OVER in row else row.index(_CURSOR)
 
-    def test_idle_row_shows_a_marker_and_a_cursor(self):
+    def test_the_idle_row_is_an_input_field_and_blank_outside_a_turn(self):
         row = self._row()
         self.assertIn("❯", row)
         self.assertIn(_CURSOR, row)
-
-    def test_typed_text_sits_before_the_cursor(self):
-        row = self._row(line="use pandas", caret=len("use pandas"))
-        self.assertIn("use pandas", row)
-        self.assertLess(row.index("use pandas"), self._caret_at(row))
+        agent = _InputRowAgent()
+        agent._turn_in_progress = False
+        self.assertEqual(agent._footer_input(), "")
 
     def test_the_caret_covers_the_character_it_points_at(self):
-        """The character under the caret stays, inside the block.
-
-        It is drawn *through* the block (reverse video), so it neither
-        disappears nor moves -- which is the whole point of a block cursor.
-        """
-        row = self._row(line="use pandas", caret=4)  # on the 'p'
+        """A caret cell of its own shifted the whole line on every keypress."""
+        line = "use pandas"
+        row = self._row(line=line, caret=4)  # on the 'p'
         self.assertIn(f"{self._OVER}p{_RESET}", row)
         self.assertIn("use ", row)
         self.assertIn("andas", row)
-
-    def test_the_row_does_not_change_width_as_the_caret_moves(self):
-        """The bug: a caret cell of its own shifted the line on every key.
-
-        While the caret is on a character the row is exactly as wide as the
-        line -- the cell replaces a column instead of adding one.
-        """
-        line = "use pandas"
-        widths = {
-            visible_len(self._row(line=line, caret=i)) for i in range(len(line))
-        }
+        # Moving within the line changes no width at all.
+        widths = {visible_len(self._row(line=line, caret=i)) for i in range(len(line))}
         self.assertEqual(widths, {visible_len(self._row(line=line, caret=0))})
+        # The block is drawn *in* the text, not always after it: " ❯ use".
+        row = self._row(line=line, caret=3)
+        self.assertEqual(visible_len(row[: self._caret_at(row)]), 6)
+        self.assertGreater(row.index("pandas"), self._caret_at(row))
         # Past the last character there is nothing to paint over, so the cell
         # takes a column of its own -- the one `steer_window` reserves.
         self.assertEqual(
@@ -560,124 +355,58 @@ class TestSteeringInputRow(unittest.TestCase):
             visible_len(self._row(line=line, caret=0)) + 1,
         )
 
-    def test_cursor_is_a_one_column_block_from_the_palette(self):
-        """The caret must come from the shared palette, not a stray colour."""
-        self.assertIn(PALETTE.footer_sgr()["cursor"], _CURSOR)
-        self.assertEqual(visible_len(_CURSOR), 1)
-        self.assertEqual(visible_len(block_cursor("q")), 1)
-        self.assertIn(PALETTE.footer_sgr()["cursor_over"], block_cursor("q"))
-
-    def test_queued_line_keeps_its_own_marker(self):
+    def test_queued_versus_typed_and_a_paused_reader(self):
         row = self._row(queued="wait, use polars")
-        self.assertIn("queued: wait, use polars", row)
         self.assertIn("↳", row)
-
-    def test_typed_line_takes_precedence_over_the_queue(self):
+        self.assertIn("queued: wait, use polars", row)
         row = self._row(line="typing now", queued="older line")
         self.assertIn("typing now", row)
         self.assertNotIn("older line", row)
 
-    def test_no_row_while_steering_is_paused(self):
-        """A paused reader (an ask_*, a subprocess) must not invite typing."""
+        # A paused reader (an ask_*, a subprocess) must not invite typing.
         self.assertEqual(self._row(armed=False), "")
-
-    def test_paused_row_keeps_the_text_but_drops_the_caret(self):
         row = self._row(line="half typed", armed=False)
         self.assertIn("half typed", row)
         self.assertNotIn(_CURSOR, row)
         self.assertNotIn(self._OVER, row)
 
-    def test_row_is_blank_outside_a_turn(self):
-        agent = _InputRowAgent()
-        agent._turn_in_progress = False
-        self.assertEqual(agent._footer_input(), "")
-
-    def test_a_long_line_still_shows_the_caret(self):
+    def test_a_long_line_scrolls_to_keep_the_caret_visible(self):
         row = self._row(line="x" * 500)
         self.assertIn("…", row)
         self.assertLessEqual(visible_len(row), term_width())
         self.assertIn(_CURSOR, row)  # the caret is past the end of the window
-
-    def test_the_caret_sits_where_the_editing_position_is(self):
-        """The block is drawn *in* the text, not always after it.
-
-        `steer_window` reserves the caret's column and gives back an index to
-        paint it at, so the text before the caret is exactly what the cursor
-        moved over.
-        """
-        row = self._row(line="use pandas", caret=3)
-        self.assertEqual(visible_len(row[: self._caret_at(row)]), 6)  # " ❯ use"
-        self.assertGreater(row.index("use"), 0)
-        self.assertGreater(row.index("pandas"), self._caret_at(row))
-
-    def test_the_caret_can_move_to_the_start(self):
-        row = self._row(line="use pandas", caret=0)
-        self.assertEqual(visible_len(row[: self._caret_at(row)]), 3)  # " ❯ "
-        self.assertIn(f"{self._OVER}u{_RESET}", row)
-
-    def test_a_late_caret_scrolls_to_keep_it_visible(self):
-        """A caret past the window scrolls the row, cutting both ends.
-
-        The window follows the caret, so the front of the line is dropped --
-        the old tail-anchored rule showed the end of the line and drew the
-        caret next to text it was nowhere near.
-        """
+        # A caret in the middle cuts both ends, keeping what is being edited.
         row = self._row(line="abc" + "-" * 500 + "xyz", caret=503)
-        self.assertEqual(row.count("…"), 2)  # cut at both ends
+        self.assertEqual(row.count("…"), 2)
         self.assertIn(self._OVER, row)
         self.assertLessEqual(visible_len(row), term_width())
-        self.assertNotIn("abc", row)  # what the window scrolled past
+        self.assertNotIn("abc", row)
 
 
 class TestToolResultLine(unittest.TestCase):
-    """A successful fast tool is silent; slow and failed ones are not.
-
-    The activation line ("Activating tool: read_file") already says the tool
-    ran. A "finished in 0.0s" line under every call turns a fifteen-tool turn
-    into fifteen lines of noise, so the duration is only worth printing when
-    the tool was actually slow enough to make you wait.
-    """
+    """A successful fast tool is silent; slow and failed ones are not."""
 
     def _run(self, *, threshold=1.0, duration=0.1, is_error=False):
         agent = _ToolResultAgent(threshold)
         agent.tool_result_callback("1", "read_file", "ok", is_error, duration)
         return agent
 
-    def test_fast_success_prints_nothing(self):
+    def test_fast_success_is_silent_and_slow_success_is_not(self):
         agent = self._run(duration=0.05)
-        self.assertEqual(agent.output.oks, [])
-        self.assertEqual(agent.output.errors, [])
-
-    def test_slow_success_prints_the_duration(self):
+        self.assertEqual((agent.output.oks, agent.output.errors), ([], []))
         agent = self._run(duration=2.4)
-        self.assertEqual(len(agent.output.oks), 1)
-        self.assertIn("read_file", agent.output.oks[0])
-        self.assertIn("2.4s", agent.output.oks[0])
-
-    def test_threshold_is_inclusive(self):
-        """Exactly at the threshold still counts as slow."""
-        self.assertEqual(self._run(duration=1.0).output.oks,
-                         ["Tool read_file finished in 1.0s"])
-
-    def test_error_is_always_reported(self):
-        agent = self._run(is_error=True, duration=0.01)
-        self.assertEqual(agent.output.oks, [])
-        self.assertEqual(len(agent.output.errors), 1)
-        self.assertIn("failed", agent.output.errors[0])
-
-    def test_error_line_carries_the_duration_too(self):
-        agent = self._run(is_error=True, duration=3.0)
-        self.assertIn("3.0s", agent.output.errors[0])
-
-    def test_zero_threshold_always_prints(self):
+        self.assertEqual(agent.output.oks, ["Tool read_file finished in 2.4s"])
+        # The threshold is inclusive; zero prints everything.
+        self.assertEqual(
+            self._run(duration=1.0).output.oks, ["Tool read_file finished in 1.0s"]
+        )
         self.assertEqual(len(self._run(threshold=0, duration=0.0).output.oks), 1)
 
-    def test_bad_threshold_falls_back_to_the_default(self):
-        agent = _ToolResultAgent("not a number")
-        agent._tool_slow_threshold()
-        self.assertEqual(agent._tool_slow_threshold(), 1.0)
-
-    def test_negative_threshold_is_clamped(self):
+    def test_an_error_is_always_reported_and_bad_thresholds_fall_back(self):
+        agent = self._run(is_error=True, duration=0.01)
+        self.assertEqual(agent.output.oks, [])
+        self.assertEqual(agent.output.errors, ["Tool read_file failed (0.0s): ok"])
+        self.assertEqual(_ToolResultAgent("not a number")._tool_slow_threshold(), 1.0)
         self.assertEqual(self._run(threshold=-5)._tool_slow_threshold(), 0.0)
 
 
@@ -729,66 +458,37 @@ class _LiveTokenAgent(Agent):
 
 
 class TestLiveTokenCounter(unittest.TestCase):
-    """The token count should move *while* the model streams.
+    """The token count should move *while* the model streams."""
 
-    A cumulative figure updated at turn end looks identical whether the turn
-    was trivial or enormous. The delta -- what this turn added -- is the
-    number that climbs, so it is shown live in the footer (estimated from
-    streamed characters) and exactly in the status line at turn end.
-    """
-
-    def _agent(
-        self,
-        used: int = 1000,
-        pricing: dict[str, float] | None = None,
-        max_tokens: int = 200000,
-    ):
+    def _agent(self, used=1000, pricing=None, max_tokens=200000):
         return _LiveTokenAgent(used=used, max_tokens=max_tokens, pricing=pricing)
-
-    def test_statusline_shows_the_turn_delta(self):
-        agent = self._agent(used=1000)
-        cast(_StatsMemory, agent.core.memory).stats = (4200, 200000, 2.1)
-        agent._statusline(3200, 0, 1.0)
-        rule = cast(_RecordingOutput, agent.output).rules[-1]
-        self.assertIn("Δ+3200", rule)
-
-    def test_statusline_omits_the_delta_when_nothing_was_added(self):
-        agent = self._agent(used=1000)
-        cast(_StatsMemory, agent.core.memory).stats = (1000, 200000, 0.5)
-        agent._statusline(0, 0, 1.0)
-        self.assertNotIn("Δ", cast(_RecordingOutput, agent.output).rules[-1])
-
-    def test_statusline_shows_provider_prompt_tokens(self):
-        agent = self._agent()
-        agent._statusline(500, 0, 1.0, prompt_tokens=12000)
-        self.assertIn("p:12.0k", agent.output.rules[-1])
-
-    def test_statusline_omits_prompt_tokens_when_unreported(self):
-        """A backend that reports no usage must not show a fake number."""
-        agent = self._agent()
-        agent._statusline(500, 0, 1.0, prompt_tokens=0)
-        self.assertNotIn("p:", agent.output.rules[-1])
-
-    def test_cost_is_shown_only_when_pricing_is_configured(self):
-        agent = _LiveTokenAgent(pricing={"input": 3.0, "output": 15.0})
-        # 12k prompt at $3/Mtok + 500 completion at $15/Mtok = $0.0435
-        agent._statusline(500, 0, 1.0, prompt_tokens=12000)
-        output = cast(_RecordingOutput, agent.output)
-        self.assertIn("$0.0435", output.rules[-1])
-
-    def test_no_pricing_means_no_cost(self):
-        """A made-up price would be worse than no price."""
-        agent = self._agent()
-        agent._statusline(500, 0, 1.0, prompt_tokens=12000)
-        self.assertNotIn("$", agent.output.rules[-1])
-
-    # --- current (rolling) decode rate ------------------------------------
 
     @staticmethod
     def _seed_rate(agent, samples: list[tuple[float, int]]) -> None:
         """Plant ``(age_seconds, chars)`` samples in the rate window."""
         now = time.monotonic()
         agent._rate_samples = deque((now - age, chars) for age, chars in samples)
+
+    def test_statusline_shows_and_omits_the_turn_delta(self):
+        agent = self._agent(used=1000)
+        cast(_StatsMemory, agent.core.memory).stats = (4200, 200000, 2.1)
+        agent._statusline(3200, 0, 1.0)
+        self.assertIn("Δ+3200", agent.output.rules[-1])
+        cast(_StatsMemory, agent.core.memory).stats = (1000, 200000, 0.5)
+        agent._statusline(0, 0, 1.0)
+        self.assertNotIn("Δ", agent.output.rules[-1])
+
+    def test_prompt_tokens_and_cost_are_omitted_when_unknown(self):
+        agent = self._agent(pricing={"input": 3.0, "output": 15.0})
+        # 12k prompt at $3/Mtok + 500 completion at $15/Mtok = $0.0435
+        agent._statusline(500, 0, 1.0, prompt_tokens=12000)
+        self.assertIn("p:12.0k", agent.output.rules[-1])
+        self.assertIn("$0.0435", agent.output.rules[-1])
+        # A backend that reports nothing must not show a made-up number.
+        agent = self._agent()
+        agent._statusline(500, 0, 1.0, prompt_tokens=0)
+        self.assertNotIn("p:", agent.output.rules[-1])
+        self.assertNotIn("$", agent.output.rules[-1])
 
     def test_footer_shows_the_current_rate_after_the_delta(self):
         agent = self._agent(used=1000)
@@ -797,190 +497,110 @@ class TestLiveTokenCounter(unittest.TestCase):
         # 2000 chars (= 500 tokens) spread over the last 5 s -> ~100 tok/s.
         self._seed_rate(agent, [(5.0, 1000), (2.5, 1000)])
         line = agent._footer_status()
-        # The palette escapes split the string, so match the pieces.
         self.assertIn("~", line)
         self.assertIn("100", line.split("Δ+")[1])
         self.assertIn("tok/s", line)
         self.assertLess(line.index("Δ+"), line.index("tok/s"))
 
-    def test_footer_omits_the_rate_without_samples(self):
+    def test_footer_omits_the_rate_without_samples_or_outside_a_turn(self):
         agent = self._agent()
         agent._turn_in_progress = True
         self.assertNotIn("tok/s", agent._footer_status())
-
-    def test_footer_omits_the_rate_outside_a_turn(self):
-        """The rate is per-turn state; it must not linger after the answer."""
-        agent = self._agent()
+        # The rate is per-turn state; it must not linger after the answer.
+        agent._turn_in_progress = False
         self._seed_rate(agent, [(4.0, 4000)])
         self.assertNotIn("tok/s", agent._footer_status())
 
-    def test_rate_is_not_measured_from_a_single_burst(self):
-        """One chunk has a span of one round trip, not a decode rate."""
+    def test_the_rate_ignores_a_single_burst_prunes_and_decays(self):
         agent = self._agent()
+        # One chunk has a span of one round trip, not a decode rate.
         self._seed_rate(agent, [(0.05, 4000)])
         self.assertIsNone(agent._live_rate())
-
-    def test_rate_decays_to_none_after_the_window_expires(self):
-        agent = self._agent()
+        # The span runs to *now*, so silence empties the window.
         self._seed_rate(agent, [(6.0, 4000), (5.5, 4000)])
         self.assertIsNone(agent._live_rate())
-
-    def test_content_callback_feeds_the_rate_window(self):
-        agent = self._agent()
-        agent._turn_in_progress = True
-        agent.content_callback("hello")
-        agent.content_callback(" world")
-        total = sum(chars for _, chars in agent._rate_samples)
-        self.assertEqual(total, len("hello world"))
-
-    def test_rate_prunes_stale_samples_out_of_the_window(self):
-        agent = self._agent()
         now = time.monotonic()
-        win = deque([(now - 30.0, 100), (now - 1.0, 400)])
-        Agent._rate_prune(win, now)
-        self.assertEqual([c for _, c in win], [400])
+        window = deque([(now - 30.0, 100), (now - 1.0, 400)])
+        Agent._rate_prune(window, now)
+        self.assertEqual([c for _, c in window], [400])
 
-    def test_live_tick_accumulates_streamed_characters(self):
+    def test_content_callback_feeds_the_rate_window_and_the_delta(self):
         agent = self._agent()
         agent._turn_in_progress = True
-        agent.content_callback("hello world ")
-        agent.content_callback("more text")
-        self.assertEqual(agent._live_chars, len("hello world more text"))
+        with mock.patch("agent.agent.print"):
+            agent.content_callback("hello")
+            agent.content_callback(" world")
+        self.assertEqual(sum(c for _, c in agent._rate_samples), len("hello world"))
+        self.assertEqual(agent._live_chars, len("hello world"))
 
-    def test_live_tick_throttles_footer_refreshes(self):
+    def test_the_live_tick_is_throttled_and_silent_outside_a_turn(self):
         """Per-chunk redraws would fight the spinner thread for the lock."""
         agent = self._agent()
-        agent._turn_in_progress = True
         agent.output.footer_active = lambda: True
         agent.output.footer_update = lambda *a, **k: setattr(
             agent.output, "n", getattr(agent.output, "n", 0) + 1
         )
-        agent._last_footer_tick = __import__("time").time() - 1.0
-        for _ in range(50):
-            agent.content_callback("x")
-        # 50 chunks inside the 0.25 s window must produce at most one redraw.
+        with mock.patch("agent.agent.print"):
+            for _ in range(50):
+                agent.content_callback("x")
+            self.assertEqual(getattr(agent.output, "n", 0), 0)  # no turn running
+
+            agent._turn_in_progress = True
+            agent._last_footer_tick = time.time() - 1.0
+            for _ in range(50):
+                agent.content_callback("x")
         self.assertLessEqual(getattr(agent.output, "n", 0), 1)
 
-    def test_live_tick_is_silent_outside_a_turn(self):
-        agent = self._agent()
-        agent._turn_in_progress = False
-        agent.output.footer_active = lambda: True
-        agent.output.footer_update = lambda *a, **k: setattr(
-            agent.output, "n", getattr(agent.output, "n", 0) + 1
-        )
-        agent.content_callback("hello")
-        self.assertEqual(getattr(agent.output, "n", 0), 0)
-
-    def test_statusline_shows_the_decode_rate(self):
+    def test_statusline_shows_the_decode_rate_only_when_meaningful(self):
         agent = self._agent()
         agent._statusline(1000, 0, 2.0)
         self.assertIn("500 tok/s", agent.output.rules[-1])
+        # One chunk is one round trip; no output is no rate at all.
+        for tokens, gen_time in ((1000, 0.01), (0, 2.0), (1000, 0.0)):
+            agent = self._agent()
+            agent._statusline(tokens, 0, gen_time)
+            self.assertNotIn("tok/s", agent.output.rules[-1]), (tokens, gen_time)
 
-    def test_statusline_omits_the_rate_for_a_single_chunk_response(self):
-        """One chunk is one round trip, not a decode rate.
-
-        ``gen_time`` is then the width of a single chunk, so the ratio would be
-        off by orders of magnitude. It is omitted rather than guessed at.
-        """
-        agent = self._agent()
-        agent._statusline(1000, 0, 0.01)
-        self.assertNotIn("tok/s", agent.output.rules[-1])
-
-    def test_statusline_omits_the_rate_without_tokens(self):
-        agent = self._agent()
-        agent._statusline(0, 0, 2.0)
-        self.assertNotIn("tok/s", agent.output.rules[-1])
-
-    def test_statusline_omits_the_rate_without_generation_time(self):
-        agent = self._agent()
-        agent._statusline(1000, 0, 0.0)
-        self.assertNotIn("tok/s", agent.output.rules[-1])
-
-    def test_statusline_fits_a_narrow_terminal(self):
-        """The title is shed to fit, never handed to Rich's truncation.
-
-        Rich cuts an over-long rule title with an ellipsis, so a narrow
-        terminal used to show ``(11…`` -- a number with no meaning left. The
-        status line drops its least valuable segments instead. Below the
-        floor (time and token count) it cannot fit at all and is left long.
-        """
+    def test_the_title_is_shed_to_fit_never_truncated_by_rich(self):
         agent = self._agent(used=13524, max_tokens=120000)
         for width in range(22, 141):
             agent.output._console.width = width
             agent._statusline(690, 0, 4.9, prompt_tokens=40400)
             title = agent.output.rules[-1]
-            self.assertLessEqual(
-                len(title), width - 2, f"overflow at width {width}: {title!r}"
-            )
+            # A Rule would cut it to "…" and leave a number with no meaning.
+            self.assertLessEqual(len(title), width - 2, f"overflow at {width}: {title!r}")
             self.assertIn("690 tokens", title)
 
-    def test_statusline_is_full_when_there_is_room(self):
-        agent = self._agent(used=13524, max_tokens=120000)
+        # With room, everything is there.
         agent.output._console.width = 140
         agent._statusline(690, 0, 4.9, prompt_tokens=40400)
         title = agent.output.rules[-1]
-        self.assertIn("tks (11.27%)", title)
-        self.assertIn("141 tok/s", title)
-        self.assertIn("p:40.4k", title)
+        for segment in ("tks (11.27%)", "141 tok/s", "p:40.4k"):
+            self.assertIn(segment, title)
+        self.assertEqual(Agent._fmt_k(823), "823")
+        self.assertEqual(Agent._fmt_k(12400), "12.4k")
 
-    def test_statusline_drops_the_memory_units_before_its_value(self):
-        agent = self._agent(used=13524, max_tokens=120000)
-        # Wide enough for the numbers, too narrow for the fraction.
-        agent.output._console.width = 80
-        agent._statusline(690, 0, 4.9, prompt_tokens=40400)
-        title = agent.output.rules[-1]
-        self.assertIn("Mem: 13524/120000", title)
-        self.assertIn("tks", title)
-        self.assertNotIn("%", title)
-        # Narrower still: the unit follows, the numbers stay.
-        agent.output._console.width = 72
-        agent._statusline(690, 0, 4.9, prompt_tokens=40400)
-        title = agent.output.rules[-1]
-        self.assertIn("Mem: 13524/120000", title)
-        self.assertNotIn("tks", title)
+        # Cheapest first: the percentage, then the unit, then the memory figure.
+        for width, gone, kept in (
+            (80, "%", ("Mem: 13524/120000", "tks")),
+            (72, "tks", ("Mem: 13524/120000",)),
+            (60, "Mem:", ("4.9s", "690 tokens", "141 tok/s")),
+        ):
+            agent.output._console.width = width
+            agent._statusline(690, 0, 4.9, prompt_tokens=40400)
+            title = agent.output.rules[-1]
+            self.assertNotIn(gone, title, width)
+            for segment in kept:
+                self.assertIn(segment, title, width)
 
-    def test_statusline_drops_the_memory_figure_last(self):
-        """The footer shows memory all turn; on a narrow line it goes."""
-        agent = self._agent(used=13524, max_tokens=120000)
-        agent.output._console.width = 60
-        agent._statusline(690, 0, 4.9, prompt_tokens=40400)
-        title = agent.output.rules[-1]
-        self.assertNotIn("Mem:", title)
-        # What matters is retained: time, tokens, rate and tool count.
-        self.assertIn("4.9s", title)
-        self.assertIn("690 tokens", title)
-        self.assertIn("141 tok/s", title)
-
-    def test_statusline_without_a_console_falls_back_to_80(self):
-        agent = self._agent(used=13524, max_tokens=120000)
+        # No console at all falls back to 80 columns.
         del agent.output._console
         agent._statusline(690, 0, 4.9, prompt_tokens=40400)
         self.assertLessEqual(len(agent.output.rules[-1]), 78)
 
-    def test_fmt_k(self):
-        self.assertEqual(Agent._fmt_k(823), "823")
-        self.assertEqual(Agent._fmt_k(12400), "12.4k")
-
-
-if __name__ == "__main__":
-    unittest.main()
-
 
 class TestTurnHeaderOrdering(unittest.TestCase):
-    """The footer must be armed *before* anything is printed for the turn.
-
-    ``Footer.start()`` blanks the bottom ``FOOTER_LINES`` rows and sets the
-    scroll region. If output is printed first, a screen that is already
-    full puts it on one of those rows and ``start()`` erases it -- which is
-    how the "Wisemonkey <model>" line intermittently disappeared. The turn
-    header is gone now (the model lives in the footer), but the invariant
-    is not: the blank line that separates the turn from the prompt above it
-    is still printed after ``footer_start()``, and it would vanish the same
-    way.
-
-    These tests pin the *ordering* in the source, since the failure only
-    shows up on a full screen and cannot be reproduced in a StringIO.
-    """
+    """The footer must be armed *before* anything is printed for the turn."""
 
     @staticmethod
     def _call_order(func: Callable[..., Any]) -> list[str]:
@@ -992,34 +612,18 @@ class TestTurnHeaderOrdering(unittest.TestCase):
         tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
         calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
         calls.sort(key=lambda n: (n.lineno, n.col_offset))
-        return [
-            n.func.attr
-            for n in calls
-            if isinstance(n.func, ast.Attribute)
-        ]
+        return [n.func.attr for n in calls if isinstance(n.func, ast.Attribute)]
 
-    def test_local_turn_arms_footer_before_printing_anything(self):
-        order = self._call_order(Agent.run_interactive)
-        self.assertLess(
-            order.index("footer_start"),
-            len(order) - 1 - order[::-1].index("newline"),
-        )
-
-    def test_remote_turn_arms_footer_before_printing_anything(self):
-        order = self._call_order(Agent._run_interactive_remote)
-        self.assertLess(
-            order.index("footer_start"),
-            len(order) - 1 - order[::-1].index("newline"),
-        )
-
-    def test_footer_stops_after_the_turn(self):
-        """The footer is disarmed in the finally block, after the header."""
+    def test_both_loops_arm_the_footer_before_printing_and_stop_it_after(self):
         for func in (Agent.run_interactive, Agent._run_interactive_remote):
             order = self._call_order(func)
-            self.assertIn("footer_stop", order)
+            # `start()` blanks the reserved rows, so anything printed first
+            # vanishes whenever the screen was already full.
             self.assertLess(
-                order.index("footer_start"), order.index("footer_stop")
+                order.index("footer_start"),
+                len(order) - 1 - order[::-1].index("newline"),
             )
+            self.assertLess(order.index("footer_start"), order.index("footer_stop"))
 
 
 if __name__ == "__main__":

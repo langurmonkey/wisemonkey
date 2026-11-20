@@ -1,47 +1,20 @@
-"""Tests for reasoning/thinking effort translation across providers.
-
-One config vocabulary (``model.thinking.effort``) meets three providers with
-different dialects: OpenAI takes a ``reasoning_effort`` in extra_body, Ollama
-takes a top-level ``think``, Anthropic takes an absolute ``budget_tokens`` with
-``max_tokens > budget``. These tests pin the wire kwargs for each.
-"""
+"""Tests for reasoning/thinking effort translation across providers."""
 
 import unittest
 
-from agent.router import (
-    Provider,
-    _clamp_effort,
-    ModelRouter,
-)
+from agent.router import ModelRouter, Provider, _clamp_effort
 
 
 class _Config:
-    """Minimal config stub for ModelRouter."""
-
-    def __init__(self, **values):
-        self._values = values
-
     def get(self, key, default=None):
-        return self._values.get(key, default)
-
-
-class _Capture:
-    """Records the kwargs it is called with and returns a stub response."""
-
-    def __init__(self):
-        self.kwargs = None
-
-    def create(self, **kwargs):
-        self.kwargs = kwargs
-        return object()
+        return default
 
 
 class _OpenAIClient:
     """Mirrors the SDK's client.chat.completions.create chain."""
 
-    kwargs: dict | None = None
-
     def __init__(self):
+        self.kwargs = None
         outer = self
 
         class _Completions:
@@ -55,20 +28,16 @@ class _OpenAIClient:
         self.chat = _Chat()
 
 
-class _Messages:
-    def __init__(self):
-        self.kwargs = None
-
-    def create(self, **kwargs):
-        self.kwargs = kwargs
-        return object()
-
-    def stream(self, **kwargs):
-        raise NotImplementedError
-
-
 class _AnthropicClient:
     def __init__(self):
+        self.kwargs = None
+        outer = self
+
+        class _Messages:
+            def create(self, **kwargs):
+                outer.kwargs = kwargs
+                return object()
+
         self.messages = _Messages()
 
 
@@ -82,144 +51,105 @@ class _OllamaClient:
 
 
 def _router(provider, effort):
-    r = ModelRouter(config=_Config())
-    r.provider = provider
-    r._thinking_effort = effort
-    r._model_name = "m"
-    r._temperature = 0.5
-    return r
+    router = ModelRouter(config=_Config())
+    router.provider = provider
+    router._thinking_effort = effort
+    router._model_name = "m"
+    router._temperature = 0.5
+    return router
 
 
 MESSAGES = [{"role": "user", "content": "hi"}]
+LEVELS = ("minimal", "low", "medium", "high", "xhigh", "max")
 
 
 class TestClampEffort(unittest.TestCase):
     OPENAI = ("minimal", "low", "medium", "high")
     OLLAMA = ("low", "medium", "high")
 
-    def test_known_level_inside_range_passes_through(self):
-        self.assertEqual(_clamp_effort("low", self.OPENAI), "low")
-        self.assertEqual(_clamp_effort("medium", self.OLLAMA), "medium")
-
-    def test_level_above_ceiling_is_capped_not_dropped(self):
-        # max -> high, not "off": asking for more must not disable reasoning.
-        self.assertEqual(_clamp_effort("max", self.OPENAI), "high")
-        self.assertEqual(_clamp_effort("xhigh", self.OPENAI), "high")
-
-    def test_level_below_floor_raises_to_floor(self):
-        # Ollama has no `minimal`; snapping up keeps thinking on.
-        self.assertEqual(_clamp_effort("minimal", self.OLLAMA), "low")
-
-    def test_unknown_vendor_value_is_untouched(self):
-        self.assertEqual(_clamp_effort("ultra", self.OPENAI), "ultra")
+    def test_known_levels_pass_and_others_snap_to_the_nearest(self):
+        assert _clamp_effort("low", self.OPENAI) == "low"
+        assert _clamp_effort("medium", self.OLLAMA) == "medium"
+        # Asking for more must cap at the ceiling, not silently mean "off".
+        assert _clamp_effort("max", self.OPENAI) == "high"
+        assert _clamp_effort("xhigh", self.OPENAI) == "high"
+        assert _clamp_effort("minimal", self.OLLAMA) == "low"
+        # A vendor extension is passed through untouched.
+        assert _clamp_effort("ultra", self.OPENAI) == "ultra"
 
 
 class TestOpenAIEffort(unittest.TestCase):
     def _call(self, effort):
-        r = _router(Provider.OPENAI, effort)
-        r._openai_client = _OpenAIClient()
-        r._chat_openai(MESSAGES, "m", 0.5, effort, False, None)
-        return r._openai_client.kwargs
+        router = _router(Provider.OPENAI, effort)
+        router._openai_client = _OpenAIClient()
+        router._chat_openai(MESSAGES, "m", 0.5, effort, False, None)
+        return router._openai_client.kwargs
 
-    def test_effort_travels_in_extra_body(self):
-        self.assertEqual(self._call("high")["extra_body"],
-                         {"reasoning_effort": "high"})
+    def test_effort_travels_in_extra_body_and_is_clamped(self):
+        assert self._call("high")["extra_body"] == {"reasoning_effort": "high"}
+        assert self._call("max")["extra_body"] == {"reasoning_effort": "high"}
 
-    def test_none_sends_no_field(self):
-        # `none` is valid on recent OpenAI models but a 400 on older ones and
-        # on strict proxies; omitting it is accepted everywhere.
-        self.assertNotIn("extra_body", self._call("none"))
-
-    def test_empty_effort_sends_no_field(self):
-        self.assertNotIn("extra_body", self._call(""))
-
-    def test_config_only_level_is_clamped(self):
-        self.assertEqual(self._call("max")["extra_body"],
-                         {"reasoning_effort": "high"})
+    def test_none_and_empty_send_no_field(self):
+        # `none` is a 400 on older models and strict proxies, so it is omitted
+        # rather than sent: the one value every endpoint accepts.
+        for effort in ("none", ""):
+            assert "extra_body" not in self._call(effort), effort
 
 
 class TestOllamaEffort(unittest.TestCase):
     def _call(self, effort):
-        r = _router(Provider.OLLAMA, effort)
-        r._ollama_client = _OllamaClient()
+        router = _router(Provider.OLLAMA, effort)
+        router._ollama_client = _OllamaClient()
         captured: dict = {}
-        r._ollama_stream = lambda **kw: captured.update(kw)
-        r._chat_ollama(MESSAGES, "m", 0.5, effort, True, None)
+        router._ollama_stream = lambda **kwargs: captured.update(kwargs)
+        router._chat_ollama(MESSAGES, "m", 0.5, effort, True, None)
         return captured
 
-    def test_effort_travels_as_top_level_think(self):
-        # It used to be stuffed into `options`, where the Pydantic Options
-        # model silently dropped it, so Ollama thinking never turned on.
+    def test_effort_is_a_top_level_think_parameter(self):
+        # In `options` the Pydantic Options model silently dropped it, so
+        # Ollama thinking never turned on.
         kwargs = self._call("medium")
-        self.assertEqual(kwargs["think"], "medium")
-        self.assertNotIn("reasoning_effort", kwargs["options"])
+        assert kwargs["think"] == "medium"
+        assert "reasoning_effort" not in kwargs["options"]
 
-    def test_none_sends_no_think(self):
-        self.assertNotIn("think", self._call("none"))
-
-    def test_clamped_to_ollama_levels(self):
-        self.assertEqual(self._call("minimal")["think"], "low")
-        self.assertEqual(self._call("max")["think"], "high")
+    def test_none_sends_nothing_and_levels_are_clamped(self):
+        assert "think" not in self._call("none")
+        assert self._call("minimal")["think"] == "low"
+        assert self._call("max")["think"] == "high"
 
 
 class TestAnthropicEffort(unittest.TestCase):
     def _call(self, effort):
-        r = _router(Provider.ANTHROPIC, effort)
-        r._anthropic_client = _AnthropicClient()
-        r._anthropic_non_stream = lambda kw: kw
-        return r._chat_anthropic(MESSAGES, "m", 0.5, effort, False, None)
+        router = _router(Provider.ANTHROPIC, effort)
+        router._anthropic_client = _AnthropicClient()
+        router._anthropic_non_stream = lambda kwargs: kwargs
+        return router._chat_anthropic(MESSAGES, "m", 0.5, effort, False, None)
 
-    def test_budget_always_fits_in_max_tokens(self):
-        # budget_tokens < max_tokens is required by the API; a fixed 8192 made
-        # every budget above it a guaranteed 400.
-        for effort in ("minimal", "low", "medium", "high", "xhigh", "max"):
-            kw = self._call(effort)
-            with self.subTest(effort=effort):
-                self.assertLess(kw["thinking"]["budget_tokens"],
-                                kw["max_tokens"])
+    def test_every_level_gets_a_real_budget_that_fits_max_tokens(self):
+        for effort in LEVELS:
+            kwargs = self._call(effort)
+            assert kwargs["thinking"]["type"] == "enabled", effort
+            # budget_tokens < max_tokens is required, or it is a guaranteed 400.
+            assert kwargs["thinking"]["budget_tokens"] < kwargs["max_tokens"], effort
+        assert self._call("high")["thinking"] == {
+            "type": "enabled", "budget_tokens": 16384,
+        }
 
-    def test_high_gets_its_documented_budget(self):
-        kw = self._call("high")
-        self.assertEqual(kw["thinking"],
-                         {"type": "enabled", "budget_tokens": 16384})
+    def test_thinking_forces_temperature_one_and_none_disables_it(self):
+        assert self._call("medium")["temperature"] == 1.0
+        kwargs = self._call("none")
+        assert "thinking" not in kwargs
+        assert kwargs["temperature"] == 0.5
 
-    def test_every_config_level_has_a_real_budget(self):
-        # Previously minimal/xhigh/max fell through to a silent 4096.
-        for effort in ("minimal", "low", "medium", "high", "xhigh", "max"):
-            kw = self._call(effort)
-            with self.subTest(effort=effort):
-                self.assertEqual(kw["thinking"]["type"], "enabled")
-
-    def test_none_disables_thinking_and_keeps_temperature(self):
-        kw = self._call("none")
-        self.assertNotIn("thinking", kw)
-        self.assertEqual(kw["temperature"], 0.5)
-
-    def test_thinking_forces_temperature_one(self):
-        self.assertEqual(self._call("medium")["temperature"], 1.0)
-
-
-class TestReasoningContentStrippedForAnthropic(unittest.TestCase):
-    def test_reasoning_content_is_removed(self):
-        # Anthropic's SDK rejects unknown message keys, and its thinking blocks
-        # are signed, so text cannot be reconstructed into one.
-        r = _router(Provider.ANTHROPIC, "none")
-        msgs = [{"role": "assistant", "content": "hi",
-                 "reasoning_content": "my thoughts"}]
-        adapted, _ = r._adapt_messages_for_anthropic(msgs)
-        self.assertNotIn("reasoning_content", adapted[0])
-
-    def test_an_empty_reasoning_content_is_removed_too(self):
-        """The key's *presence* is what matters, not its value.
-
-        core.py fills the field with an empty string on a tool round that
-        reasoned about nothing, and Anthropic's SDK rejects the unknown key
-        either way.
-        """
-        r = _router(Provider.ANTHROPIC, "none")
-        msgs = [{"role": "assistant", "content": "hi", "reasoning_content": ""}]
-        adapted, _ = r._adapt_messages_for_anthropic(msgs)
-        self.assertNotIn("reasoning_content", adapted[0])
+    def test_reasoning_content_is_stripped_from_the_message(self):
+        # The SDK rejects unknown keys, and a thinking block is signed, so the
+        # text cannot be turned back into one: the key itself must go.
+        router = _router(Provider.ANTHROPIC, "none")
+        for value in ("my thoughts", ""):
+            adapted, _ = router._adapt_messages_for_anthropic(
+                [{"role": "assistant", "content": "hi", "reasoning_content": value}]
+            )
+            assert "reasoning_content" not in adapted[0], value
 
 
 if __name__ == "__main__":

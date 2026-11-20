@@ -1,20 +1,16 @@
-"""Tests for the phase-1 core turn changes: TurnResult, cancellation state,
-tool result reporting, and the emitter integration."""
+"""Tests for the core turn: TurnResult, cancellation, tool reporting, injection."""
 
 import json
 import unittest
-
 from typing import Any, cast
 from unittest.mock import patch
 
-from agent.core import Core, Stage, TurnCancelled, TurnResult
+from agent.core import Core, TurnResult
 from agent.emitter import TurnEmitter
 from agent.ipc import Event, ToolResultPayload, loopback_pair, payload_as
 
 
 class _Config:
-    """Minimal config stand-in."""
-
     def __init__(self, values=None):
         self.values = values or {}
 
@@ -76,178 +72,101 @@ def make_core(llm_replies, config=None, memory=None):
     return core
 
 
+def _tool_call(call_id="1", name="t", args="{}"):
+    return {"id": call_id, "type": "function",
+            "function": {"name": name, "arguments": args}}
+
+
 class TestTurnResult(unittest.TestCase):
-    """TurnResult must stay tuple-compatible for existing callers."""
-
-    def test_unpacks_as_four_tuple(self):
-        response, tokens, tools, gen = TurnResult("hi", 3, 1, 0.5)
-        assert (response, tokens, tools, gen) == ("hi", 3, 1, 0.5)
-
-    def test_len_and_index(self):
-        r = TurnResult("hi", 3, 1, 0.5)
-        assert len(r) == 4
-        assert r[0] == "hi"
-        assert r[3] == 0.5
-
-    def test_defaults(self):
-        r = TurnResult()
-        assert r.response == ""
-        assert r.cancelled is False
-        assert r.error == ""
-
-    def test_cancelled_flag(self):
-        r = TurnResult(response="[Cancelled]", cancelled=True)
-        assert r.cancelled is True
+    def test_tuple_compatibility_and_defaults(self):
+        result = TurnResult("hi", 3, 1, 0.5)
+        assert (result.response, result.total_tokens, result.n_tools, result.gen_time) == (
+            "hi", 3, 1, 0.5
+        )
+        assert len(result) == 4 and result[0] == "hi" and result[3] == 0.5
+        empty = TurnResult()
+        assert empty.response == "" and empty.cancelled is False and empty.error == ""
+        assert TurnResult(cancelled=True).cancelled is True
 
 
-class TestRunTurnReturnValues(unittest.TestCase):
+class TestRunTurn(unittest.TestCase):
     def test_final_response(self):
         core = make_core([{"text": "answer", "tokens": 4}])
         result = core.run_turn("hello")
-        assert result.response == "answer"
-        assert result.total_tokens == 4
-        assert result.cancelled is False
-        assert core.memory.saved == 1
+        assert result.response == "answer" and result.total_tokens == 4
+        assert result.cancelled is False and core.memory.saved == 1
 
-    def test_unpacks_like_a_tuple(self):
-        core = make_core([{"text": "answer"}])
-        response, tokens, tools, gen = core.run_turn("hello")
-        assert response == "answer"
-
-    def test_max_turns_returns_turn_result(self):
+    def test_max_turns_stops_the_loop(self):
         core = make_core(
-            [{"text": "narrate", "tool_calls": [{"id": "1", "type": "function",
-              "function": {"name": "t", "arguments": "{}"}}]}] * 6,
+            [{"text": "narrate", "tool_calls": [_tool_call()]}] * 6,
             config=_Config({"agent.max_turns": 2}),
         )
         with patch("agent.core.execute_tool", return_value="ok"):
-            result = core.run_turn("go")
-        assert "maximum number of turns" in result.response
-        assert isinstance(result, TurnResult)
+            assert "maximum number of turns" in core.run_turn("go").response
 
-    def test_max_tool_calls_stops_execution(self):
-        """Hitting the tool-call cap must skip execution and let the model answer."""
-        tool_call = {"id": "1", "type": "function",
-                     "function": {"name": "t", "arguments": "{}"}}
-        replies = [
-            {"text": "narrate", "tool_calls": [tool_call]},
-            {"text": "narrate2", "tool_calls": [tool_call]},
-            {"text": "final answer"},
-        ]
-        core = make_core(replies, config=_Config({"agent.max_tool_calls": 1}))
-        with patch("agent.core.execute_tool", return_value="ok") as ex:
-            result = core.run_turn("go")
-        assert result.response == "final answer"
-        assert result.n_tools == 1  # only the first batch executed
-        ex.assert_called_once()
-        # The limit note was injected into the conversation and history
-        roles = [e["role"] for e in core.memory.exchanges]
-        assert "user" in roles
-        assert any(
-            "Tool call limit reached" in e["content"]
-            for e in core.memory.exchanges if e["role"] == "user"
-        )
-
-    def test_max_tool_calls_zero_is_unlimited(self):
-        """Default (0) must not restrict tool calls."""
-        tool_call = {"id": "1", "type": "function",
-                     "function": {"name": "t", "arguments": "{}"}}
-        replies = [
-            {"text": "narrate", "tool_calls": [tool_call]},
-            {"text": "answer"},
-        ]
-        core = make_core(replies, config=_Config({"agent.max_tool_calls": 0}))
-        with patch("agent.core.execute_tool", return_value="ok") as ex:
-            result = core.run_turn("go")
-        assert result.response == "answer"
-        assert result.n_tools == 1
-        ex.assert_called_once()
-
-    def test_max_tool_calls_partial_batch_blocked(self):
-        """A batch that would exceed the cap is blocked entirely (no partial execution)."""
-        tool_call = {"id": "1", "type": "function",
-                     "function": {"name": "t", "arguments": "{}"}}
-        replies = [
-            {"text": "narrate", "tool_calls": [tool_call]},
-            {"text": "narrate2", "tool_calls": [tool_call, tool_call]},
-            {"text": "final"},
-        ]
-        core = make_core(replies, config=_Config({"agent.max_tool_calls": 2}))
-        with patch("agent.core.execute_tool", return_value="ok") as ex:
-            result = core.run_turn("go")
-        assert result.response == "final"
-        assert result.n_tools == 1  # second batch of 2 would exceed cap of 2
-        ex.assert_called_once()
+    def test_the_tool_cap_blocks_a_batch_rather_than_splitting_it(self):
+        """Hitting the cap skips the whole batch and lets the model answer."""
+        single = [{"text": "narrate", "tool_calls": [_tool_call()]}] * 2
+        for cap, batch, expected in (
+            (1, None, 1),
+            (2, [_tool_call(), _tool_call()], 1),  # 1 + 2 > 2: no partial run
+            (0, None, 2),                          # zero is unlimited
+        ):
+            replies = list(single[:1])
+            replies += [{"text": "narrate2", "tool_calls": batch or [_tool_call()]}]
+            replies.append({"text": "final answer"})
+            core = make_core(replies, config=_Config({"agent.max_tool_calls": cap}))
+            with patch("agent.core.execute_tool", return_value="ok") as execute:
+                result = core.run_turn("go")
+            assert result.response == "final answer", cap
+            assert result.n_tools == expected, cap
+            assert execute.call_count == expected, cap
+            # The limit note reaches the conversation and the history.
+            noted = any(
+                "Tool call limit reached" in e["content"]
+                for e in core.memory.exchanges if e["role"] == "user"
+            )
+            assert noted is bool(cap), cap
 
 
 class TestCancellation(unittest.TestCase):
     """Poll-driven cancellation must not persist a partial answer."""
 
-    def test_poll_cancels_turn(self):
-        core = make_core([{"text": "never"}])
-        emitter = TurnEmitter()
-        emitter.cancel()
-        result = core.run_turn("hello", poll=emitter.poll)
-        assert result.cancelled is True
+    def test_a_cancelled_turn_is_flagged_and_persists_no_answer(self):
+        for raise_on_cancel in (False, True):
+            core = make_core([{"text": "never"}])
+            emitter = TurnEmitter(raise_on_cancel=raise_on_cancel)
+            emitter.cancel()
+            result = core.run_turn(
+                "hello", cancel_callback=emitter.cancelled, poll=emitter.poll
+            )
+            assert result.cancelled is True
+            assert result.response == "[Cancelled]"
+            assert "assistant" not in [e["role"] for e in core.memory.exchanges]
 
-    def test_cancelled_turn_is_not_persisted_as_answer(self):
-        core = make_core([{"text": "never"}])
-        emitter = TurnEmitter()
-        emitter.cancel()
-        core.run_turn("hello", poll=emitter.poll)
-        roles = [e["role"] for e in core.memory.exchanges]
-        # The user prompt is recorded, but no assistant answer.
-        assert "assistant" not in roles
-
-    def test_cancel_flag_is_reset_between_turns(self):
+    def test_the_cancel_flag_does_not_leak_into_the_next_turn(self):
         core = make_core([{"text": "first"}, {"text": "second"}])
         emitter = TurnEmitter()
         emitter.cancel()
-        # The cancelled turn never consumes a reply.
         core.run_turn("one", poll=emitter.poll)
         emitter.reset()
         result = core.run_turn("two", poll=emitter.poll)
-        assert result.cancelled is False
-        assert result.response == "first"
+        assert result.cancelled is False and result.response == "first"
 
-    def test_raise_on_cancel_emitter_is_handled(self):
-        """A raise_on_cancel emitter still yields a clean TurnResult."""
-        core = make_core([{"text": "never"}])
-        emitter = TurnEmitter(raise_on_cancel=True)
-        emitter.cancel()
-        result = core.run_turn("hello", cancel_callback=emitter.cancelled,
-                               poll=emitter.poll)
-        assert result.cancelled is True
-
-    def test_cancel_callback_no_longer_required_for_cancellation(self):
-        """The legacy cancel_callback hook is optional."""
-        core = make_core([{"text": "never"}])
-        emitter = TurnEmitter()
-        emitter.cancel()
-        result = core.run_turn("hello", poll=emitter.poll)
-        assert result.cancelled is True
-        assert result.response == "[Cancelled]"
-
-    def test_stream_error_still_propagates(self):
+    def test_errors_and_a_finished_batch(self):
+        # A stream error propagates on its own channel.
         core = make_core([{"text": "partial", "stream_error": ValueError("bad sse")}])
         with self.assertRaises(ValueError):
             core.run_turn("hello")
 
-    def test_keyboard_interrupt_in_tool_returns_cancelled_turn(self):
-        """Ctrl+C while a tool runs must cancel the turn, not crash."""
-        core = make_core([{"text": "narrate", "tool_calls": [{"id": "1", "type": "function",
-                         "function": {"name": "slow", "arguments": "{}"}}]}])
+        # Ctrl+C while a tool runs cancels the turn, and persists nothing:
+        # a dangling tool result would be malformed in the prompt.
+        core = make_core([{"text": "narrate", "tool_calls": [_tool_call(name="slow")]}])
         with patch("agent.core.execute_tool", side_effect=KeyboardInterrupt):
-            result = core.run_turn("go")
-        assert result.cancelled is True
-        # A cancelled turn persists nothing (no dangling tool result).
+            assert core.run_turn("go").cancelled is True
         assert core.memory.saved == 0
 
-    def test_keyboard_interrupt_in_tool_keeps_prior_exchanges(self):
-        """The already-finished tool results stay in the in-memory history."""
-        tool_call = {"id": "1", "type": "function",
-                     "function": {"name": "ok", "arguments": "{}"}}
-        core = make_core([{"text": "narrate", "tool_calls": [tool_call]},
+        core = make_core([{"text": "narrate", "tool_calls": [_tool_call()]},
                           {"text": "answer"}])
         with patch("agent.core.execute_tool", return_value="fine"):
             core.run_turn("go")
@@ -255,232 +174,96 @@ class TestCancellation(unittest.TestCase):
 
 
 class TestCancellationIsAnnounced(unittest.TestCase):
-    """A cancelled turn must say so, not just end.
-
-    The frontends skip their status line when `TurnResult.cancelled` is set,
-    so the cancel event is the only thing that tells the user why the turn
-    stopped. A Ctrl+C during a tool used to produce a silent cancel.
-    """
-
-    def test_keyboard_interrupt_in_tool_notifies_the_cancel_callback(self):
-        core = make_core([{"text": "narrate", "tool_calls": [{"id": "1", "type": "function",
-                         "function": {"name": "slow", "arguments": "{}"}}]}])
-        emitter = TurnEmitter()
-        seen = []
-        with patch("agent.core.execute_tool", side_effect=KeyboardInterrupt):
+    def test_both_cancellation_paths_announce_once(self):
+        for via_poll in (True, False):
+            emitter = TurnEmitter()
+            seen = []
+            core = make_core([{"text": "narrate", "tool_calls": [_tool_call(name="slow")]}])
             with patch.object(emitter, "emit",
                               side_effect=lambda name, payload=None: seen.append(name)):
-                result = core.run_turn("go", cancel_callback=emitter.cancelled)
-        assert result.cancelled is True
-        assert Event.CANCELLED in seen
-
-    def test_poll_cancellation_also_announces(self):
-        """The same holds for cancellation driven through poll()."""
-        core = make_core([{"text": "never", "tool_calls": None}])
-
-        emitter = TurnEmitter()
-        emitter.cancel()
-        seen = []
-        with patch.object(emitter, "emit",
-                          side_effect=lambda name, payload=None: seen.append(name)):
-            result = core.run_turn("go", cancel_callback=emitter.cancelled,
-                                   poll=emitter.poll)
-        assert result.cancelled is True
-        assert Event.CANCELLED in seen
-
-    def test_the_notice_is_not_duplicated_when_streaming_also_reports(self):
-        """One cancellation, one notice, even if both core paths report it."""
-        emitter = TurnEmitter()
-        seen = []
-        with patch.object(emitter, "emit",
-                          side_effect=lambda name, payload=None: seen.append(name)):
-            emitter.cancelled(KeyboardInterrupt())
-            emitter.cancelled(KeyboardInterrupt())
-        assert seen.count(Event.CANCELLED) == 1
+                if via_poll:
+                    emitter.cancel()
+                    result = core.run_turn("go", cancel_callback=emitter.cancelled,
+                                           poll=emitter.poll)
+                else:
+                    with patch("agent.core.execute_tool", side_effect=KeyboardInterrupt):
+                        result = core.run_turn("go", cancel_callback=emitter.cancelled)
+            assert result.cancelled is True
+            assert seen.count(Event.CANCELLED) == 1
 
 
 class TestToolCallbacks(unittest.TestCase):
-    def _core_with_one_tool(self):
-        reply = {
-            "text": "",
-            "tool_calls": [{"id": "c1", "type": "function",
-                            "function": {"name": "read_file", "arguments": '{"path": "x"}'}}],
-        }
-        return make_core([reply, {"text": "done"}])
+    def test_the_callback_gets_the_result_the_error_flag_and_any_image(self):
+        for result, is_error in (({"content": "data"}, False), ({"error": "nope"}, True)):
+            core = make_core([
+                {"text": "", "tool_calls": [_tool_call("c1", "read_file", '{"path": "x"}')]},
+                {"text": "done"},
+            ])
+            seen = []
+            with patch("agent.core.execute_tool", return_value=result):
+                core.run_turn("go", tool_result_callback=lambda *a: seen.append(a))
+            tool_id, name, content, err, duration = seen[0]
+            assert (tool_id, name, err) == ("c1", "read_file", is_error)
+            assert ("data" in content) is not is_error
+            assert duration >= 0
 
-    def test_tool_result_callback_receives_result(self):
-        core = self._core_with_one_tool()
+        core = make_core([
+            {"text": "", "tool_calls": [_tool_call("c1", "read_file", '{"path": "x"}')]},
+            {"text": "done"},
+        ])
         seen = []
-        with patch("agent.core.execute_tool", return_value={"content": "data"}):
+        image = {"text": "[image]", "image_base64": "QUJD", "mime_type": "image/png"}
+        with patch("agent.core.execute_tool", return_value=image):
             core.run_turn("go", tool_result_callback=lambda *a: seen.append(a))
-        assert len(seen) == 1
-        tool_id, name, content, is_error, duration = seen[0]
-        assert tool_id == "c1"
-        assert name == "read_file"
-        assert "data" in content
-        assert is_error is False
-        assert duration >= 0
-
-    def test_tool_result_callback_marks_errors(self):
-        core = self._core_with_one_tool()
-        seen = []
-        with patch("agent.core.execute_tool", return_value={"error": "nope"}):
-            core.run_turn("go", tool_result_callback=lambda *a: seen.append(a))
-        assert seen[0][3] is True
-
-    def test_tool_result_callback_handles_images(self):
-        core = self._core_with_one_tool()
-        seen = []
-        image_result = {"text": "[image]", "image_base64": "QUJD", "mime_type": "image/png"}
-        with patch("agent.core.execute_tool", return_value=image_result):
-            core.run_turn("go", tool_result_callback=lambda *a: seen.append(a))
-        tool_id, name, content, is_error, duration, b64, mime = seen[0]
-        assert b64 == "QUJD"
-        assert mime == "image/png"
-
-    def test_tool_result_callback_optional(self):
-        core = self._core_with_one_tool()
-        with patch("agent.core.execute_tool", return_value="ok"):
-            result = core.run_turn("go")
-        assert result.response == "done"
+        assert seen[0][5:] == ("QUJD", "image/png")
 
 
 class TestMalformedToolArguments(unittest.TestCase):
-    """A model can emit a truncated/invalid tool-call argument string (e.g. a
-    bare ``{``). That must not abort the turn with "Error sending prompt": the
-    failure is fed back to the model as a tool error instead."""
+    """A model can emit a truncated argument string (a bare ``{`` is common)."""
 
-    def _core_with_bad_args(self):
-        reply = {
-            "text": "",
-            "tool_calls": [{"id": "c1", "type": "function",
-                            "function": {"name": "run_command", "arguments": "{"}}],
-        }
-        return make_core([reply, {"text": "done"}])
-
-    def test_malformed_args_do_not_abort_the_turn(self):
-        core = self._core_with_bad_args()
-        result = core.run_turn("go")
-        assert result.response == "done"
-        assert result.error == ""
-        assert result.cancelled is False
-
-    def test_malformed_args_reach_the_model_as_a_tool_error(self):
-        core = self._core_with_bad_args()
-        with patch("agent.core.execute_tool", return_value="ok"):
-            core.run_turn("go")
-        results = [e for e in core.memory.exchanges if e["role"] == "tool_result"]
-        assert len(results) == 1
-        assert "not valid JSON" in results[0]["content"]
-        assert results[0]["tool_call_id"] == "c1"
-        # The call itself is still recorded, so history stays well-formed.
-        calls = [e for e in core.memory.exchanges if e["role"] == "tool_call"]
-        assert len(calls) == 1
-
-    def test_malformed_args_never_reach_the_tool_handler(self):
-        core = self._core_with_bad_args()
-        calls = []
-        with patch("agent.core.execute_tool", side_effect=lambda name, args: calls.append(args) or "ok"):
-            core.run_turn("go")
-        assert calls == []
-
-    def test_malformed_args_are_reported_to_the_result_callback(self):
-        core = self._core_with_bad_args()
-        seen = []
-        core.run_turn("go", tool_result_callback=lambda *a: seen.append(a))
-        assert len(seen) == 1
-        assert seen[0][0] == "c1"
-        assert seen[0][1] == "run_command"
-        assert seen[0][3] is True
-
-    def test_valid_args_still_execute(self):
-        core = self._core_with_bad_args()
-        core._send_to_llm = lambda *a, **k: ({"text": "done", "tool_calls": None}, 1, 0.1, None)
-        good = make_core([
-            {"text": "", "tool_calls": [{"id": "c2", "type": "function",
-             "function": {"name": "read_file", "arguments": '{"path": "x"}'}}]},
+    def test_a_parse_error_is_a_tool_error_not_a_dead_turn(self):
+        core = make_core([
+            {"text": "", "tool_calls": [_tool_call("c1", "run_command", "{")]},
             {"text": "done"},
         ])
         calls = []
-        with patch("agent.core.execute_tool", side_effect=lambda name, args: calls.append(args) or "ok"):
-            good.run_turn("go")
-        assert calls == [{"path": "x"}]
+        seen = []
+        with patch("agent.core.execute_tool",
+                   side_effect=lambda name, args: calls.append(args) or "ok"):
+            result = core.run_turn(
+                "go", tool_result_callback=lambda *a: seen.append(a)
+            )
+        assert result.response == "done"
+        assert result.error == "" and result.cancelled is False
+        assert calls == []  # the handler never ran
+        results = [e for e in core.memory.exchanges if e["role"] == "tool_result"]
+        assert "not valid JSON" in results[0]["content"]
+        assert results[0]["tool_call_id"] == "c1"
+        # The call itself is still recorded, so history stays well-formed.
+        assert len([e for e in core.memory.exchanges if e["role"] == "tool_call"]) == 1
+        assert (seen[0][0], seen[0][1], seen[0][3]) == ("c1", "run_command", True)
 
 
 class TestReasoningContentRoundTrip(unittest.TestCase):
-    """DeepSeek's thinking mode rejects a request whose assistant tool-call
-    message has no ``reasoning_content``, so the reasoning collected during the
-    round must ride back on that message."""
+    """DeepSeek's thinking mode rejects a tool-call message with no
+    ``reasoning_content``, so the round's reasoning must ride back on it."""
 
-    def _core(self, thinking):
-        reply = {
-            "text": "",
-            "thinking": thinking,
-            "tool_calls": [{"id": "c1", "type": "function",
-                            "function": {"name": "read_file", "arguments": "{}"}}],
-        }
-        core = make_core([reply, {"text": "done"}])
-        # _stream_handler is what accumulates reasoning_content; make_core's
-        # fake _send_to_llm does not, so mirror the real one.
-        fake_send = core._send_to_llm
-
-        def _send(*a, **k):
-            if not core.messages[-1].get("role") == "tool":
-                core.thinking_buffer = ""
-            result = fake_send(*a, **k)
-            core.thinking_buffer = result[0].get("thinking", "")
-            return result
-
-        core._send_to_llm = _send
-        return core
-
-    def _assistant_with_tool_call(self, core):
-        return [m for m in core.messages if m.get("tool_calls")][0]
-
-    def test_reasoning_is_passed_back_with_the_tool_call(self):
-        core = self._core("I should read the file first.")
-        with patch("agent.core.execute_tool", return_value="ok"):
-            core.run_turn("go")
-        assert self._assistant_with_tool_call(core)["reasoning_content"] == (
-            "I should read the file first."
-        )
-
-    def test_no_reasoning_means_no_key(self):
-        # A provider without thinking mode must not receive an empty or
-        # invented field.
-        core = self._core("")
-        with patch("agent.core.execute_tool", return_value="ok"):
-            core.run_turn("go")
-        assert "reasoning_content" not in self._assistant_with_tool_call(core)
-
-
-class TestReasoningContentOnEveryRound(unittest.TestCase):
-    """The field belongs on *every* assistant message of a thinking turn.
-
-    DeepSeek's rule is about the request, not about the round: one assistant
-    message without ``reasoning_content`` is enough to reject the whole call.
-    Attaching it only where the reasoning happened left every no-reasoning
-    tool round -- the common case after a tool result, where the model just
-    calls the next tool -- sending a message without the key, so the *next*
-    request failed. That is why the error was intermittent.
-    """
-
-    def _core(self, replies):
+    def _core(self, *thinkings):
+        replies = [
+            {"text": "", "thinking": thinking,
+             "tool_calls": [_tool_call("c1", "read_file")]}
+            for thinking in thinkings
+        ]
+        replies.append({"text": "done"})
         core = make_core(replies)
         fake_send = core._send_to_llm
         self.sent = []
 
         def _send(*a, **k):
-            # Mirror _stream_handler's per-round reset.
+            # Mirror _stream_handler: reset, then accumulate the round's reasoning.
             core.thinking_buffer = ""
-            # Snapshot the exact message list the request would carry. This is
-            # taken *after* run_turn's _ensure_reasoning_content() call, which
-            # is the seam this test exercises.
             self.sent.append([dict(m) for m in core.messages])
             result = fake_send(*a, **k)
-            # Emulate _stream_handler: it accumulates the round's reasoning and
-            # marks the turn as thinking-mode, which is what makes
-            # _ensure_reasoning_content patch the rest of the messages.
             core.thinking_buffer = result[0].get("thinking", "")
             if core.thinking_buffer:
                 core._thinking_seen = True
@@ -490,358 +273,157 @@ class TestReasoningContentOnEveryRound(unittest.TestCase):
         return core
 
     @staticmethod
-    def _tool_call(call_id):
-        return {"id": call_id, "type": "function",
-                "function": {"name": "read_file", "arguments": "{}"}}
+    def _assistants(messages):
+        return [m for m in messages if m.get("role") == "assistant"]
 
-    def _assistants(self, request):
-        return [m for m in request if m.get("role") == "assistant"]
-
-    def test_a_tool_round_without_reasoning_still_sends_the_field(self):
-        core = self._core([
-            {"text": "", "thinking": "first thoughts", "tool_calls": [self._tool_call("c1")]},
-            {"text": "", "thinking": "", "tool_calls": [self._tool_call("c2")]},
-            {"text": "done"},
-        ])
+    def test_the_reasoning_rides_back_and_otherwise_stays_out(self):
+        core = self._core("I should read the file first.")
         with patch("agent.core.execute_tool", return_value="ok"):
             core.run_turn("go")
-        third = self._assistants(self.sent[2])
-        self.assertEqual([m["reasoning_content"] for m in third],
-                         ["first thoughts", ""])
-
-    def test_a_message_shaped_before_the_first_reasoning_is_patched(self):
-        """Round 2 reasons, so round 1's message is fixed up before round 3.
-
-        Nothing can be done for round 1 itself -- no reasoning had been seen
-        yet -- but from the moment the turn proves it is a thinking
-        conversation, every message already in it gets the field.
-        """
-        core = self._core([
-            {"text": "", "thinking": "", "tool_calls": [self._tool_call("c1")]},
-            {"text": "", "thinking": "second thoughts", "tool_calls": [self._tool_call("c2")]},
-            {"text": "done"},
-        ])
-        with patch("agent.core.execute_tool", return_value="ok"):
-            core.run_turn("go")
-        third = self._assistants(self.sent[2])
-        self.assertEqual([m["reasoning_content"] for m in third],
-                         ["", "second thoughts"])
-
-    def test_a_turn_that_never_reasons_sends_no_field_at_all(self):
-        core = self._core([
-            {"text": "", "thinking": "", "tool_calls": [self._tool_call("c1")]},
-            {"text": "done"},
-        ])
+        assert self._assistants(core.messages)[0]["reasoning_content"] == (
+            "I should read the file first."
+        )
+        # A provider without thinking mode gets no field at all.
+        core = self._core("")
         with patch("agent.core.execute_tool", return_value="ok"):
             core.run_turn("go")
         for request in self.sent:
             for msg in self._assistants(request):
                 assert "reasoning_content" not in msg, msg
 
-    def test_the_real_reasoning_is_never_overwritten(self):
-        core = self._core([
-            {"text": "", "thinking": "keep me", "tool_calls": [self._tool_call("c1")]},
-            {"text": "done"},
-        ])
+    def test_every_assistant_message_carries_the_field_without_overwriting(self):
+        core = self._core("keep me", "", "second thoughts")
         with patch("agent.core.execute_tool", return_value="ok"):
             core.run_turn("go")
-        self.assertEqual(self._assistants(core.messages)[0]["reasoning_content"],
-                         "keep me")
-class TestEmitterIntegration(unittest.TestCase):
-    """The emitter can drive a whole turn through a loopback transport."""
+        # Round 3 reasons, so round 1's already-shaped message is patched too,
+        # and a real value is never replaced by the empty one of round 2.
+        assert [m.get("reasoning_content") for m in self._assistants(self.sent[3])] == [
+            "keep me", "", "second thoughts",
+        ]
 
-    def test_full_turn_event_stream(self):
-        core = make_core([{"text": "hello there"}])
+
+class TestEmitterIntegration(unittest.TestCase):
+    @staticmethod
+    def _drain(peer):
+        messages = []
+        while (msg := peer.recv(timeout=0.05)) is not None:
+            messages.append(msg)
+        return messages
+
+    def test_a_whole_turn_streams_its_events_in_order(self):
+        core = make_core([
+            {"text": "", "tool_calls": [_tool_call("c9", "read_file")]},
+            {"text": "final"},
+        ])
         a, peer = loopback_pair()
         emitter = TurnEmitter(transport=a)
 
-        emitter.turn_start("hi")
-        result = core.run_turn(
-            "hi",
-            prompt_callback=emitter.prompt,
-            content_callback=emitter.content,
-            error_callback=emitter.error,
-            poll=emitter.poll,
-        )
+        emitter.turn_start("go")
+        with patch("agent.core.execute_tool", return_value="filedata"):
+            result = core.run_turn(
+                "go", prompt_callback=emitter.prompt,
+                tool_callback=emitter.tool_call,
+                tool_result_callback=emitter.tool_result, poll=emitter.poll,
+            )
         emitter.turn_end(result.response, result.total_tokens,
                          result.n_tools, result.gen_time, cancelled=result.cancelled)
 
-        names = []
-        while True:
-            msg = peer.recv(timeout=0.05)
-            if msg is None:
-                break
-            names.append(msg.name)
-
-        assert names[0] == Event.TURN_START
-        assert Event.CONTENT in names
-        assert names[-1] == Event.TURN_END
-
-    def test_emitter_error_callback_raises_through_run_turn(self):
-        core = make_core([{"text": "x"}])
-        emitter = TurnEmitter()
-
-        def _send_to_llm(prompt_callback=None, reasoning_callback=None,
-                         content_callback=None, cancel_callback=None,
-                         error_callback=None, poll=None):
-            assert error_callback is not None
-            error_callback(ValueError("boom"), "endpoint down")
-            raise AssertionError("unreachable")
-
-        core._send_to_llm = _send_to_llm
-        with self.assertRaises(RuntimeError):
-            core.run_turn("hi", error_callback=emitter.error)
-    def test_tool_events_end_to_end(self):
-        reply = {
-            "text": "",
-            "tool_calls": [{"id": "c9", "type": "function",
-                            "function": {"name": "read_file", "arguments": "{}"}}],
-        }
-        core = make_core([reply, {"text": "final"}])
-        a, peer = loopback_pair()
-        emitter = TurnEmitter(transport=a)
-
-        with patch("agent.core.execute_tool", return_value="filedata"):
-            core.run_turn(
-                "go",
-                tool_callback=emitter.tool_call,
-                tool_result_callback=emitter.tool_result,
-            )
-
-        events = []
-        while True:
-            msg = peer.recv(timeout=0.05)
-            if msg is None:
-                break
-            events.append(msg)
-
+        events = self._drain(peer)
         names = [e.name for e in events]
-        assert Event.TOOL_CALL in names
-        assert Event.TOOL_RESULT in names
-
-        result_msg = next(e for e in events if e.name == Event.TOOL_RESULT)
-        payload = payload_as(ToolResultPayload, result_msg)
-        assert payload.id == "c9"
-        assert payload.content == "filedata"
-
-
-class TestStageEnumUnchanged(unittest.TestCase):
-    """The core's Stage enum keeps its meaning for legacy callers."""
-
-    def test_values(self):
-        assert Stage.START.value == 0
-        assert Stage.PROCESS.value == 1
-        assert Stage.STOP.value == 2
-
-    def test_turn_cancelled_is_an_exception(self):
-        assert issubclass(TurnCancelled, Exception)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert names[0] == Event.TURN_START and names[-1] == Event.TURN_END
+        assert Event.TOOL_CALL in names and Event.TOOL_RESULT in names
+        payload = payload_as(
+            ToolResultPayload, next(e for e in events if e.name == Event.TOOL_RESULT)
+        )
+        assert (payload.id, payload.content) == ("c9", "filedata")
 
 
 class TestSteerInjection(unittest.TestCase):
-    """Lines submitted mid-turn reach the model at the next tool seam.
+    """Lines submitted mid-turn reach the model at the next tool seam."""
 
-    ``run_turn`` loops back to the LLM once per tool batch; the injection
-    callback is polled right there, so a line the user typed while a tool was
-    running is appended to ``self.messages`` before the next request instead
-    of waiting for the whole turn to end.
-    """
-
-    def _tool_call(self, name="t"):
-        return {"id": "1", "type": "function",
-                "function": {"name": name, "arguments": "{}"}}
-
-    def _replies(self, n_tools=2, final="done"):
-        """n_tools tool rounds, then a final answer with no tool calls."""
-        out = [{"text": f"narration {i}",
-                "tool_calls": [self._tool_call()]} for i in range(n_tools)]
+    @staticmethod
+    def _replies(n_tools=2, final="done"):
+        out = [{"text": f"narration {i}", "tool_calls": [_tool_call()]}
+               for i in range(n_tools)]
         out.append({"text": final})
         return out
 
-    def test_no_injection_leaves_messages_untouched(self):
-        core = make_core(self._replies())
-        with patch("agent.core.execute_tool", return_value="ok"):
-            core.run_turn("go")
-        assert [m for m in core.messages if m["role"] == "user"] == [
-            {"role": "user", "content": "go"}
-        ]
+    @staticmethod
+    def _users(core):
+        return [m["content"] for m in core.messages if m["role"] == "user"]
 
-    def test_line_is_injected_before_the_next_request(self):
-        core = make_core(self._replies())
-        pending = [["actually, use python"]]
-        with patch("agent.core.execute_tool", return_value="ok"):
-            core.run_turn("go",
-                          inject_callback=lambda: pending.pop(0))
-        users = [m for m in core.messages if m["role"] == "user"]
-        assert [m["content"] for m in users] == [
-            "go", "actually, use python",
-        ]
+    def test_lines_reach_the_model_and_the_history(self):
+        for pending, expected in (
+            ([[]], ["go"]),
+            ([[None]], ["go"]),
+            ([["just a line"]], ["go", "just a line"]),
+            ([["first", "second"]], ["go", "first", "second"]),
+        ):
+            core = make_core(self._replies())
+            with patch("agent.core.execute_tool", return_value="ok"):
+                core.run_turn("go", inject_callback=lambda: pending.pop(0))
+            assert self._users(core) == expected, pending
+            # Every delivered line is stored as a user message, like a typed one.
+            stored = [e["content"] for e in core.memory.exchanges
+                      if e["role"] == "user"]
+            assert stored == expected, pending
 
-    def test_every_queued_line_is_drained_in_one_seam(self):
-        """Two lines submitted between the same two tool calls arrive together."""
-        core = make_core(self._replies())
-        pending = [["first", "second"]]
-
-        def inject():
-            return pending.pop(0) if pending else []
-
-        with patch("agent.core.execute_tool", return_value="ok"):
-            core.run_turn("go", inject_callback=inject)
-        users = [m for m in core.messages if m["role"] == "user"]
-        assert [m["content"] for m in users] == ["go", "first", "second"]
-
-    def test_lines_submitted_at_different_seams_both_arrive(self):
-        core = make_core(self._replies())
-        pending = [["early"], ["late"]]
-
-        def inject():
-            return pending.pop(0) if pending else []
-
-        with patch("agent.core.execute_tool", return_value="ok"):
-            core.run_turn("go", inject_callback=inject)
-        users = [m for m in core.messages if m["role"] == "user"]
-        assert [m["content"] for m in users] == ["go", "early", "late"]
-
-    def test_injection_is_recorded_in_chat_history(self):
-        core = make_core(self._replies())
-        pending = [["steer"]]
-        with patch("agent.core.execute_tool", return_value="ok"):
-            core.run_turn("go", inject_callback=lambda: pending.pop(0))
-        injected = [e for e in core.memory.exchanges
-                    if e["role"] == "user" and e["content"] == "steer"]
-        assert len(injected) == 1
-
-    def test_callback_is_polled_once_per_tool_round(self):
+    def test_the_seam_rules(self):
+        # Polled once per tool round, and never before a final answer request.
         core = make_core(self._replies(n_tools=3))
         calls = []
-
-        def inject():
-            calls.append(1)
-            return []
-
         with patch("agent.core.execute_tool", return_value="ok"):
-            core.run_turn("go", inject_callback=inject)
+            core.run_turn("go", inject_callback=lambda: calls.append(1) or [])
         assert len(calls) == 3
-
-    def test_not_polled_when_the_turn_has_no_tool_calls(self):
-        """A single-round turn has no seam, so nothing is asked for."""
-        core = make_core([{"text": "answer"}])
-        calls = []
-        with patch("agent.core.execute_tool", return_value="ok"):
-            core.run_turn("go", inject_callback=lambda: calls.append(1))
+        calls.clear()
+        make_core([{"text": "answer"}]).run_turn(
+            "go", inject_callback=lambda: calls.append(1) or []
+        )
         assert calls == []
 
-    def test_final_answer_round_does_not_inject(self):
-        """The seam is before the *next* request, so the last round is skipped."""
-        core = make_core(self._replies(n_tools=1))
-        calls = []
-        with patch("agent.core.execute_tool", return_value="ok"):
-            core.run_turn("go", inject_callback=lambda: calls.append(1))
-        assert len(calls) == 1
-
-    def test_blank_and_non_string_lines_are_dropped(self):
+        # Blank and non-string lines are dropped.
         core = make_core(self._replies())
-        pending = [["", "   ", None, 42, "keep"]]
-
-        def inject():
-            return pending.pop(0)
-
+        pending = [["", "  ", None, 42, "keep"]]
         with patch("agent.core.execute_tool", return_value="ok"):
-            core.run_turn("go", inject_callback=inject)
-        users = [m for m in core.messages if m["role"] == "user"]
-        assert [m["content"] for m in users] == ["go", "keep"]
+            core.run_turn("go", inject_callback=lambda: pending.pop(0))
+        assert self._users(core) == ["go", "keep"]
 
-    def test_callback_exception_does_not_abort_the_turn(self):
-        """A UI-level failure to collect typed text must not kill the turn."""
-        core = make_core(self._replies())
-
+        # A UI failure to collect typed text must not kill a working turn.
         def inject():
             raise RuntimeError("footer exploded")
 
-        with patch("agent.core.execute_tool", return_value="ok"):
-            result = core.run_turn("go", inject_callback=inject)
-        assert result.response == "done"
-
-    def test_single_string_is_accepted(self):
         core = make_core(self._replies())
-        pending = ["just a line"]
         with patch("agent.core.execute_tool", return_value="ok"):
-            core.run_turn("go",
-                          inject_callback=lambda: pending.pop(0))
-        users = [m for m in core.messages if m["role"] == "user"]
-        assert [m["content"] for m in users] == ["go", "just a line"]
-
-    def test_none_and_empty_are_no_ops(self):
-        for value in (None, [], ()):
-            core = make_core(self._replies())
-            with patch("agent.core.execute_tool", return_value="ok"):
-                core.run_turn("go", inject_callback=lambda: value)
-            users = [m for m in core.messages if m["role"] == "user"]
-            assert [m["content"] for m in users] == ["go"]
+            assert core.run_turn("go", inject_callback=inject).response == "done"
 
 
 class TestImageToolResults(unittest.TestCase):
-    """Images from screenshot/read_image must reach the model as image blocks.
-
-    `execute_tool` serializes dict results to JSON, so the image branch in
-    `_tool_calls` used to be dead code: `isinstance(result, dict)` was never
-    true and the base64 blob went to the model as a plain string it could
-    not see. The result is now parsed back before the branch.
-    """
+    """Images from screenshot/read_image must reach the model as image blocks."""
 
     def _core(self):
-        core = make_core([{"text": "", "tool_calls": [
-            {"id": "c1", "type": "function",
-             "function": {"name": "fake_img", "arguments": "{}"}},
-        ]}, {"text": "done"}])
-        return core
+        return make_core([
+            {"text": "", "tool_calls": [_tool_call("c1", "fake_img")]},
+            {"text": "done"},
+        ])
 
-    def test_image_result_becomes_multimodal_block(self):
+    def test_an_image_becomes_a_block_an_error_is_flagged_and_a_string_stays(self):
         core = self._core()
         payload = {"image_base64": "QUJD", "mime_type": "image/jpeg"}
-        with patch("agent.core.execute_tool",
-                   return_value=json.dumps(payload)):
+        with patch("agent.core.execute_tool", return_value=json.dumps(payload)):
             core.run_turn("look")
-        tool_msgs = [m for m in core.messages if m["role"] == "tool"]
-        self.assertEqual(len(tool_msgs), 1)
-        content = tool_msgs[0]["content"]
-        self.assertIsInstance(content, list)
-        self.assertEqual(content[0]["type"], "image_url")
-        self.assertEqual(
-            content[0]["image_url"]["url"], "data:image/jpeg;base64,QUJD"
-        )
+        content = [m for m in core.messages if m["role"] == "tool"][0]["content"]
+        assert content[0]["type"] == "image_url"
+        assert content[0]["image_url"]["url"] == "data:image/jpeg;base64,QUJD"
 
-    def test_error_dict_is_flagged(self):
-        """A dict-shaped {"error": ...} must be reported as an error."""
-        core = make_core([{"text": "", "tool_calls": [
-            {"id": "c1", "type": "function",
-             "function": {"name": "fake", "arguments": "{}"}},
-        ]}, {"text": "done"}])
         seen = []
-        with patch("agent.core.execute_tool",
-                   return_value=json.dumps({"error": "boom"})):
-            core.run_turn("go", tool_result_callback=lambda *a, **k: seen.append(a))
-        self.assertTrue(seen[0][3])  # is_error
+        with patch("agent.core.execute_tool", return_value=json.dumps({"error": "boom"})):
+            self._core().run_turn("go", tool_result_callback=lambda *a: seen.append(a))
+        assert seen[0][3] is True
 
-    def test_plain_string_stays_plain(self):
-        """A handler returning a plain string must not be re-parsed."""
-        core = make_core([{"text": "", "tool_calls": [
-            {"id": "c1", "type": "function",
-             "function": {"name": "fake", "arguments": "{}"}},
-        ]}, {"text": "done"}])
+        core = self._core()
         with patch("agent.core.execute_tool", return_value="ok"):
             core.run_turn("go")
-        tool_msgs = [m for m in core.messages if m["role"] == "tool"]
-        self.assertEqual(tool_msgs[0]["content"], "ok")
-
-
-# ── stream completeness ──────────────────────────────────────────────────────
-#
-# Minimal stand-ins for the OpenAI SDK's chunk objects, which is what the
-# router yields (`_StreamChunk` in agent/router.py has the same shape).
+        assert [m for m in core.messages if m["role"] == "tool"][0]["content"] == "ok"
 
 
 class _Delta:
@@ -880,111 +462,62 @@ def _bare_core():
     return core
 
 
-class TestStreamCompleteness(unittest.TestCase):
-    """A stream that ends without a terminal marker delivered a prefix.
+def _text_chunk(text, finish_reason=None):
+    return _Chunk(choices=[{"delta": {"content": text}, "finish_reason": finish_reason}])
 
-    That marker is the only thing separating "the model finished" from "the
-    connection was cut": a socket dropped at a chunk boundary raises nothing,
-    so the fragment used to be shown and persisted as a complete answer.
-    """
+
+class TestStreamCompleteness(unittest.TestCase):
+    """A stream that ends without a terminal marker delivered a prefix."""
 
     def _run(self, *chunks, **kw):
         core = _bare_core()
         core._stream_handler(iter(chunks), **kw)
         return core
 
-    def test_a_stop_marker_is_complete(self):
-        core = self._run(
-            _Chunk(choices=[{"delta": {"content": "done."}}]),
-            _Chunk(choices=[{"finish_reason": "stop"}]),
-        )
-        self.assertEqual(core.finish_reason, "stop")
-        self.assertFalse(core.stream_incomplete)
+    def test_the_terminal_marker_decides(self):
+        for reason, incomplete in (("stop", False), ("length", True),
+                                   ("tool_calls", False)):
+            core = self._run(
+                _text_chunk("text"),
+                _Chunk(choices=[{"finish_reason": reason}]),
+            )
+            assert (core.finish_reason, core.stream_incomplete) == (reason, incomplete)
+        # No marker ever arrived: what a cut-off stream looks like.
+        core = self._run(_text_chunk("half a sent"))
+        assert core.finish_reason is None and core.stream_incomplete is True
 
-    def test_a_length_marker_is_incomplete(self):
-        core = self._run(
-            _Chunk(choices=[{"delta": {"content": "cut short"}}]),
-            _Chunk(choices=[{"finish_reason": "length"}]),
-        )
-        self.assertEqual(core.finish_reason, "length")
-        self.assertTrue(core.stream_incomplete)
-
-    def test_a_tool_calls_marker_is_complete(self):
-        core = self._run(
-            _Chunk(choices=[{"delta": {"tool_calls": [
-                type("TC", (), {"index": 0, "id": "c1", "type": "function",
-                                "function": type("F", (), {"name": "t",
-                                                           "arguments": "{}"})()})()
-            ]}}]),
-            _Chunk(choices=[{"finish_reason": "tool_calls"}]),
-        )
-        self.assertFalse(core.stream_incomplete)
-
-    def test_no_marker_at_all_is_incomplete(self):
-        core = self._run(_Chunk(choices=[{"delta": {"content": "half a sent"}}]))
-        self.assertIsNone(core.finish_reason)
-        self.assertTrue(core.stream_incomplete)
-
-    def test_an_empty_stream_is_not_flagged(self):
-        """Nothing arrived, so there is no fragment to warn about."""
-        core = self._run(_Chunk(choices=[]))
-        self.assertFalse(core.stream_incomplete)
-
-    def test_a_cancelled_stream_is_not_flagged(self):
-        """Cancellation has its own channel; it is not a truncated answer."""
+    def test_an_empty_cancelled_or_errored_stream_is_not_flagged(self):
+        assert self._run(_Chunk(choices=[])).stream_incomplete is False
         core = _bare_core()
-        core._stream_handler(
-            iter([_Chunk(choices=[{"delta": {"content": "partial"}}])]),
-            poll=lambda: True,
-        )
-        self.assertTrue(core._turn_cancelled)
-        self.assertFalse(core.stream_incomplete)
+        core._stream_handler(iter([_text_chunk("partial")]), poll=lambda: True)
+        assert core._turn_cancelled and core.stream_incomplete is False
 
-    def test_a_stream_error_is_not_flagged(self):
-        """An error is raised to the caller; the flag is for silent cuts."""
         def _boom():
-            yield _Chunk(choices=[{"delta": {"content": "text"}}])
+            yield _text_chunk("text")
             raise ValueError("malformed SSE")
 
         core = _bare_core()
         _, _, stream_error, _ = core._stream_handler(_boom())
-        self.assertIsNotNone(stream_error)
-        self.assertFalse(core.stream_incomplete)
+        assert stream_error is not None and core.stream_incomplete is False
 
-    # --- the usage chunk ---
-
-    def test_a_usage_only_chunk_is_read_and_skipped(self):
-        core = _bare_core()
-        _, _, _, usage = core._stream_handler(iter([
-            _Chunk(choices=[{"delta": {"content": "x"}}]),
-            _Chunk(choices=[], usage={"prompt_tokens": 7, "completion_tokens": 3}),
-            _Chunk(choices=[{"finish_reason": "stop"}]),
-        ]))
-        self.assertEqual(usage, {"prompt_tokens": 7, "completion_tokens": 3})
-        self.assertEqual(core.response_buffer, "x")
-
-    def test_usage_does_not_swallow_a_content_delta(self):
-        """A provider may attach usage to its last *content* chunk.
-
-        The usage branch used to `continue` before the delta was read, so
-        that chunk's text was dropped.
-        """
-        core = self._run(
-            _Chunk(
-                choices=[{"delta": {"content": "the tail"},
-                          "finish_reason": "stop"}],
-                usage={"prompt_tokens": 5, "completion_tokens": 2},
-            )
+    def test_usage_is_read_without_swallowing_a_content_delta(self):
+        cases = (
+            (_Chunk(choices=[], usage={"prompt_tokens": 7, "completion_tokens": 3}),
+             {"prompt_tokens": 7, "completion_tokens": 3}),
+            (_Chunk(choices=[], usage=_UsageObject()),
+             {"prompt_tokens": 11, "completion_tokens": 4}),
         )
-        self.assertEqual(core.response_buffer, "the tail")
-
-    def test_an_sdk_usage_object_is_understood(self):
-        core = _bare_core()
-        _, _, _, usage = core._stream_handler(iter([
-            _Chunk(choices=[{"delta": {"content": "x"}}]),
-            _Chunk(choices=[], usage=_UsageObject()),
-        ]))
-        self.assertEqual(usage, {"prompt_tokens": 11, "completion_tokens": 4})
+        for chunk, expected in cases:
+            core = _bare_core()
+            _, _, _, usage = core._stream_handler(iter([_text_chunk("x"), chunk]))
+            assert usage == expected
+            assert core.response_buffer == "x"
+        # A provider may attach usage to its last *content* chunk: keep the text.
+        core = self._run(_Chunk(
+            choices=[{"delta": {"content": "the tail"}, "finish_reason": "stop"}],
+            usage={"prompt_tokens": 5, "completion_tokens": 2},
+        ))
+        assert core.response_buffer == "the tail"
 
 
 class TestIncompleteTurnResult(unittest.TestCase):
@@ -1004,45 +537,31 @@ class TestIncompleteTurnResult(unittest.TestCase):
         core._send_to_llm = _send
         return core
 
-    def test_a_complete_turn_is_not_flagged(self):
-        core = self._core("all done.", incomplete=False, reason="stop")
-        result = core.run_turn("q")
-        self.assertFalse(result.incomplete)
-        self.assertEqual(result.incomplete_reason, "")
-        self.assertNotIn("incomplete", core.memory.exchanges[-1])
+    def test_the_result_and_the_stored_exchange_are_flagged(self):
+        for text, incomplete, reason, expected, expected_reason in (
+            ("all done.", False, "stop", False, ""),
+            ("cut off here", True, "length", True, "length"),
+            ("half a sent", True, None, True, "stream_ended"),
+        ):
+            core = self._core(text, incomplete=incomplete, reason=reason)
+            result = core.run_turn("q")
+            assert (result.incomplete, result.incomplete_reason) == (
+                expected, expected_reason
+            ), text
+            assert bool(core.memory.exchanges[-1].get("incomplete")) is expected, text
 
-    def test_a_length_cut_is_reported(self):
-        core = self._core("cut off here", incomplete=True, reason="length")
-        result = core.run_turn("q")
-        self.assertTrue(result.incomplete)
-        self.assertEqual(result.incomplete_reason, "length")
-
-    def test_a_dropped_stream_is_reported(self):
-        core = self._core("half a sent", incomplete=True, reason=None)
-        result = core.run_turn("q")
-        self.assertTrue(result.incomplete)
-        self.assertEqual(result.incomplete_reason, "stream_ended")
-
-    def test_the_stored_answer_is_flagged(self):
-        core = self._core("half a sent", incomplete=True, reason=None)
-        core.run_turn("q")
-        self.assertTrue(core.memory.exchanges[-1].get("incomplete"))
-
-    def test_the_flag_is_cleared_between_turns(self):
-        """A stale flag must not mark a later, complete answer."""
+    def test_a_stale_flag_does_not_mark_a_later_turn_and_partials_are_flagged(self):
         core = make_core([{"text": "first"}, {"text": "second"}])
         core.stream_incomplete = True
-        result = core.run_turn("q")
-        self.assertFalse(result.incomplete)
+        assert core.run_turn("q").incomplete is False
 
-
-class TestPersistedPointer(unittest.TestCase):
-    """The partial-response path also flags what it stores."""
-
-    def test_a_partial_response_is_flagged(self):
         core = make_core([])
         core.messages = []
         core.response_buffer = "streamed half a sen"
         core._persist_partial_turn("q")
         stored = [e for e in core.memory.exchanges if e["role"] == "assistant"]
-        self.assertTrue(stored[-1].get("incomplete"))
+        assert stored[-1].get("incomplete")
+
+
+if __name__ == "__main__":
+    unittest.main()

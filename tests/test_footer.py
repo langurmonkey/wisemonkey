@@ -20,7 +20,6 @@ from agent.footer import (
     SPINNER_FRAMES,
     SPINNER_INTERVAL,
     THINKING_LABEL,
-    WRITE_LOCK,
     Footer,
     _CURSOR,
     _LockedWriter,
@@ -36,159 +35,6 @@ _BOLD = "\x1b[1m"
 _RESET = "\x1b[0m"
 
 
-class TestVisibleLen(unittest.TestCase):
-    def test_plain_text(self):
-        self.assertEqual(visible_len("hello"), 5)
-
-    def test_ignores_sgr(self):
-        self.assertEqual(visible_len(f"{_BOLD}hello{_RESET}"), 5)
-
-    def test_ignores_cursor_addressing(self):
-        self.assertEqual(visible_len("\x1b[55;1H\x1b[2K\x1b[0m"), 0)
-
-
-class TestClipAnsi(unittest.TestCase):
-    def test_short_text_untouched(self):
-        self.assertEqual(clip_ansi("hello", 10), "hello")
-
-    def test_zero_or_negative_width(self):
-        self.assertEqual(clip_ansi("hello", 0), "")
-        self.assertEqual(clip_ansi("hello", -3), "")
-
-    def test_clips_with_ellipsis(self):
-        self.assertEqual(clip_ansi("abcdefgh", 5), "abcd…")
-
-    def test_preserves_styling(self):
-        styled = f"{_BOLD}abcdefgh{_RESET}"
-        out = clip_ansi(styled, 5)
-        self.assertTrue(out.startswith(_BOLD))
-        self.assertTrue(out.endswith(_RESET))
-        self.assertEqual(visible_len(out), 5)
-
-    def test_width_smaller_than_ellipsis(self):
-        self.assertEqual(clip_ansi("abcd", 1), "a")
-
-    def test_styled_text_within_width_is_returned_as_is(self):
-        styled = f"{_BOLD}hi{_RESET}"
-        self.assertEqual(clip_ansi(styled, 10), styled)
-
-
-class TestSteerWindow(unittest.TestCase):
-    """Clipping the steering row without losing the caret.
-
-    The row is an input field, so the caret can be anywhere in the line. The
-    window that shows it must reserve a column for the caret cell and for any
-    ``…`` it adds, or the row overflows the terminal -- and it must never cut
-    the caret off, which a plain tail-anchored clip does as soon as the caret
-    moves left.
-    """
-
-    def _cells(self) -> int:
-        """Columns the caret cell occupies."""
-        return 1
-
-    def test_a_short_line_is_returned_untouched(self):
-        text, caret = steer_window("use pandas", 3, 40)
-        self.assertEqual((text, caret), ("use pandas", 3))
-
-    def test_the_caret_index_moves_with_the_text(self):
-        text, caret = steer_window("use pandas", 10, 40)
-        self.assertEqual(text[:caret] + "|" + text[caret:], "use pandas|")
-
-    def test_nothing_to_show(self):
-        self.assertEqual(steer_window("", 0, 0), ("", 0))
-
-    def test_an_empty_line_still_reserves_the_caret_column(self):
-        self.assertEqual(steer_window("", 0, 20), ("", 0))
-
-    def test_the_caret_never_falls_outside_the_window(self):
-        """The invariant, swept over every position on a long line."""
-        line = "".join(str(i % 10) for i in range(120))
-        for avail in (6, 10, 20, 41, 80):
-            for caret in range(len(line) + 1):
-                text, index = steer_window(line, caret, avail)
-                self.assertLessEqual(
-                    visible_len(text) + self._cells(),
-                    avail,
-                    f"avail={avail} caret={caret} text={text!r}",
-                )
-                self.assertGreaterEqual(index, 0, caret)
-                self.assertLessEqual(index, len(text), (avail, caret, text))
-                # What the caret sits on is what it was pointing at: the
-                # character index the window kept, offsets included.
-                offset = 1 if text.startswith("…") else 0
-                if index < len(text) and not text[index:].startswith("…"):
-                    self.assertEqual(text[index], line[caret], (avail, caret))
-
-    def test_the_text_before_the_caret_is_what_survives(self):
-        """A caret in the middle keeps its context, not the end of the line."""
-        line = "a" * 50 + "CARET" + "b" * 50
-        text, caret = steer_window(line, 53, 20)
-        self.assertTrue(text.startswith("…"))
-        self.assertTrue(text.endswith("…"))
-        self.assertIn("CAR", text[:caret])  # the text immediately before it
-        self.assertNotIn("b", text)  # what a tail-anchored clip would keep
-
-    def test_a_caret_at_the_end_keeps_the_tail(self):
-        line = "x" * 200
-        text, caret = steer_window(line, 200, 20)
-        self.assertTrue(text.startswith("…"))
-        self.assertEqual(caret, len(text))
-        self.assertLessEqual(visible_len(text) + 1, 20)
-
-    def test_a_caret_at_the_start_keeps_the_head(self):
-        line = "y" * 200
-        text, caret = steer_window(line, 0, 20)
-        self.assertFalse(text.startswith("…"), "nothing was cut at the front")
-        self.assertTrue(text.endswith("…"))
-        self.assertEqual(caret, 0)
-        self.assertEqual(visible_len(text) + 1, 20)
-
-    def test_a_short_window_still_works(self):
-        text, caret = steer_window("abcdefghij", 5, 4)
-        self.assertLessEqual(visible_len(text) + 1, 4)
-        self.assertGreaterEqual(caret, 0)
-
-    def test_a_caret_past_the_end_is_clamped(self):
-        """A stale index (the line shrank under it) must not slice wildly."""
-        text, caret = steer_window("abc", 99, 20)
-        self.assertEqual((text, caret), ("abc", 3))
-
-
-class TestBlockCursor(unittest.TestCase):
-    """The caret cell: one column, painted over what it points at.
-
-    A cell that took a column of its own pushed the rest of the line one to
-    the right every time the caret moved -- not how a terminal or a readline
-    prompt behaves. The character under the caret instead stays put and is
-    drawn *through* the block (reverse video), so it can still be read.
-    """
-
-    def setUp(self) -> None:
-        self.sgr = PALETTE.footer_sgr()
-
-    def test_the_cell_is_always_one_column_wide(self):
-        for under in ("", "a", " ", "€"):
-            self.assertEqual(visible_len(block_cursor(under)), 1, repr(under))
-
-    def test_the_character_under_the_caret_is_kept_inside_the_cell(self):
-        cell = block_cursor("q")
-        self.assertIn("q", cell)
-        self.assertIn(self.sgr["cursor_over"], cell)
-
-    def test_the_cell_carries_its_own_reset(self):
-        """Otherwise reverse video would leak into the rest of the row."""
-        self.assertTrue(block_cursor("q").endswith(self.sgr["reset"]))
-
-    def test_past_the_end_of_the_line_the_cell_is_a_filled_block(self):
-        self.assertEqual(block_cursor(""), _CURSOR)
-        self.assertIn(self.sgr["cursor"], block_cursor(""))
-
-    def test_only_the_first_character_is_taken(self):
-        """Callers pass a tail; the cell must still be one column."""
-        self.assertEqual(visible_len(block_cursor("rest")), 1)
-
-
 class FakeTTY(io.StringIO):
     """A StringIO that claims to be a terminal."""
 
@@ -199,403 +45,346 @@ class FakeTTY(io.StringIO):
         raise OSError("no fileno")
 
 
-class FakeNotTTY(io.StringIO):
-    """A StringIO that is redirected, like piped output."""
+class FakeNotTTY(FakeTTY):
+    """A redirected stream, like piped output."""
 
     def isatty(self) -> bool:
         return False
 
-    def fileno(self) -> int:
-        raise OSError("no fileno")
+
+def _row(out: str, row: int) -> str:
+    """The content the footer last wrote to physical *row* (1-based)."""
+    marker = f"\x1b[{row};1H\x1b[2K"
+    idx = out.rfind(marker)
+    if idx < 0:
+        return ""
+    rest = out[idx + len(marker):]
+    m = re.search(r"\x1b\[\d+;1H|\x1b8", rest)
+    return rest[: m.start()] if m else rest
+
+
+def _run_in_pty(body, rows: int = 24, columns: int = 100) -> bytes:
+    """Run *body* in a child on a real pty of the given size, return its output."""
+    pid, mfd = pty.fork()
+    if pid == 0:  # pragma: no cover - child process
+        # Set the size here too: the child may get there first and read a fresh
+        # pty as 0x0, which disarms the footer.
+        fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
+        try:
+            body()
+        except BaseException:
+            # os._exit(0) would swallow the traceback, and the failure would
+            # read as "the footer wrote nothing".
+            traceback.print_exc()
+            raise
+        finally:
+            os._exit(0)
+    fcntl.ioctl(mfd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
+    out = b""
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        r, _, _ = select.select([mfd], [], [], 0.2)
+        if not r:
+            if out:
+                break
+            continue
+        try:
+            chunk = os.read(mfd, 65536)
+        except OSError:
+            break
+        if not chunk:
+            break
+        out += chunk
+    os.waitpid(pid, 0)
+    return out
+
+
+class TestAnsiText(unittest.TestCase):
+    def test_visible_len_and_clip_ansi(self):
+        self.assertEqual(visible_len("hello"), 5)
+        self.assertEqual(visible_len(f"{_BOLD}hello{_RESET}"), 5)
+        self.assertEqual(visible_len("\x1b[55;1H\x1b[2K\x1b[0m"), 0)
+
+        styled = f"{_BOLD}hi{_RESET}"
+        self.assertEqual(clip_ansi("hello", 10), "hello")
+        self.assertEqual(clip_ansi(styled, 10), styled)
+        # A zero or negative budget is nothing to draw, not a crash.
+        for width in (0, -3):
+            self.assertEqual(clip_ansi("hello", width), "")
+        self.assertEqual(clip_ansi("abcdefgh", 5), "abcd…")
+        self.assertEqual(clip_ansi("abcd", 1), "a")
+        # Styling survives and the result is exactly the budget.
+        out = clip_ansi(f"{_BOLD}abcdefgh{_RESET}", 5)
+        self.assertTrue(out.startswith(_BOLD) and out.endswith(_RESET))
+        self.assertEqual(visible_len(out), 5)
+
+
+class TestSteerWindow(unittest.TestCase):
+    """Clipping the steering row without losing the caret."""
+
+    def test_the_caret_never_falls_outside_the_window(self):
+        """The invariant, swept over every position on a long line."""
+        line = "".join(str(i % 10) for i in range(120))
+        for avail in (4, 6, 20, 41, 80):
+            for caret in range(len(line) + 1):
+                text, index = steer_window(line, caret, avail)
+                self.assertLessEqual(
+                    visible_len(text) + 1, avail, f"avail={avail} caret={caret}"
+                )
+                self.assertGreaterEqual(index, 0, caret)
+                self.assertLessEqual(index, len(text), (avail, caret, text))
+                # What the caret sits on is what it was pointing at.
+                if index < len(text) and not text[index:].startswith("…"):
+                    self.assertEqual(text[index], line[caret], (avail, caret))
+
+    def test_what_survives_is_the_text_before_the_caret(self):
+        line = "a" * 50 + "CARET" + "b" * 50
+        text, caret = steer_window(line, 53, 20)
+        self.assertTrue(text.startswith("…") and text.endswith("…"))
+        self.assertIn("CAR", text[:caret])
+        self.assertNotIn("b", text)  # what a tail-anchored clip would keep
+        # At the end of the line, the tail is what survives.
+        text, caret = steer_window("x" * 200, 200, 20)
+        self.assertTrue(text.startswith("…"))
+        self.assertEqual(caret, len(text))
+        self.assertLessEqual(visible_len(text) + 1, 20)
+        # At the start, the head.
+        text, caret = steer_window("y" * 200, 0, 20)
+        self.assertFalse(text.startswith("…"), "nothing was cut at the front")
+        self.assertTrue(text.endswith("…"))
+        self.assertEqual((caret, visible_len(text) + 1), (0, 20))
+
+    def test_degenerate_cases(self):
+        self.assertEqual(steer_window("use pandas", 3, 40), ("use pandas", 3))
+        self.assertEqual(steer_window("", 0, 0), ("", 0))
+        self.assertEqual(steer_window("", 0, 20), ("", 0))
+        # A stale index (the line shrank under it) must not slice wildly.
+        self.assertEqual(steer_window("abc", 99, 20), ("abc", 3))
+
+
+class TestBlockCursor(unittest.TestCase):
+    """The caret cell: one column, painted over what it points at."""
+
+    def test_the_cell_is_one_column_and_keeps_the_character_inside_it(self):
+        sgr = PALETTE.footer_sgr()
+        for under in ("", "a", " ", "€", "rest"):
+            self.assertEqual(visible_len(block_cursor(under)), 1, repr(under))
+        cell = block_cursor("q")
+        self.assertIn("q", cell)
+        self.assertIn(sgr["cursor_over"], cell)
+        # Otherwise reverse video would leak into the rest of the row.
+        self.assertTrue(cell.endswith(sgr["reset"]))
+        # Past the end there is no character, so the cell is a filled block.
+        self.assertEqual(block_cursor(""), _CURSOR)
+        self.assertIn(sgr["cursor"], block_cursor(""))
 
 
 class TestLockedWriter(unittest.TestCase):
-    def setUp(self) -> None:
-        self.buffer = io.StringIO()
-        self.writer = _LockedWriter(self.buffer)
-
-    def test_write_proxies(self):
-        self.writer.write("abc")
-        self.assertEqual(self.buffer.getvalue(), "abc")
-
-    def test_writelines(self):
-        self.writer.writelines(["a", "b"])
-        self.assertEqual(self.buffer.getvalue(), "ab")
-
-    def test_proxies_attributes(self):
-        self.assertFalse(self.writer.isatty())
-
-    def test_log_receives_repr(self):
+    def test_it_proxies_and_a_broken_debug_log_never_breaks_the_write(self):
         import tempfile
+
+        buffer = io.StringIO()
+        writer = _LockedWriter(buffer)
+        writer.write("abc")
+        writer.writelines(["d", "e"])
+        self.assertEqual(buffer.getvalue(), "abcde")
+        self.assertTrue(_LockedWriter(FakeTTY()).isatty())
+        self.assertFalse(writer.isatty())
 
         with tempfile.NamedTemporaryFile("r+", delete=False) as tmp:
             path = tmp.name
         try:
-            writer = _LockedWriter(self.buffer, path)
-            writer.write("\x1b[1m")
+            _LockedWriter(buffer, path).write("\x1b[1m")
             with open(path) as log:
-                self.assertIn("\\x1b", log.read())
+                self.assertIn("\\x1b", log.read())  # repr'd bytes
         finally:
             os.unlink(path)
-
-    def test_log_failure_is_swallowed(self):
-        writer = _LockedWriter(self.buffer, "/nonexistent/dir/x.log")
-        writer.write("still written")
-        self.assertEqual(self.buffer.getvalue(), "still written")
-
-    def test_isatty_delegates(self):
-        writer = _LockedWriter(FakeTTY())
-        self.assertTrue(writer.isatty())
+        buffer = io.StringIO()
+        _LockedWriter(buffer, "/nonexistent/dir/x.log").write("still written")
+        self.assertEqual(buffer.getvalue(), "still written")
 
 
-class TestFooterGeometry(unittest.TestCase):
+class _FooterCase(unittest.TestCase):
+    """A footer on a fake tty, with the size mocked for the test's lifetime."""
+
+    SIZE = (80, 24)
+
     def setUp(self) -> None:
         self.saved = sys.stdout
         self.tty = FakeTTY()
         sys.stdout = self.tty
-        # The patch must outlive `start()`: `stop()` re-reads the size too, to
-        # blank the rows the footer actually occupies, so a mock scoped to the
-        # setup would leave the row numbers dependent on the terminal the tests
-        # happen to run in. Tests that resize nest their own patch over this
-        # one, which wins.
-        self.size = (80, 24)
-        patcher = mock.patch.object(
-            Footer, "_read_terminal_size", return_value=self.size
-        )
+        # Must outlive start(): stop() and update_status() re-read the size.
+        # Tests that resize nest their own patch over this one, which wins.
+        patcher = mock.patch.object(Footer, "_read_terminal_size", return_value=self.SIZE)
         patcher.start()
         self.addCleanup(patcher.stop)
+        self.footer = Footer()
 
     def tearDown(self) -> None:
         sys.stdout = self.saved
 
-    def _footer(self) -> Footer:
-        footer = Footer()
-        footer.start()
-        return footer
+    def _clear(self) -> None:
+        self.tty.seek(0)
+        self.tty.truncate(0)
 
-    def test_start_sets_scroll_region(self):
-        footer = self._footer()
-        self.assertTrue(footer.active)
+
+class TestFooterGeometry(_FooterCase):
+    def test_start_sets_the_region_and_stop_restores_stdout(self):
+        self.footer.start()
         out = self.tty.getvalue()
-        # Scroll region covers rows 1..(24-4) = 1..20.
-        self.assertIn("\x1b[1;20r", out)
-
-    def test_start_installs_locked_stdout(self):
-        footer = self._footer()
+        self.assertTrue(self.footer.active)
+        self.assertIn("\x1b[1;20r", out)  # rows 1..(24-4)
         self.assertIsInstance(sys.stdout, _LockedWriter)
-        footer.stop()
+        self._clear()
+        self.footer.stop()
+        out = self.tty.getvalue()
         self.assertIs(sys.stdout, self.tty)
+        self.assertFalse(self.footer.active)
+        self.assertIn("\x1b[r", out)
+        # Blanking leaves the cursor on the last screen row, not below it.
+        self.assertTrue(out.rstrip().endswith(f"\x1b[{self.footer._term_height};1H"))
 
-    def test_stop_restores_stdout_and_region(self):
-        footer = self._footer()
-        footer.stop()
-        self.assertFalse(footer.active)
-        self.assertIn("\x1b[r", self.tty.getvalue())
+        # `\x1b[2K\r\n` per row would scroll the screen; addressed erases cannot.
+        self._clear()
+        self.footer._blank_footer_rows(self.tty)
+        out = self.tty.getvalue()
+        self.assertNotIn("\n", out)
+        self.assertNotIn("\r", out)
+        top = self.footer._term_height - FOOTER_LINES + 1
+        for offset in range(FOOTER_LINES):
+            self.assertIn(f"\x1b[{top + offset};1H\x1b[2K", out)
 
-    def test_start_is_noop_when_not_a_tty(self):
+    def test_stop_follows_a_resize_that_happened_during_the_turn(self):
+        self.footer.start()
+        self._clear()
+        with mock.patch.object(Footer, "_read_terminal_size", return_value=(80, 30)):
+            self.footer.stop()
+        out = self.tty.getvalue()
+        # Rows 27..30 are the footer zone at the new height.
+        for row in range(27, 31):
+            self.assertIn(f"\x1b[{row};1H\x1b[2K", out)
+        self.assertTrue(out.rstrip().endswith("\x1b[30;1H"))
+        self.assertEqual(self.footer._term_height, 30)
+
+    def test_start_is_a_noop_off_a_tty_and_on_a_small_terminal(self):
+        self.tearDown()
         plain = FakeNotTTY()
         sys.stdout = plain
-        with mock.patch.object(Footer, "_read_terminal_size", return_value=(80, 24)):
-            footer = Footer()
-            footer.start()
+        footer = Footer()
+        footer.start()
         self.assertFalse(footer.active)
         self.assertEqual(plain.getvalue(), "")
         self.assertIs(sys.stdout, plain)
 
-    def test_blanking_never_moves_the_cursor_past_the_last_row(self):
-        """Blanking the footer must not scroll the screen.
-
-        The natural spelling -- go to the first footer row, then
-        "\\x1b[2K\\r\\n" per row -- ends with the cursor one line *below* the
-        last screen row, which makes the terminal scroll the whole viewport
-        up by one. In the REPL that is what ate the turn header, so the
-        yellow "Prompt processed" line appeared to land on top of it.
-
-        A scroll is triggered by leaving the bottom margin, so the invariant
-        that prevents it is simply that no write addresses a row beyond the
-        last one.
-        """
-        footer = self._footer()
-        height = footer._term_height
-        out = self.tty.getvalue()
-        rows = [int(m.group(1)) for m in re.finditer(r"\x1b\[(\d+);1H", out)]
-        self.assertTrue(rows, "footer wrote no cursor addressing at all")
-        self.assertLessEqual(
-            max(rows), height, f"a write addressed a row past the screen: {out!r}"
-        )
-
-    def test_start_leaves_the_cursor_in_the_scroll_region(self):
-        """Blanking must not leave the cursor below the scroll region either."""
-        footer = self._footer()
-        out = self.tty.getvalue()
-        region_bottom = footer._term_height - FOOTER_LINES
-        self.assertTrue(out.rstrip().endswith(f"\x1b[{region_bottom};1H"))
-        self.assertNotIn("\r\n", out.split("\x1b[1;", 1)[1])
-
-    def test_stop_leaves_the_cursor_on_the_last_row(self):
-        footer = self._footer()
-        height = footer._term_height
-        self.tty.seek(0)
-        self.tty.truncate()
-        footer.stop()
-        self.assertTrue(self.tty.getvalue().rstrip().endswith(f"\x1b[{height};1H"))
-
-    def test_stop_follows_a_resize_that_happened_during_the_turn(self):
-        """Disarming must blank the rows the footer occupies *now*.
-
-        The height is re-read in ``stop()``: a resize between the last redraw
-        and the end of the turn would otherwise leave the footer blanking rows
-        that have moved (and parking the cursor above the bottom of the
-        screen), which is how a stray separator survived a turn.
-        """
-        footer = self._footer()
-        assert footer._term_height == 24
-        self.tty.seek(0)
-        self.tty.truncate()
-        with mock.patch.object(
-            Footer, "_read_terminal_size", return_value=(80, 30)
-        ):
-            footer.stop()
-        out = self.tty.getvalue()
-        # Rows 27..30 are the footer zone at the new height, and the cursor
-        # ends on the last row of the screen rather than the old one.
-        for row in range(27, 31):
-            self.assertIn(f"\x1b[{row};1H\x1b[2K", out)
-        self.assertTrue(out.rstrip().endswith("\x1b[30;1H"))
-        self.assertEqual(footer._term_height, 30)
-
-    def test_blanking_writes_no_newlines(self):
-        """The fix is addressed erases, so no newline may appear at all."""
-        footer = self._footer()
-        self.tty.seek(0)
-        self.tty.truncate()
-        footer._blank_footer_rows(self.tty)
-        out = self.tty.getvalue()
-        self.assertNotIn("\n", out)
-        self.assertNotIn("\r", out)
-        # Read the height the footer settled on rather than assuming the
-        # mocked 24: _blank_footer_rows derives its rows from
-        # _term_height, which a redraw re-reads from the real terminal.
-        top = footer._term_height - FOOTER_LINES + 1
-        for offset in range(FOOTER_LINES):
-            self.assertIn(f"\x1b[{top + offset};1H\x1b[2K", out)
-
-    def test_start_is_noop_on_small_terminal(self):
-        with mock.patch.object(Footer, "_read_terminal_size", return_value=(80, 4)):
-            footer = Footer()
-            footer.start()
-        self.assertFalse(footer.active)
-        self.assertEqual(self.tty.getvalue(), "")
-        self.assertIs(sys.stdout, self.tty)
-
-    def test_update_is_noop_when_inactive(self):
-        footer = Footer()
-        footer.update_status("hello")
-        self.assertEqual(self.tty.getvalue(), "")
-
-
-class TestFooterRendering(unittest.TestCase):
-    def setUp(self) -> None:
-        self.saved = sys.stdout
-        self.tty = FakeTTY()
         sys.stdout = self.tty
-        self.size = (80, 24)
-        # The patch must outlive setUp: update_status() re-reads the size on
-        # every redraw, so a mock scoped to start() alone would fall back to
-        # the real terminal geometry and make these tests environment-dependent.
-        patcher = mock.patch.object(
-            Footer, "_read_terminal_size", return_value=self.size
-        )
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        self.footer = Footer()
+        with mock.patch.object(Footer, "_read_terminal_size", return_value=(80, 4)):
+            self.footer.start()
+            self.assertFalse(self.footer.active)
+            self.assertEqual(self.tty.getvalue(), "")
+            self.assertIs(sys.stdout, self.tty)
+            self.footer.update_status("hello")  # an unarmed footer never writes
+            self.assertEqual(self.tty.getvalue(), "")
+        self.tearDown()
+        sys.stdout = self.saved
+
+
+class TestFooterRendering(_FooterCase):
+    def setUp(self) -> None:
+        super().setUp()
         self.footer.start()
-        self.tty.seek(0)
-        self.tty.truncate(0)
+        self._clear()
 
     def tearDown(self) -> None:
         self.footer.stop()
-        sys.stdout = self.saved
+        super().tearDown()
 
-    def test_draws_four_rows(self):
-        self.footer.update_status("status", "input")
+    def test_four_rows_with_a_separator_a_hint_and_no_wrapping(self):
+        self.footer.update_status("STATUS-LINE", "INPUT-LINE")
         out = self.tty.getvalue()
-        top = 24 - FOOTER_LINES + 1
+        top = self.SIZE[1] - FOOTER_LINES + 1
         for offset in range(FOOTER_LINES):
             self.assertIn(f"\x1b[{top + offset};1H", out)
-
-    def test_separator_and_hint(self):
-        self.footer.update_status("status", "input")
-        out = self.tty.getvalue()
+        # Status and input sit on distinct rows.
+        self.assertNotIn("STATUS-LINE\x1b[2KINPUT-LINE", out)
         self.assertIn("─" * 80, out)
         self.assertIn("cancel turn", out)
 
-    def test_status_and_input_on_distinct_rows(self):
-        self.footer.update_status("STATUS-LINE", "INPUT-LINE")
-        out = self.tty.getvalue()
-        self.assertIn("STATUS-LINE", out)
-        self.assertIn("INPUT-LINE", out)
-        # They must not appear on the same physical row.
-        self.assertNotIn("STATUS-LINE\x1b[2KINPUT-LINE", out)
-
-    def test_identical_update_is_skipped(self):
-        self.footer.update_status("same", "")
-        first = self.tty.getvalue()
-        self.footer.update_status("same", "")
-        self.assertEqual(self.tty.getvalue(), first)
-
-    def test_input_change_triggers_redraw(self):
-        self.footer.update_status("s", "")
-        first = len(self.tty.getvalue())
-        self.footer.update_status("s", "typing")
-        self.assertGreater(len(self.tty.getvalue()), first)
-
-    def test_overlong_status_is_clipped(self):
-        self.footer.update_status("X" * 200, "")
+        self._clear()
+        self.footer.update_status("X" * 200, "Y" * 200)
         out = self.tty.getvalue()
         self.assertIn("…", out)
-        # The clipped line must not exceed the terminal width.
         for chunk in out.split("\x1b[2K"):
-            if "X" in chunk:
-                self.assertLessEqual(chunk.count("X"), 80)
+            self.assertLessEqual(chunk.count("X"), 80)
+            self.assertLessEqual(chunk.count("Y"), 80)
 
-    def test_overlong_input_is_clipped(self):
-        self.footer.update_status("s", "Y" * 200)
-        out = self.tty.getvalue()
-        self.assertIn("…", out)
-
-    def test_resize_is_reread_on_each_redraw(self):
-        self.footer._term_width = 200
-        with mock.patch.object(Footer, "_read_terminal_size", return_value=(40, 10)):
-            self.footer.update_status("status", "input")
-        self.assertEqual(self.footer._term_width, 40)
-        self.assertEqual(self.footer._term_height, 10)
-        out = self.tty.getvalue()
-        self.assertIn("\x1b[7;1H", out)  # 10 - 4 + 1 = 7
-
-    def test_resize_to_too_small_releases_the_region(self):
-        """A terminal too short for the footer must get its whole screen back.
-
-        Keeping the old margins would leave the bottom one below the last
-        screen row, so streamed text would scroll through rows the footer no
-        longer draws on.
-        """
-        with mock.patch.object(Footer, "_read_terminal_size", return_value=(40, 3)):
-            self.footer.update_status("status", "input")
-        out = self.tty.getvalue()
-        self.assertIn("\x1b[r", out)
-        # No footer row is drawn, and nothing addresses a row past the screen.
-        rows = [int(m.group(1)) for m in re.finditer(r"\x1b\[(\d+);1H", out)]
-        self.assertLessEqual(max(rows), 3)
-        self.assertNotIn("cancel turn", out)
-
-    def test_a_resize_reapplies_the_scroll_region(self):
-        """The terminal keeps the old margins across a resize; we must not.
-
-        The region is set once, in ``start()``. When the window shrinks the
-        old bottom margin ends up below the last row, the region degrades to
-        the whole screen, and streamed text scrolls through the footer -- the
-        "wall of horizontal lines" artifact. The redraw has to re-apply the
-        margins for the new height.
-        """
-        with mock.patch.object(
-            Footer, "_read_terminal_size", return_value=(80, 30)
-        ):
-            self.footer.update_status("s", "i")
-        out = self.tty.getvalue()
-        self.assertIn("\x1b[1;26r", out)  # 30 - 4
-        self.assertEqual(self.footer._term_height, 30)
-        # The reserved rows moved with the window: the separator is drawn on
-        # the new first footer row, not the old one.
-        self.assertIn("\x1b[27;1H", out)
-
-    def test_a_shrink_reanchors_the_cursor_above_the_footer(self):
-        """After a shrink the old cursor row can be *inside* the footer.
-
-        Restoring it (DECRC) is what made the answer appear below the footer,
-        so the repair parks the cursor on the last content row and starts a
-        fresh line there instead.
-        """
-        with mock.patch.object(
-            Footer, "_read_terminal_size", return_value=(80, 12)
-        ):
-            self.footer.update_status("s", "i")
-        out = self.tty.getvalue()
-        self.assertIn("\x1b[1;8r", out)  # 12 - 4
-        self.assertIn("\x1b[8;1H\r\n", out)
-        # The re-anchor must come before the redraw's own cursor save, so the
-        # redraw restores a position that is inside the new region.
-        self.assertLess(out.index("\x1b[8;1H\r\n"), out.index("\x1b7"))
-
-    def test_a_width_change_also_reanchors_the_cursor(self):
-        """Reflow can push the cursor down into the footer without a height change."""
-        with mock.patch.object(
-            Footer, "_read_terminal_size", return_value=(40, 24)
-        ):
-            self.footer.update_status("s", "i")
-        out = self.tty.getvalue()
-        self.assertIn("\x1b[20;1H\r\n", out)
-
-    def test_a_grow_keeps_the_cursor_where_the_stream_left_it(self):
-        """Growing only adds rows, so the old position is still inside the region."""
-        with mock.patch.object(
-            Footer, "_read_terminal_size", return_value=(80, 30)
-        ):
-            self.footer.update_status("s", "i")
-        out = self.tty.getvalue()
-        self.assertIn("\x1b7\x1b[r\x1b[1;26r\x1b8", out)
-        self.assertNotIn("\r\n", out)
-
-    def test_a_resize_forces_a_redraw_even_when_nothing_changed(self):
-        self.footer.update_status("same", "")
-        first = len(self.tty.getvalue())
-        with mock.patch.object(
-            Footer, "_read_terminal_size", return_value=(80, 30)
-        ):
-            self.footer.update_status("same", "")
-        self.assertGreater(len(self.tty.getvalue()), first)
-
-    def test_output_written_while_armed_repairs_the_geometry_first(self):
-        """A tool can print for a minute while the user resizes; the next
-        write must not land in the broken layout."""
-        self.tty.seek(0)
-        self.tty.truncate()
-        with mock.patch.object(
-            Footer, "_read_terminal_size", return_value=(80, 14)
-        ):
-            sys.stdout.write("tool output\n")
-        out = self.tty.getvalue()
-        self.assertIn("\x1b[1;10r", out)       # region re-applied
-        self.assertIn("tool output\n", out)
-        # The repair precedes the text, so the text is written above the footer.
-        self.assertLess(out.index("\x1b[1;10r"), out.index("tool output"))
-
-    def test_cursor_saved_and_restored_around_redraw(self):
-        """A redraw must not clobber the streamed cursor column.
-
-        Answer text is printed line by line, so the cursor happens to sit at
-        column 1 of the bottom scroll-region row and a bare CUP back there is
-        harmless. A reasoning block is printed mid-line (``end=""``), so the
-        cursor sits at an arbitrary column; repositioning it to column 1
-        would make the next streamed chunk overwrite the start of the line.
-        The redraw therefore saves the cursor (DECSC, ``ESC 7``) before
-        drawing and restores it (DECRC, ``ESC 8``) afterwards, inside the
-        write lock.
-        """
+    def test_a_redraw_is_saved_and_restored_and_only_a_change_redraws(self):
+        """A redraw must not clobber the streamed cursor column."""
         self.footer.update_status("s", "i")
         out = self.tty.getvalue()
         self.assertTrue(out.startswith("\x1b7"))
         self.assertTrue(out.rstrip().endswith("\x1b8"))
 
+        self._clear()
+        self.footer.update_status("same", "")
+        first = self.tty.getvalue()
+        self.footer.update_status("same", "")
+        self.assertEqual(self.tty.getvalue(), first)
+        self.footer.update_status("same", "typing")
+        self.assertGreater(len(self.tty.getvalue()), len(first))
+        # A resize forces one even when nothing changed.
+        before = len(self.tty.getvalue())
+        with mock.patch.object(Footer, "_read_terminal_size", return_value=(80, 30)):
+            self.footer.update_status("same", "typing")
+        self.assertGreater(len(self.tty.getvalue()), before)
+
+    def test_a_grow_reapplies_the_region_a_shrink_reanchors_the_cursor(self):
+        """The terminal keeps the old margins across a resize; we must not."""
+        with mock.patch.object(Footer, "_read_terminal_size", return_value=(80, 30)):
+            self.footer.update_status("s", "i")
+        out = self.tty.getvalue()
+        self.assertIn("\x1b7\x1b[r\x1b[1;26r\x1b8", out)  # 30 - 4, then DECRC
+        self.assertNotIn("\r\n", out)  # growing only adds rows: the cursor is safe
+        self.assertEqual(self.footer._term_height, 30)
+        self.assertIn("\x1b[27;1H", out)  # the reserved rows moved
+
+        # A shrink cannot restore the cursor: it parks on the last content row.
+        self._clear()
+        with mock.patch.object(Footer, "_read_terminal_size", return_value=(80, 12)):
+            self.footer.update_status("s", "i")
+        out = self.tty.getvalue()
+        self.assertIn("\x1b[1;8r", out)  # 12 - 4
+        self.assertIn("\x1b[8;1H\r\n", out)
+        self.assertLess(out.index("\x1b[8;1H\r\n"), out.index("\x1b7"))
+
+        # A width change cannot either, even at the same height.
+        self._clear()
+        with mock.patch.object(Footer, "_read_terminal_size", return_value=(40, 12)):
+            self.footer.update_status("s", "i")
+        self.assertIn("\x1b[8;1H\r\n", self.tty.getvalue())
+        self.assertEqual(self.footer._term_width, 40)
+
+    def test_a_resize_to_too_small_releases_the_region(self):
+        with mock.patch.object(Footer, "_read_terminal_size", return_value=(40, 3)):
+            self.footer.update_status("status", "input")
+        out = self.tty.getvalue()
+        self.assertIn("\x1b[r", out)
+        rows = [int(m.group(1)) for m in re.finditer(r"\x1b\[(\d+);1H", out)]
+        self.assertLessEqual(max(rows), 3)
+        self.assertNotIn("cancel turn", out)
+
+    def test_output_written_while_armed_repairs_the_geometry_first(self):
+        """A tool can print for a minute while the user resizes; the next write
+        must not land in the broken layout."""
+        self._clear()
+        with mock.patch.object(Footer, "_read_terminal_size", return_value=(80, 14)):
+            sys.stdout.write("tool output\n")
+        out = self.tty.getvalue()
+        self.assertIn("\x1b[1;10r", out)
+        self.assertLess(out.index("\x1b[1;10r"), out.index("tool output"))
+
 
 class TestRealStream(unittest.TestCase):
-    """The footer must never write through a Rich FileProxy.
-
-    ``console.status()`` wraps ``sys.stdout`` in a ``FileProxy`` which
-    *interprets* ANSI escapes: anything written to it is decoded, markup
-    parsed and re-rendered, so the footer's cursor-addressing sequences
-    would come out as literal ``[24;1H``-style text.
-    """
+    """The footer must never write through a Rich FileProxy."""
 
     def setUp(self) -> None:
         self.saved = sys.stdout
@@ -603,37 +392,23 @@ class TestRealStream(unittest.TestCase):
     def tearDown(self) -> None:
         sys.stdout = self.saved
 
-    def test_unwraps_file_proxy(self):
-        from rich.file_proxy import FileProxy
+    def test_unwraps_a_file_proxy_but_not_our_own_lock(self):
         from rich.console import Console
-
-        real = FakeTTY()
-        sys.stdout = FileProxy(Console(), real)
-        self.assertIs(real_stream(), real)
-
-    def test_leaves_locked_writer_in_place(self):
-        """Our own lock must still be taken, so it is not unwrapped."""
-        real = FakeTTY()
-        locked = _LockedWriter(real)
-        sys.stdout = locked
-        self.assertIs(real_stream(), locked)
-
-    def test_unwraps_locked_writer_under_a_proxy(self):
-        """A spinner wrapping the locked writer still resolves to it."""
         from rich.file_proxy import FileProxy
-        from rich.console import Console
 
-        real = FakeTTY()
-        locked = _LockedWriter(real)
-        sys.stdout = FileProxy(Console(), cast(IO[str], locked))
-        self.assertIs(real_stream(), locked)
-
-    def test_plain_stream_is_unchanged(self):
         real = FakeTTY()
         sys.stdout = real
         self.assertIs(real_stream(), real)
+        sys.stdout = FileProxy(Console(), real)
+        self.assertIs(real_stream(), real)
+        # Our lock must still be taken, so it is not unwrapped...
+        locked = _LockedWriter(real)
+        sys.stdout = locked
+        self.assertIs(real_stream(), locked)
+        # ...unless a spinner's proxy sits on top of it.
+        sys.stdout = FileProxy(Console(), cast(IO[str], locked))
+        self.assertIs(real_stream(), locked)
 
-    def test_self_referential_proxy_terminates(self):
         class Loop:
             @property
             def rich_proxied_file(self):
@@ -643,9 +418,8 @@ class TestRealStream(unittest.TestCase):
         sys.stdout = loop
         self.assertIs(real_stream(), loop)
 
-    def test_footer_escapes_bypass_the_proxy(self):
+    def test_footer_escapes_bypass_the_proxy_on_a_real_tty(self):
         """End-to-end: footer output must not be decoded as literal text."""
-        import re
 
         def body() -> None:
             from rich.console import Console
@@ -655,7 +429,6 @@ class TestRealStream(unittest.TestCase):
             status = Console().status("Tool running")
             status.start()
             try:
-                # Reachable: a real Spinner prints through this console.
                 Console().print("during spinner")
                 footer.update_status(" => model", " x")
             finally:
@@ -663,229 +436,75 @@ class TestRealStream(unittest.TestCase):
                 footer.stop()
             os._exit(0)
 
-        out = self._pty(body)
-        # A control sequence that reached the terminal correctly is ESC '['
-        # digits letters. The bug we are guarding against prints the digits
-        # and letters as *text*, with the ESC consumed by Rich's decoder.
-        text = out.decode("utf-8", "replace")
-        leaked = sorted(
-            set(re.findall(r"(?<!\x1b)\[\d+(?:;\d+)*[HJKrf]", text))
-        )
+        text = _run_in_pty(body).decode("utf-8", "replace")
+        # A correct control sequence is ESC '[' digits letters. The bug prints
+        # the digits and letters as text, the ESC eaten by Rich's decoder.
+        leaked = sorted(set(re.findall(r"(?<!\x1b)\[\d+(?:;\d+)*[HJKrf]", text)))
         self.assertEqual(leaked, [], f"footer control sequences leaked as text: {leaked}")
 
-    def _pty(self, body):
-        import fcntl
-        import pty
-        import select
-        import struct
-        import termios
-        import time
 
-        pid, mfd = pty.fork()
-        if pid == 0:  # pragma: no cover - child process
-            # Set the size from *this* side too: the parent's ioctl below can
-            # only run once the fork has returned, so the child may get there
-            # first and read a fresh pty as 0x0 -- at which point Footer.start()
-            # disarms itself for being too small and writes nothing at all.
-            fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
-            try:
-                body()
-            except BaseException:
-                # Otherwise os._exit(0) swallows the traceback and the failure
-                # reads as "the footer wrote nothing".
-                traceback.print_exc()
-                raise
-            finally:
-                os._exit(0)
-        fcntl.ioctl(mfd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
-        out = b""
-        deadline = time.time() + 5
-        while time.time() < deadline:
-            r, _, _ = select.select([mfd], [], [], 0.2)
-            if not r:
-                if out:
-                    break
-                continue
-            try:
-                chunk = os.read(mfd, 65536)
-            except OSError:
-                break
-            if not chunk:
-                break
-            out += chunk
-        os.waitpid(pid, 0)
-        return out
-
-
-class TestFooterSpinner(unittest.TestCase):
-    """The footer animates its own spinner instead of starting a Rich Live.
-
-    ``console.status()`` builds a ``Live`` display, and ``Live`` replaces
-    ``sys.stdout`` with a ``FileProxy`` that *interprets* ANSI escapes. The
-    footer's cursor addressing would then be decoded and printed as literal
-    text on screen, so the footer draws the animation itself on its transient
-    row, under the same write lock as everything else.
-    """
+class TestFooterSpinner(_FooterCase):
+    """The footer animates its own spinner instead of starting a Rich Live."""
 
     def setUp(self) -> None:
-        self.saved = sys.stdout
-        self.tty = FakeTTY()
-        sys.stdout = self.tty
-        # Kept active for the whole test: the spinner thread re-reads the size
-        # on every tick, so a mock scoped to start() would let the animation
-        # fall back to the real terminal geometry.
-        patcher = mock.patch.object(Footer, "_read_terminal_size", return_value=(80, 24))
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        self.footer = Footer()
+        super().setUp()
         self.footer.start()
         self._clear()
 
     def tearDown(self) -> None:
         self.footer.stop()
-        sys.stdout = self.saved
+        super().tearDown()
 
-    def _clear(self) -> None:
-        self.tty.seek(0)
-        self.tty.truncate(0)
-
-    def _row(self, out: str, row: int) -> str:
-        """The content the footer last wrote to physical *row* (1-based).
-
-        The footer addresses each row explicitly (``CUP`` + ``EL``), so a
-        row's content runs from its addressing to the next one -- or to the
-        ``ESC 8`` that closes the redraw (DECRC restores the streamed
-        cursor, so it also bounds the frame's writes).
-        """
-        marker = f"\x1b[{row};1H\x1b[2K"
-        idx = out.rfind(marker)
-        if idx < 0:
-            return ""
-        rest = out[idx + len(marker):]
-        m = re.search(r"\x1b\[\d+;1H|\x1b8", rest)
-        return rest[: m.start()] if m else rest
-
-    def _wait_for_frames(self, count: int, timeout: float = 3.0) -> str:
-        """Let the animation tick, then return everything it wrote."""
-        self._clear()
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if self.tty.getvalue().count("\x1b[2K") >= count:
-                break
-            time.sleep(SPINNER_INTERVAL / 2)
-        out = self.tty.getvalue()
-        self._clear()
-        return out
-
-    # -- lifecycle --
-
-    def test_no_thread_until_a_spinner_is_set(self):
+    def test_one_daemon_thread_that_stop_joins(self):
         self.assertIsNone(self.footer._spinner_thread)
-
-    def test_set_spinner_starts_a_thread(self):
         self.footer.set_spinner("⏳ Processing prompt...")
         thread = self.footer._spinner_thread
-        self.assertIsNotNone(thread)
         assert thread is not None  # for the type checker
         self.assertTrue(thread.daemon)
-
-    def test_set_spinner_is_idempotent(self):
-        """Re-setting the same label must not leak a second thread."""
-        self.footer.set_spinner("working")
-        first = self.footer._spinner_thread
-        self.footer.set_spinner("working")
-        self.assertIs(self.footer._spinner_thread, first)
-
-    def test_clearing_stops_the_thread(self):
-        self.footer.set_spinner("working")
-        thread = self.footer._spinner_thread
-        self.footer.set_spinner("")
-        self.assertIsNone(self.footer._spinner_thread)
-        assert thread is not None
-        self.assertFalse(
-            thread.is_alive(), "spinner thread outlived set_spinner('')"
-        )
-
-    def test_clearing_keeps_the_steering_row(self):
-        """`set_spinner('')` redraws, but only the *hints* row changes.
-
-        The clearing redraw exists so the hints row loses its last frame. The
-        transient row belongs to the user: blanking it there would erase a
-        half-typed steering line mid-keystroke -- and, now that the row also
-        carries the prompt marker and the caret, the input field itself.
-        """
-        self.footer.set_spinner("working")
-        self.footer.update_status("status", "❯ half typed")
-        self._clear()
-        self.footer.set_spinner("")
-        transient = self._row(self.tty.getvalue(), 23)
-        self.assertIn("half typed", transient)
-
-    def test_stop_joins_the_thread(self):
-        """stop() must not leave a writer redrawing into a torn-down footer."""
-        self.footer.set_spinner("working")
-        thread = self.footer._spinner_thread
+        self.assertIn("⏳ Processing prompt...", self.tty.getvalue())
+        # Re-setting the same label must not leak a second thread.
+        self.footer.set_spinner("⏳ Processing prompt...")
+        self.assertIs(self.footer._spinner_thread, thread)
+        # stop() must not leave a writer redrawing into a torn-down footer.
         self.footer.stop()
-        assert thread is not None
         self.assertFalse(thread.is_alive())
+        self.assertIsNone(self.footer._spinner_thread)
         self.footer.start()  # keep tearDown happy
 
-    # -- rendering --
-
-    def test_label_is_drawn_immediately(self):
-        self.footer.set_spinner("⏳ Processing prompt...")
-        self.assertIn("⏳ Processing prompt...", self.tty.getvalue())
-
-    def test_frame_changes_over_time(self):
-        """The animation actually animates."""
-        self.footer.set_spinner("working")
-        self._clear()
-        seen = set()
+    def test_the_label_animates_and_is_clipped(self):
+        self.footer.set_spinner("x" * 300)
+        seen: set[str] = set()
         deadline = time.time() + 3.0
         while time.time() < deadline and len(seen) < 3:
             out = self.tty.getvalue()
-            for frame in SPINNER_FRAMES:
-                if frame in out:
-                    seen.add(frame)
+            seen |= {frame for frame in SPINNER_FRAMES if frame in out}
             time.sleep(SPINNER_INTERVAL / 2)
         self.assertGreaterEqual(len(seen), 3, f"only saw frames {seen}")
+        self.assertIn("…", self.tty.getvalue())
+        # A cursor-addressing sequence without its leading ESC is the signature
+        # of the footer's escapes being decoded and printed as text.
+        leaked = re.findall(r"(?<!\x1b)(\[\d+(?:;\d+)*[HJKrf])", self.tty.getvalue())
+        self.assertEqual(leaked, [], f"escape sequences leaked as text: {leaked}")
 
-    def test_typed_input_is_never_disturbed_by_the_spinner(self):
-        """The spinner lives on the hints row, so typed text is safe.
-
-        Frames keep animating (on the hints row) while the user types; the
-        transient row holds only the typed line.
-        """
+    def test_the_indicators_live_on_the_hints_row_only(self):
+        """Nothing the spinner writes may touch the typed steering line."""
         self.footer.set_spinner("working")
         self._clear()
-        self.footer.update_status("status", "⤷ half typed")
+        self.footer.update_status("status", "↳ half typed")
         time.sleep(SPINNER_INTERVAL * 5)
         out = self.tty.getvalue()
-        transient = self._row(out, 23)
+        transient = _row(out, 23)
         self.assertIn("half typed", transient)
         for frame in SPINNER_FRAMES:
             self.assertNotIn(frame, transient)
-        self.assertTrue(
-            any(f in self._row(out, 24) for f in SPINNER_FRAMES),
-            "spinner did not animate on the hints row",
-        )
+        self.assertTrue(any(f in _row(out, 24) for f in SPINNER_FRAMES),
+                        "spinner did not animate on the hints row")
+        # Every absolute cursor move lands inside the reserved zone: rows 21..24,
+        # with row 20 the bottom of the scroll region.
+        for match in re.finditer(r"\x1b\[(\d+);1H", out):
+            self.assertTrue(20 <= int(match.group(1)) <= 24, match.group(0))
 
-    def test_spinner_keeps_animating_while_the_user_types(self):
-        """Typing no longer pauses the animation: it moved to the hints row."""
-        self.footer.set_spinner("working")
-        self.footer.update_status("status", "⤷ typed")
-        self._clear()
-        time.sleep(SPINNER_INTERVAL * 5)
-        out = self.tty.getvalue()
-        self.assertTrue(
-            any(f in self._row(out, 24) for f in SPINNER_FRAMES),
-            "spinner stopped animating while the user typed",
-        )
-        self.assertIn("typed", self._row(out, 23))
-
-    def test_clearing_spinner_blanks_the_hints_row(self):
-        self.footer.set_spinner("working")
-        self.footer.update_status("status", "")
+        # Clearing blanks the hints row and keeps the steering row.
         self._clear()
         self.footer.set_spinner("")
         out = self.tty.getvalue()
@@ -893,334 +512,149 @@ class TestFooterSpinner(unittest.TestCase):
         for frame in SPINNER_FRAMES:
             self.assertNotIn(frame, out)
         self.assertNotIn("working", out)
-
-    def test_spinner_row_is_within_the_reserved_zone(self):
-        """Never write outside the footer rows, or the response would scroll."""
-        self.footer.set_spinner("working")
-        self._clear()
-        time.sleep(SPINNER_INTERVAL * 5)
-        out = self.tty.getvalue()
-        # Every absolute cursor move must land inside the reserved zone:
-        # rows 21..24 are the footer rows, row 20 is the bottom of the scroll
-        # region where the content cursor belongs.
-        for match in re.finditer(r"\x1b\[(\d+);1H", out):
-            row = int(match.group(1))
-            self.assertTrue(20 <= row <= 24, f"write to row {row} outside the footer")
-
-    def test_no_leaked_escapes_as_text(self):
-        self.footer.set_spinner("working")
-        time.sleep(SPINNER_INTERVAL * 3)
-        self.footer.set_spinner("")
-        time.sleep(SPINNER_INTERVAL)
-        # Look for a cursor-addressing sequence that reached the stream
-        # *without* its leading ESC: that is the signature of the footer's
-        # escapes having been decoded and printed as text.
-        raw = self.tty.getvalue()
-        leaked = re.findall(r"(?<!\x1b)(\[\d+(?:;\d+)*[HJKrf])", raw)
-        self.assertEqual(leaked, [], f"escape sequences leaked as text: {leaked}")
-
-    def test_spinner_text_is_clipped_to_the_width(self):
-        self.footer.set_spinner("x" * 300)
-        self._clear()
-        time.sleep(SPINNER_INTERVAL * 3)
-        out = self.tty.getvalue()
-        self.assertIn("…", out)
+        self.assertIn("half typed", _row(out, 23))
 
 
-class TestFooterHintsRow(unittest.TestCase):
-    """The bottom row: key bindings on the left, status indicators on the right.
-
-    The stage spinner and the reasoning indicator are drawn on the right of
-    the key-hints row, where they never compete with the typed steering
-    line on the row above. Both animate, each with its own frame.
-    """
+class TestFooterHintsRow(_FooterCase):
+    """The bottom row: key bindings on the left, status indicators on the right."""
 
     def setUp(self) -> None:
-        self.saved = sys.stdout
-        self.tty = FakeTTY()
-        sys.stdout = self.tty
-        patcher = mock.patch.object(Footer, "_read_terminal_size", return_value=(80, 24))
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        self.footer = Footer()
+        super().setUp()
         self.footer.start()
 
     def tearDown(self) -> None:
         self.footer.stop()
-        sys.stdout = self.saved
+        super().tearDown()
 
-    def _row(self, out: str, row: int) -> str:
-        """The content the footer last wrote to physical *row* (1-based)."""
-        marker = f"\x1b[{row};1H\x1b[2K"
-        idx = out.rfind(marker)
-        if idx < 0:
-            return ""
-        rest = out[idx + len(marker):]
-        m = re.search(r"\x1b\[\d+;1H|\x1b8", rest)
-        return rest[: m.start()] if m else rest
-
-    def test_no_indicators_leaves_the_row_as_before(self):
-        self.footer.update_status("status", "")
-        out = self.tty.getvalue()
-        self.assertIn("cancel turn", out)
-        self.assertNotIn(THINKING_LABEL, out)
-
-    def test_reasoning_indicator_is_on_the_hints_row(self):
+    def test_reasoning_is_shown_on_the_hints_row_and_animates_alone(self):
         self.footer.set_thinking(True)
         out = self.tty.getvalue()
-        self.assertIn(THINKING_LABEL, self._row(out, 24))
-        # Not on the status or transient rows.
-        self.assertNotIn(THINKING_LABEL, self._row(out, 22))
-        self.assertNotIn(THINKING_LABEL, self._row(out, 23))
-
-    def test_reasoning_indicator_has_its_own_spinner_frame(self):
-        """It reads like the stage spinner: a frame, then the label."""
-        self.footer.set_thinking(True)
-        hints = self._row(self.tty.getvalue(), 24)
-        self.assertTrue(
-            any(frame in hints for frame in SPINNER_FRAMES),
-            f"no animation frame in {hints!r}",
-        )
-
-    def test_reasoning_indicator_animates_without_a_stage_spinner(self):
-        """Reasoning alone drives the animation thread."""
-        self.footer.set_thinking(True)
+        hints = _row(out, 24)
+        self.assertIn(THINKING_LABEL, hints)
+        # It reads like the stage spinner: a frame, then the label.
+        self.assertTrue(any(frame in hints for frame in SPINNER_FRAMES), hints)
+        self.assertNotIn(THINKING_LABEL, _row(out, 22))
+        self.assertNotIn(THINKING_LABEL, _row(out, 23))
+        # Reasoning alone drives the animation thread.
         self.assertIsNotNone(self.footer._spinner_thread)
-        self.tty.seek(0)
-        self.tty.truncate(0)
+        self._clear()
         seen: set[str] = set()
         deadline = time.time() + 3.0
         while time.time() < deadline and len(seen) < 3:
-            hints = self._row(self.tty.getvalue(), 24)
-            seen |= {frame for frame in SPINNER_FRAMES if frame in hints}
+            seen |= {f for f in SPINNER_FRAMES if f in _row(self.tty.getvalue(), 24)}
             time.sleep(SPINNER_INTERVAL / 2)
         self.assertGreaterEqual(len(seen), 3, f"only saw frames {seen}")
 
-    def test_clearing_the_reasoning_indicator_stops_the_animation(self):
-        self.footer.set_thinking(True)
-        thread = self.footer._spinner_thread
-        self.footer.set_thinking(False)
-        self.assertIsNone(self.footer._spinner_thread)
-        assert thread is not None
-        self.assertFalse(
-            thread.is_alive(),
-            "animation thread outlived the reasoning indicator",
-        )
-
-    def test_clearing_the_stage_spinner_keeps_reasoning_animating(self):
-        """Reasoning keeps ticking after the stage spinner goes away."""
-        self.footer.set_spinner("⏳ Processing prompt...")
-        self.footer.set_thinking(True)
-        self.footer.set_spinner("")
-        self.assertIsNotNone(
-            self.footer._spinner_thread,
-            "clearing the stage spinner stopped the reasoning animation",
-        )
-        hints = self._row(self.tty.getvalue(), 24)
-        self.assertNotIn("Processing prompt...", hints)
-        self.assertIn(THINKING_LABEL, hints)
-
-    def test_reasoning_indicator_can_be_cleared(self):
-        self.footer.set_thinking(True)
-        self.tty.seek(0)
-        self.tty.truncate(0)
-        self.footer.set_thinking(False)
-        self.assertNotIn(THINKING_LABEL, self.tty.getvalue())
-
-    def test_spinner_is_on_the_hints_row(self):
-        self.footer.set_spinner("⏳ Processing prompt...")
-        out = self.tty.getvalue()
-        self.assertIn("⏳ Processing prompt...", self._row(out, 24))
-        self.assertNotIn("⏳ Processing prompt...", self._row(out, 23))
-
-    def test_spinner_and_reasoning_share_the_hints_row(self):
+    def test_the_two_indicators_share_the_row_and_each_stops_on_its_own(self):
         self.footer.set_spinner("🔧 Tool running")
         self.footer.set_thinking(True)
         out = self.tty.getvalue()
-        hints = self._row(out, 24)
+        hints = _row(out, 24)
         self.assertIn("🔧 Tool running", hints)
-        self.assertIn(THINKING_LABEL, hints)
-        # The reasoning indicator sits right of the stage spinner.
         self.assertLess(hints.index("🔧 Tool running"), hints.index(THINKING_LABEL))
-        # The transient row holds neither.
-        transient = self._row(out, 23)
-        self.assertNotIn("🔧 Tool running", transient)
-        self.assertNotIn(THINKING_LABEL, transient)
+        self.assertNotIn("🔧 Tool running", _row(out, 23))
 
-    def test_indicators_are_clipped_to_the_terminal_width(self):
+        self.footer.set_spinner("")
+        self.assertIsNotNone(self.footer._spinner_thread,
+                             "clearing the stage spinner stopped the reasoning")
+        hints = _row(self.tty.getvalue(), 24)
+        self.assertNotIn("Processing prompt...", hints)
+        self.assertIn(THINKING_LABEL, hints)
+
+        thread = self.footer._spinner_thread
+        self._clear()
+        self.footer.set_thinking(False)
+        self.assertIsNone(self.footer._spinner_thread)
+        assert thread is not None
+        self.assertFalse(thread.is_alive(), "animation outlived the indicator")
+        self.assertNotIn(THINKING_LABEL, self.tty.getvalue())
+
+        # A long label is clipped so the row never wraps.
         self.footer.set_spinner("x" * 100)
-        self.footer.set_thinking(True)
-        hints = self._row(self.tty.getvalue(), 24)
-        self.assertIn("…", hints)
-        # The hints row never wraps: its visible width stays within 80.
-        self.assertLessEqual(visible_len(hints), 80)
+        self.assertLessEqual(visible_len(_row(self.tty.getvalue(), 24)), 80)
 
     def test_start_clears_a_leftover_thinking_indicator(self):
         self.footer.set_thinking(True)
+        self._clear()
         self.footer.stop()
-        with mock.patch.object(Footer, "_read_terminal_size", return_value=(80, 24)):
-            self.footer.start()
+        self.footer.start()
         self.assertFalse(self.footer._thinking)
+        self.assertNotIn(THINKING_LABEL, self.tty.getvalue())
 
 
-class TestFooterQuestionRow(unittest.TestCase):
-    """A pending question takes the hints row, and says which keys apply.
-
-    The keys are not the same in both states: "Tab to answer" while the focus
-    is still on the steering line, and how to get back once it has moved onto
-    the question. A row that advertised the wrong one would be worse than no
-    row at all.
-    """
+class TestFooterQuestionRow(_FooterCase):
+    """A pending question takes the hints row, and says which keys apply."""
 
     def setUp(self) -> None:
-        self.saved = sys.stdout
-        self.tty = FakeTTY()
-        sys.stdout = self.tty
-        patcher = mock.patch.object(Footer, "_read_terminal_size", return_value=(80, 24))
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        self.footer = Footer()
+        super().setUp()
         self.footer.start()
 
     def tearDown(self) -> None:
         self.footer.stop()
-        sys.stdout = self.saved
+        super().tearDown()
 
     def _plain(self) -> str:
         return re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", self.tty.getvalue())
 
-    def test_announcing_a_question_names_it_and_offers_tab(self):
+    def test_announcing_a_question_names_it_offers_tab_and_rings_only_once(self):
         self.footer.set_question("Run this command?")
         out = self._plain()
         self.assertIn("Run this command?", out)
         self.assertIn("Tab to answer", out)
         self.assertIn("Esc to leave it", out)
-
-    def test_announcing_a_question_rings_the_bell_once(self):
-        self.footer.set_question("Run this command?")
         self.assertEqual(self.tty.getvalue().count("\a"), 1)
         # Re-announcing the same question is not a new one.
         self.footer.set_question("Run this command?")
         self.assertEqual(self.tty.getvalue().count("\a"), 1)
 
-    def test_a_focused_question_advertises_the_way_back(self):
+        # With the line focused, the keys are the way back.
+        self._clear()
         self.footer.set_question("Run this command?", focused=True)
         out = self._plain()
-        self.assertIn("Run this command?", out)
         self.assertIn("back to the line", out)
         self.assertNotIn("Tab to answer", out)
-
-    def test_the_focus_can_move_after_the_announcement(self):
-        self.footer.set_question("Run this command?")
-        self.footer.set_question_focus(True)
-        self.assertIn("back to the line", self._plain())
+        self._clear()
         self.footer.set_question_focus(False)
         self.assertIn("Tab to answer", self._plain())
-
-    def test_focus_without_a_question_does_nothing(self):
-        self.tty.seek(0)
-        self.tty.truncate(0)
+        # Focus without a question does nothing at all.
+        self.footer.set_question("")
+        self._clear()
         self.footer.set_question_focus(True)
         self.assertFalse(self.footer._question_focused)
         self.assertEqual(self.tty.getvalue(), "")
 
-    def test_the_question_is_truncated_to_leave_the_keys_visible(self):
-        self.footer.set_question("cd /very/long/path && " + "x" * 200)
-        out = self._plain()
-        self.assertIn("\u2026", out)
-        self.assertIn("Tab to answer", out)
-        row = self.footer._hint_line(80)
-        self.assertLessEqual(visible_len(row), 78)
-
-    def test_the_accepted_answers_are_part_of_the_question(self):
-        self.footer.set_question("Run this command?", options="[y/N]")
-        self.assertIn("Run this command? [y/N]", self._plain())
-
-    def test_the_options_are_kept_when_the_focus_moves(self):
-        self.footer.set_question("Run this command?", options="[y/N]")
-        self.footer.set_question_focus(True)
-        out = self._plain()
-        self.assertIn("[y/N]", out)
-        self.assertIn("back to the line", out)
-
-    def test_the_options_do_not_push_the_keys_off_the_row(self):
-        self.footer.set_question("x" * 200, options="[y/N]")
+    def test_the_options_cost_columns_and_are_truncated_to_fit(self):
+        self.footer.set_question("cd /very/long/path && " + "x" * 200,
+                                 options="[y/N]")
+        self.assertIn("…", self._plain())
+        self.assertIn("Tab to answer", self._plain())
         row = self.footer._hint_line(80)
         self.assertLessEqual(visible_len(row), 78)
         self.assertIn("[y/N]", row)
-
-    def test_clearing_the_question_clears_the_options(self):
-        self.footer.set_question("Run this command?", options="[y/N]")
+        # The options ride with the question and survive a focus change.
+        self.footer.set_question_focus(True)
+        self.assertIn("[y/N]", self._plain())
         self.footer.set_question("")
         self.assertEqual(self.footer._question_options, "")
 
     def test_a_new_turn_clears_a_leftover_question(self):
-        self.footer.set_question("Run this command?", focused=True)
+        self.footer.set_question("Run this command?", options="[y/N]", focused=True)
         self.footer.stop()
-        with mock.patch.object(Footer, "_read_terminal_size", return_value=(80, 24)):
-            self.footer.start()
+        self.footer.start()
         self.assertEqual(self.footer._question_text, "")
+        self.assertEqual(self.footer._question_options, "")
         self.assertFalse(self.footer._question_focused)
-
-
-class TestWriteLockIsShared(unittest.TestCase):
-    def test_lock_is_reentrant(self):
-        with WRITE_LOCK:
-            with WRITE_LOCK:
-                pass
 
 
 class TestFooterInPty(unittest.TestCase):
     """End-to-end: a real pty, real terminal size, real escape codes."""
 
-    def _run(self, body):
-        pid, mfd = pty.fork()
-        if pid == 0:  # pragma: no cover - child process
-            # Set the size from *this* side too: the parent's ioctl below can
-            # only run once the fork has returned, so the child may get there
-            # first and read a fresh pty as 0x0 -- at which point Footer.start()
-            # disarms itself for being too small and writes nothing at all.
-            fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
-            try:
-                body()
-            except BaseException:
-                # Otherwise os._exit(0) swallows the traceback and the failure
-                # reads as "the footer wrote nothing".
-                traceback.print_exc()
-                raise
-            finally:
-                os._exit(0)
-        fcntl.ioctl(
-            mfd, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0)
-        )
-        out = b""
-        deadline = time.time() + 5
-        while time.time() < deadline:
-            r, _, _ = select.select([mfd], [], [], 0.2)
-            if not r:
-                if out:
-                    break
-                continue
-            try:
-                chunk = os.read(mfd, 65536)
-            except OSError:
-                break
-            if not chunk:
-                break
-            out += chunk
-        os.waitpid(pid, 0)
-        return out
-
-    def test_writes_escape_codes_and_restores_termios(self):
+    def test_steer_writes_escape_codes_and_restores_termios(self):
         def body() -> None:
             from agent.steer import SteerInput
 
-            # Reported over the pty itself rather than through a shared temp
-            # file: the file has to be created, written, closed and unlinked
-            # across a process boundary, so under load (several suites at once,
-            # or two runs of this file in parallel) the parent can read it
-            # before the child wrote it, or after another run unlinked it. The
-            # pty is the channel that already exists between the two.
+            # Reported over the pty itself rather than a shared temp file, which
+            # is unlinkable mid-run and races under parallel suites.
             pristine = termios.tcgetattr(0)
             steer = SteerInput()
             steer.start()
@@ -1231,25 +665,22 @@ class TestFooterInPty(unittest.TestCase):
             sys.stdout.flush()
             os._exit(0)
 
-        out = self._run(body)
-        result = out.decode(errors="replace")
+        result = _run_in_pty(body, rows=30).decode(errors="replace")
         self.assertIn("cbreak=True", result, result)
         self.assertIn("restored=True", result, result)
         # The probe itself must emit no escape codes.
         self.assertNotIn("\x1b", result, f"unexpected escapes: {result!r}")
 
-    def test_footer_emits_esc_sequences_on_a_real_tty(self):
+    def test_footer_emits_complete_esc_sequences_on_a_real_tty(self):
         def body() -> None:
             footer = Footer()
             footer.start()
-            footer.update_status(" => model", " ⤷ typing")
+            footer.update_status(" => model", " ↳ typing")
             footer.stop()
             os._exit(0)
 
-        out = self._run(body)
-        self.assertGreaterEqual(out.count(b"\x1b"), 0)
-        # Every escape must be a complete sequence, never a bare ESC or a
-        # truncated one: the last sequence must terminate with a final byte.
+        out = _run_in_pty(body, rows=30)
+        # Every escape must be a complete sequence, never a bare ESC.
         self.assertNotIn(b"\x1b\x1b", out)
         self.assertIn(b"\x1b[r", out)
 

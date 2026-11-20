@@ -13,9 +13,8 @@ def reset_singletons():
     import agent.config as config_mod
     import agent.memory as memory_mod
 
-    # Config uses a custom __new__ that checks hasattr(cls, "_instance").
-    # Setting _instance = None still makes hasattr return True, so __new__
-    # returns None. We must delete the attribute entirely.
+    # Config's __new__ checks hasattr(cls, "_instance"), so None is not enough:
+    # it would return None. The attribute must be deleted outright.
     if hasattr(config_mod.Config, "_instance"):
         del config_mod.Config._instance
     config_mod._config_instance = None

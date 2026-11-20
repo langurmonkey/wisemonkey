@@ -7,52 +7,36 @@ from agent.commands import registry
 
 
 class TestConfigEditCommand(unittest.TestCase):
-    def test_success_reloads_runtime_config(self) -> None:
+    def _run(self, editor, reload_result=(True, None)):
         core = Mock()
-        core.reload_config.return_value = (True, None)
-        editor_result = Mock(returncode=0, stderr="")
-
-        with patch(
-            "agent.config.edit_base_config_visual", return_value=editor_result
-        ), patch("pubsub.pub.sendMessage") as send_message:
+        core.reload_config.return_value = reload_result
+        with patch("agent.config.edit_base_config_visual", return_value=editor), \
+                patch("pubsub.pub.sendMessage") as send_message:
             command = registry.lookup(["/config-edit"])[0]
             assert command is not None
-            ok, message, content, markdown = command.handler(core, [])
+            result = command.handler(core, [])
+        return result, core, send_message
 
-        self.assertTrue(ok)
-        self.assertEqual(message, "Configuration edited and reloaded successfully")
-        self.assertIsNone(content)
-        self.assertIsNone(markdown)
+    def test_success_reloads_and_refreshes_the_prompt(self) -> None:
+        (ok, msg, content, markdown), core, send = self._run(
+            Mock(returncode=0, stderr="")
+        )
+        assert ok is True and content is None and markdown is None
+        assert msg == "Configuration edited and reloaded successfully"
         core.reload_config.assert_called_once_with()
-        send_message.assert_called_once_with("prompt-update")
+        send.assert_called_once_with("prompt-update")
 
-    def test_editor_failure_does_not_reload(self) -> None:
-        core = Mock()
-        editor_result = Mock(returncode=1, stderr="editor failed")
-
-        with patch(
-            "agent.config.edit_base_config_visual", return_value=editor_result
-        ):
-            command = registry.lookup(["/config-edit"])[0]
-            assert command is not None
-            ok, message, _content, _markdown = command.handler(core, [])
-
-        self.assertFalse(ok)
-        self.assertEqual(message, "editor failed")
+    def test_editor_or_reload_failure_is_reported_and_not_announced(self) -> None:
+        cases = [
+            {"editor": Mock(returncode=1, stderr="editor failed")},
+            {"editor": Mock(returncode=0, stderr=""),
+             "reload_result": (False, "invalid model config")},
+        ]
+        for kwargs in cases:
+            (ok, msg, _c, _m), core, send = self._run(**kwargs)
+            assert ok is False, kwargs
+            assert "editor failed" in msg or "invalid model config" in msg
+            send.assert_not_called()
+        # A failing editor never reloads at all.
+        _result, core, _send = self._run(Mock(returncode=1, stderr="x"))
         core.reload_config.assert_not_called()
-
-    def test_reload_failure_is_reported(self) -> None:
-        core = Mock()
-        core.reload_config.return_value = (False, "invalid model config")
-        editor_result = Mock(returncode=0, stderr="")
-
-        with patch(
-            "agent.config.edit_base_config_visual", return_value=editor_result
-        ), patch("pubsub.pub.sendMessage") as send_message:
-            command = registry.lookup(["/config-edit"])[0]
-            assert command is not None
-            ok, message, _content, _markdown = command.handler(core, [])
-
-        self.assertFalse(ok)
-        self.assertEqual(message, "Configuration reload failed: invalid model config")
-        send_message.assert_not_called()

@@ -18,7 +18,6 @@ class _Config:
                 "skills": False,
             },
         }
-        self.reloaded = False
 
     def to_dict(self) -> dict:
         return dict(self._config)
@@ -27,12 +26,8 @@ class _Config:
         self.reloaded = True
 
     def get(self, key: str, default=None):
-        values = {
-            "agent.system_prompt": self._config["agent"]["system_prompt"],
-            "agent.max_chat_history": self._config["agent"]["max_chat_history"],
-            "agent.skills": self._config["agent"]["skills"],
-        }
-        return values.get(key, default)
+        section, _, leaf = key.partition(".")
+        return self._config.get(section, {}).get(leaf, default)
 
 
 class TestCoreConfigReload(unittest.TestCase):
@@ -50,38 +45,34 @@ class TestCoreConfigReload(unittest.TestCase):
         core._soul_files_cache = "stale soul"
         return core, config, history
 
-    def test_reload_refreshes_runtime_settings_and_caches(self) -> None:
-        core, config, history = self._core()
-        new_router = Mock()
-        new_router.initialize.return_value = (True, None)
-
-        with patch("agent.core.ModelRouter", return_value=new_router), patch(
+    def _reload(self, core, initialized=(True, None)):
+        router = Mock()
+        router.initialize.return_value = initialized
+        with patch("agent.core.ModelRouter", return_value=router), patch(
             "agent.core.SkillLoader", return_value="new skills"
         ):
-            ok, message = core.reload_config()
+            return core.reload_config(), router
 
-        assert ok is True
-        assert message is None
-        assert config.reloaded
-        assert core.router is new_router
+    def test_reload_refreshes_settings_and_drops_the_caches(self) -> None:
+        core, config, history = self._core()
+        (ok, message), router = self._reload(core)
+        assert (ok, message) == (True, None)
+        assert config.reloaded and core.router is router
         assert core.system_prompt == "Updated prompt"
+        assert core.skills == "new skills"
         assert history.max_tokens == 1234
         history._trim.assert_called_once_with()
-        assert core.skills == "new skills"
         assert not hasattr(core, "_context_files_cache")
         assert not hasattr(core, "_soul_files_cache")
 
-    def test_failed_router_reload_restores_previous_config_and_router(self) -> None:
+    def test_a_failed_router_restores_config_and_router(self) -> None:
         core, config, _history = self._core()
         previous_config = config.to_dict()
         previous_router = core.router
-        new_router = Mock()
-        new_router.initialize.return_value = (False, "invalid model configuration")
-        with patch("agent.core.ModelRouter", return_value=new_router):
-            ok, message = core.reload_config()
-
-        assert ok is False
-        assert message == "invalid model configuration"
+        (ok, message), _router = self._reload(
+            core, initialized=(False, "invalid model configuration")
+        )
+        assert (ok, message) == (False, "invalid model configuration")
         assert config._config == previous_config
         assert core.router is previous_router
         assert core.system_prompt == "old prompt"

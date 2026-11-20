@@ -1,12 +1,4 @@
-"""End-to-end: a Rich prompt must survive a readline redraw.
-
-The failure this pins is entirely about *bytes on the wire*. Rich prints the
-question and then calls ``input()`` with an empty prompt, so readline believes
-the line buffer starts at column 1; the first redraw (Backspace) rewrites from
-column 1 and erases the question. Nothing a unit test with a mocked prompt can
-observe: it needs a real pty, a real readline, and a cursor tracker replaying
-what reached the terminal.
-"""
+"""End-to-end: a Rich prompt must survive a readline redraw (bytes on the wire)."""
 
 import os
 import re
@@ -39,14 +31,7 @@ def prompt_visible_width() -> int:
 
 
 def _replay_erases(data: bytes, prompt_cols: int) -> list[int]:
-    """Columns at which an erase-to-end-of-line fell inside the question.
-
-    A cursor tracker, deliberately minimal: it understands only the sequences
-    readline actually emits when redrawing (``\\r``, ``BS``, ``CUB``/``CUF``,
-    ``CUP``-by-column and ``EL``). Anything else is skipped, which is safe
-    because an unrecognised sequence cannot move the cursor in a way that
-    matters here.
-    """
+    """Columns at which an erase-to-end-of-line fell inside the question."""
     col = 1
     bad: list[int] = []
     i = 0
@@ -84,12 +69,7 @@ def _replay_erases(data: bytes, prompt_cols: int) -> list[int]:
 
 
 def _drive_pty(use_rich_prompt_class: bool) -> bytes:
-    """Run one prompt under a pty, type the key sequence, return the bytes.
-
-    ``use_rich_prompt_class=False`` drives the readline-aware prompt, i.e. what
-    ``RichOutputAdapter`` does now. The flag exists so the test can also drive
-    the original Rich behaviour and show it is genuinely different.
-    """
+    """Run one prompt under a pty, type the key sequence, return the bytes."""
     import fcntl
     import pty
     import select
@@ -181,11 +161,7 @@ class TestPromptSurvivesRedraw(unittest.TestCase):
         self.assertEqual(got, EXPECTED)
 
     def test_rich_own_behaviour_really_does_erase(self):
-        """Guard the guard: without the prompt handed to readline it breaks.
-
-        If Rich ever changed to pass its prompt to ``input()`` this would stop
-        reproducing, and the two tests above would pass for the wrong reason.
-        """
+        """Guard the guard: without the prompt handed to readline it breaks."""
         data = _drive_pty(use_rich_prompt_class=True)
         bad = _replay_erases(data, prompt_visible_width())
         self.assertNotEqual(

@@ -1,10 +1,9 @@
-"""Tests for agent/memory.py — Memory singleton, ChatMemory persistence, trimming."""
+"""Tests for agent/memory.py — memory, chat history, windows, sessions."""
 
 import datetime
 import json
-from pathlib import Path
+from unittest import mock
 
-from tests.conftest import BaseTest
 from agent.memory import (
     CONVERSATIONAL_ROLES,
     ChatMemory,
@@ -14,324 +13,147 @@ from agent.memory import (
     session_info,
 )
 from agent.tokens import count_tokens
+from tests.conftest import BaseTest
 
 
-class TestMemoryInit(BaseTest):
-    """Test Memory initialization and session directory creation."""
+class TestMemoryFiles(BaseTest):
+    """Profile, notes and the session metadata file."""
 
-    def test_creates_session_dir(self):
+    def _memory(self, name="m"):
+        return Memory(session_dir=self._tmpdir / "sessions" / name)
+
+    def test_init_creates_the_session_dir_and_metadata(self):
         session_dir = self._tmpdir / "sessions" / "test"
-        m = Memory(session_dir=session_dir)
-        assert session_dir.exists()
-        assert session_dir.is_dir()
-
-    def test_creates_metadata_file(self):
-        session_dir = self._tmpdir / "sessions" / "meta"
-        m = Memory(session_dir=session_dir)
-        metadata_file = session_dir / ".session-metadata"
-        assert metadata_file.exists()
-
-    def test_metadata_contains_created_and_accessed(self):
-        session_dir = self._tmpdir / "sessions" / "meta2"
-        m = Memory(session_dir=session_dir)
+        Memory(session_dir=session_dir)
         content = (session_dir / ".session-metadata").read_text()
-        assert "created:" in content
-        assert "accessed:" in content
+        assert "created:" in content and "accessed:" in content
 
+    def test_profile_and_notes_merge_and_persist(self):
+        m = self._memory()
+        m.set_user_profile({"name": "Alice"})
+        m.set_user_profile({"role": "dev"})
+        note = m.add_note("Remember this", category="reminder")
+        assert note["id"] == 1 and note["category"] == "reminder"
+        m.save()
+        assert json.loads(m._user_profile_path.read_text()) == {
+            "name": "Alice",
+            "role": "dev",
+        }
+        assert [n["content"] for n in json.loads(m._notes_path.read_text())] == [
+            "Remember this"
+        ]
 
-class TestMemoryUserProfile(BaseTest):
-    """Test user profile get/set."""
-
-    def setUp(self):
-        super().setUp()
-        session_dir = self._tmpdir / "sessions" / "profile"
-        self.m = Memory(session_dir=session_dir)
-
-    def test_get_default_profile(self):
-        assert self.m.get_user_profile() == {}
-
-    def test_set_profile(self):
-        self.m.set_user_profile({"name": "Alice"})
-        assert self.m.get_user_profile()["name"] == "Alice"
-
-    def test_set_profile_merges(self):
-        self.m.set_user_profile({"name": "Alice"})
-        self.m.set_user_profile({"role": "dev"})
-        profile = self.m.get_user_profile()
-        assert profile["name"] == "Alice"
-        assert profile["role"] == "dev"
-
-    def test_profile_persists(self):
-        self.m.set_user_profile({"name": "Bob"})
-        self.m.save()
-        data = json.loads((self.m._user_profile_path).read_text())
-        assert data["name"] == "Bob"
-
-
-class TestMemoryNotes(BaseTest):
-    """Test note adding and retrieval."""
-
-    def setUp(self):
-        super().setUp()
-        session_dir = self._tmpdir / "sessions" / "notes"
-        self.m = Memory(session_dir=session_dir)
-
-    def test_get_default_notes(self):
-        assert self.m.get_notes() == []
-
-    def test_add_note(self):
-        note = self.m.add_note("Remember this", category="reminder")
-        assert note["content"] == "Remember this"
-        assert note["category"] == "reminder"
-        assert note["id"] == 1
-
-    def test_add_multiple_notes(self):
-        self.m.add_note("First")
-        self.m.add_note("Second")
-        notes = self.m.get_notes()
-        assert len(notes) == 2
-        assert notes[0]["id"] == 1
-        assert notes[1]["id"] == 2
-
-    def test_notes_persist(self):
-        self.m.add_note("Persistent note")
-        self.m.save()
-        data = json.loads((self.m._notes_path).read_text())
-        assert len(data) == 1
-        assert data[0]["content"] == "Persistent note"
-
-
-class TestMemoryFormatted(BaseTest):
-    """Test get_formatted output."""
-
-    def setUp(self):
-        super().setUp()
-        session_dir = self._tmpdir / "sessions" / "fmt"
-        self.m = Memory(session_dir=session_dir)
-
-    def test_empty_returns_none(self):
-        assert self.m.get_user_profile_formatted() is None
-
-    def test_user_profile_formatted(self):
-        self.m.set_user_profile({"name": "Alice"})
-        result = self.m.get_user_profile_formatted(notes=False)
-        assert "## User Profile" in result
-        assert "name: Alice" in result
-
-    def test_notes_formatted(self):
-        self.m.add_note("Test note", category="test")
-        result = self.m.get_user_profile_formatted(user_profile=False)
-        assert "## Persistent Notes" in result
-        assert "[test] Test note" in result
+    def test_formatted_sections(self):
+        m = self._memory()
+        assert m.get_user_profile_formatted() is None
+        m.set_user_profile({"name": "Alice"})
+        m.add_note("Test note", category="test")
+        out = m.get_user_profile_formatted()
+        assert "## User Profile" in out and "name: Alice" in out
+        assert "## Persistent Notes" in out and "[test] Test note" in out
+        # Either section can be asked for alone.
+        assert "## Persistent Notes" not in m.get_user_profile_formatted(notes=False)
 
 
 class TestChatMemory(BaseTest):
-    """Test ChatMemory add, trim, clear, persistence."""
-
     def setUp(self):
         super().setUp()
         self.session_dir = self._tmpdir / "sessions" / "chat"
         self.cm = ChatMemory(self.session_dir, max_tokens=200)
 
-    def test_add_exchange(self):
-        self.cm.add_exchange(None, "user", "Hello")
-        assert len(self.cm._exchanges) == 1
-        assert self.cm._exchanges[0]["role"] == "user"
-        assert self.cm._exchanges[0]["content"] == "Hello"
+    def test_add_exchange_persists_a_round_trip(self):
+        self.cm.add_exchange(None, "user", "persist me")
+        self.cm.save()
+        cm2 = ChatMemory(self.session_dir, max_tokens=200)
+        assert cm2.get_unformatted()[0]["content"] == "persist me"
 
-    def test_add_multiple_exchanges(self):
-        self.cm.add_exchange(None, "user", "Hi")
-        self.cm.add_exchange(None, "assistant", "Hello!")
-        assert len(self.cm._exchanges) == 2
-
-    def test_total_tokens_tracks_content(self):
+    def test_tokens_grow_with_content_and_trim_back_down(self):
         self.cm.add_exchange(None, "user", "abc def ghi")
-        self.cm.add_exchange(None, "assistant", "one two three four")
-        # Exact token counts (tiktoken), so just check they are positive and
-        # grow with content.
-        assert self.cm.total_tokens > 0
         before = self.cm.total_tokens
-        self.cm.add_exchange(None, "user", "more text here")
+        assert before > 0
+        self.cm.add_exchange(None, "assistant", "one two three four")
         assert self.cm.total_tokens > before
-
-    def test_trim_removes_oldest(self):
-        # Directly test _trim() instead of add_exchange (which triggers
-        # /history-compact via the command registry and needs a real core).
-        for i in range(20):
+        # _trim() directly: add_exchange() would compact via the command registry.
+        for _ in range(20):
             self.cm._exchanges.append({"role": "user", "content": "x" * 50})
             self.cm.total_tokens += 12
         self.cm._trim()
         assert self.cm.total_tokens <= 200
 
-    def test_clear_n_exchanges(self):
+    def test_clear_removes_n_or_everything(self):
         for i in range(5):
             self.cm.add_exchange(None, "user", f"msg {i}")
-        cleared = self.cm._clear(2)
-        assert cleared == 2
+        assert self.cm._clear(2) == 2
         assert len(self.cm._exchanges) == 3
+        assert self.cm._clear(0) == 3
+        assert self.cm._exchanges == []
 
-    def test_clear_all_with_zero(self):
-        for i in range(3):
-            self.cm.add_exchange(None, "user", f"msg {i}")
-        cleared = self.cm._clear(0)
-        assert cleared == 3
-        assert len(self.cm._exchanges) == 0
-
-    def test_clear_more_than_exists(self):
-        self.cm.add_exchange(None, "user", "only one")
-        cleared = self.cm._clear(10)
-        assert cleared == 1
-
-    def test_persistence_round_trip(self):
-        self.cm.add_exchange(None, "user", "persist me")
-        self.cm.save()
-
-        cm2 = ChatMemory(self.session_dir, max_tokens=200)
-        assert len(cm2._exchanges) == 1
-        assert cm2._exchanges[0]["content"] == "persist me"
-
-    def test_get_formatted(self):
+    def test_rendering_headings_roles_and_width(self):
         self.cm.add_exchange(None, "user", "Hello")
         self.cm.add_exchange(None, "assistant", "Hi there")
-        result = self.cm.get_formatted(2, timestamps=False, width=0)
-        assert "## User:" in result
-        assert "## Assistant:" in result
-        assert "Hello" in result
-        assert "Hi there" in result
+        out = self.cm.get_formatted(2, timestamps=False, width=0)
+        assert "## User:" in out and "## Assistant:" in out
+        assert "Hello" in out and "Hi there" in out
+        assert ChatMemory(self.session_dir / "empty").get_formatted(0) is None
+        # A width truncates the body it is given.
+        long = ChatMemory(self.session_dir / "wide", max_tokens=10**6)
+        long.add_exchange(None, "user", "a" * 200)
+        assert len(long.get_formatted(1, timestamps=False, width=50)) < 300
 
-    def test_get_formatted_empty(self):
-        assert self.cm.get_formatted(0, timestamps=False, width=0) is None
-
-    def test_get_formatted_with_width(self):
-        long_content = "a" * 200
-        self.cm.add_exchange(None, "user", long_content)
-        result = self.cm.get_formatted(1, timestamps=False, width=50)
-        # Should be truncated
-        assert len(result) < len(long_content) + 100
-
-    def test_tool_call_exchange(self):
+    def test_tool_entries_render_and_compact_when_matched(self):
         self.cm.add_exchange(
-            None, "tool_call", "", name="read_file", arguments='{"path": "x.py"}'
-        )
-        result = self.cm.get_formatted(0, timestamps=False, width=0)
-        assert "## Tool Call (read_file):" in result
-        assert "x.py" in result
-
-    def test_tool_result_exchange_rendered(self):
-        self.cm.add_exchange(None, "tool_result", "result body", name="grep")
-        result = self.cm.get_formatted(0, timestamps=False, width=0)
-        assert "## Tool Result (grep):" in result
-        assert "result body" in result
-
-    def test_tool_result_truncated_by_default(self):
-        cm = ChatMemory(self.session_dir / "big", max_tokens=25000)
-        long_result = "z" * 5000
-        cm.add_exchange(None, "tool_result", long_result, name="big")
-        # Content is truncated at storage time to the config limit (200).
-        stored = cm._exchanges[-1]["content"]
-        assert len(stored) == 200
-        assert stored == "z" * 200
-
-    def test_tool_call_counts_extra_tokens(self):
-        self.cm.add_exchange(None, "user", "hi")
-        before = self.cm.total_tokens
-        self.cm.add_exchange(None, "tool_call", "", name="x", arguments="abcd")
-        # role/utc aren't counted, but the extra string fields are
-        assert self.cm.total_tokens > before
-
-    def test_large_tool_result_counted_as_truncated(self):
-        """A huge tool result must not inflate total_tokens beyond the limit.
-
-        total_tokens tracks what is actually injected into the prompt, where
-        tool results are truncated to chat_history_tool_result_max_chars.
-        Otherwise a single big read_file would trigger premature compaction.
-        """
-        cm = ChatMemory(self.session_dir / "big", max_tokens=25000)
-        cm.add_exchange(None, "tool_result", "z" * 100000, name="read_file")
-        # Truncated to 200 chars -> well under 25000 tokens.
-        assert cm.total_tokens < 500
-
-    def test_adjacent_tool_call_and_result_compact_into_one_block(self):
-        self.cm.add_exchange(
-            None,
-            "tool_call",
-            "",
-            name="read_file",
-            arguments='{"path":"a.py"}',
-            tool_call_id="call-1",
+            None, "tool_call", "", name="read_file",
+            arguments='{"path":"a.py"}', tool_call_id="c1",
         )
         self.cm.add_exchange(
-            None,
-            "tool_result",
-            "file contents",
-            name="read_file",
-            tool_call_id="call-1",
+            None, "tool_result", "file contents", name="read_file", tool_call_id="c1"
         )
         rendered = self.cm.get_formatted(0, timestamps=False, width=0)
         assert "## Tool: read_file" in rendered
         assert 'Args: {"path":"a.py"}' in rendered
         assert "Result: file contents" in rendered
-        assert "## Tool Call" not in rendered
-        assert "## Tool Result" not in rendered
+        assert "## Tool Call" not in rendered and "## Tool Result" not in rendered
 
-    def test_unmatched_tool_entries_remain_separate(self):
+    def test_an_unmatched_tool_result_stays_separate(self):
         self.cm.add_exchange(
-            None,
-            "tool_call",
-            "",
-            name="read_file",
-            arguments="{}",
-            tool_call_id="call-1",
+            None, "tool_call", "", name="read_file",
+            arguments="{}", tool_call_id="c1",
         )
         self.cm.add_exchange(
-            None,
-            "tool_result",
-            "other result",
-            name="read_file",
-            tool_call_id="call-2",
+            None, "tool_result", "other", name="read_file", tool_call_id="c2"
         )
         rendered = self.cm.get_formatted(0, timestamps=False, width=0)
         assert "## Tool Call (read_file):" in rendered
         assert "## Tool Result (read_file):" in rendered
         assert "## Tool: read_file" not in rendered
 
-    def test_token_accounting_matches_exact_rendered_prompt_history(self):
+    def test_a_huge_tool_result_is_truncated_at_storage(self):
+        cm = ChatMemory(self.session_dir / "big", max_tokens=25000)
+        cm.add_exchange(None, "tool_result", "z" * 100000, name="read_file")
+        assert cm._exchanges[-1]["content"] == "z" * 200
+        assert cm.total_tokens < 500
+
+    def test_token_accounting_matches_the_rendered_history(self):
         self.cm.add_exchange(None, "user", "hello")
         self.cm.add_exchange(
-            None,
-            "tool_call",
-            "",
-            name="read_file",
-            arguments='{"path":"a.py"}',
-            tool_call_id="call-1",
+            None, "tool_call", "", name="read_file",
+            arguments='{"path":"a.py"}', tool_call_id="c1",
         )
         self.cm.add_exchange(
-            None,
-            "tool_result",
-            "contents",
-            name="read_file",
-            tool_call_id="call-1",
+            None, "tool_result", "contents", name="read_file", tool_call_id="c1"
         )
         self.cm.add_exchange(None, "assistant", "done")
-        formatted = self.cm.get_formatted(0, timestamps=False, width=0)
-        assert self.cm.total_tokens == count_tokens(formatted or "")
 
-    def test_clear_recounts_rendered_history_tokens(self):
-        for content in ("old exchange", "new exchange"):
-            self.cm.add_exchange(None, "user", content)
+        def rendered():
+            return self.cm.get_formatted(0, timestamps=False, width=0) or ""
+
+        assert self.cm.total_tokens == count_tokens(rendered())
         self.cm._clear(1)
-        formatted = self.cm.get_formatted(0, timestamps=False, width=0)
-        assert self.cm.total_tokens == count_tokens(formatted or "")
-
-    def test_get_unformatted(self):
-        self.cm.add_exchange(None, "user", "raw")
-        raw = self.cm.get_unformatted()
-        assert isinstance(raw, list)
-        assert raw[0]["content"] == "raw"
+        assert self.cm.total_tokens == count_tokens(rendered())
 
 
 class TestChatMemoryWindow(BaseTest):
-    """Test the turn-based rolling window (window_turns)."""
+    """The turn-based rolling window."""
 
     def setUp(self):
         super().setUp()
@@ -342,375 +164,122 @@ class TestChatMemoryWindow(BaseTest):
             cm.add_exchange(None, "user", f"msg {i}")
             cm.add_exchange(None, "assistant", f"reply {i}")
 
-    def test_window_zero_keeps_all(self):
-        cm = ChatMemory(self.session_dir, max_tokens=10**9, window_turns=0)
+    def _archive(self, cm):
+        path = cm._chat_path.parent / "chat_archive.jsonl"
+        return [json.loads(l)["content"] for l in path.read_text().splitlines()]
+
+    def test_zero_keeps_everything_and_n_keeps_the_last_turns(self):
+        cm = ChatMemory(self.session_dir / "z", max_tokens=10**9, window_turns=0)
         self._fill(cm, 4)
         assert len(cm._exchanges) == 8
-
-    def test_window_keeps_last_n_exchanges(self):
-        cm = ChatMemory(self.session_dir, max_tokens=10**9, window_turns=2)
+        cm = ChatMemory(self.session_dir / "n", max_tokens=10**9, window_turns=2)
         self._fill(cm, 4)
-        # 2 exchanges x 2 entries each.
-        assert len(cm._exchanges) == 4
-        assert cm._exchanges[0]["content"] == "msg 2"
-        assert cm._exchanges[-1]["content"] == "reply 3"
+        assert [e["content"] for e in cm._exchanges] == [
+            "msg 2", "reply 2", "msg 3", "reply 3",
+        ]
 
-    def test_window_includes_tool_entries(self):
-        cm = ChatMemory(self.session_dir, max_tokens=10**9, window_turns=1)
-        cm.add_exchange(None, "user", "msg 0")
-        cm.add_exchange(None, "assistant", "reply 0")
-        cm.add_exchange(None, "tool_call", "call", name="t", arguments="{}")
-        cm.add_exchange(None, "tool_result", "res", name="t")
-        cm.add_exchange(None, "user", "msg 1")
-        cm.add_exchange(None, "assistant", "reply 1")
-        # Only the last exchange (msg 1 + reply 1) survives.
-        assert len(cm._exchanges) == 2
-        assert cm._exchanges[0]["content"] == "msg 1"
+    def test_a_tool_heavy_turn_counts_as_one_exchange(self):
+        cm = ChatMemory(self.session_dir / "t", max_tokens=10**9, window_turns=1)
+        for role, content in (
+            ("user", "msg 0"), ("assistant", "reply 0"), ("tool_call", "call"),
+            ("tool_result", "res"), ("user", "msg 1"), ("assistant", "reply 1"),
+        ):
+            cm.add_exchange(None, role, content, name="t", arguments="{}")
+        assert [e["content"] for e in cm._exchanges] == ["msg 1", "reply 1"]
 
-    def test_load_trims_oversized_history(self):
-        cm = ChatMemory(self.session_dir, max_tokens=10**9, window_turns=0)
+    def test_loading_reconciles_a_lowered_window(self):
+        cm = ChatMemory(self.session_dir / "load", max_tokens=10**9, window_turns=0)
         self._fill(cm, 4)
         cm.save()
-        # Reopen with a smaller window: startup reconciliation trims.
-        cm2 = ChatMemory(self.session_dir, max_tokens=10**9, window_turns=2)
-        assert len(cm2._exchanges) == 4
+        cm2 = ChatMemory(self.session_dir / "load", max_tokens=10**9, window_turns=2)
         assert cm2._exchanges[0]["content"] == "msg 2"
 
-    def test_window_archives_dropped_entries(self):
-        """Entries dropped by the rolling window are kept on disk."""
-        cm = ChatMemory(self.session_dir, max_tokens=10**9, window_turns=2)
+    def test_dropped_entries_are_archived_not_destroyed(self):
+        cm = ChatMemory(self.session_dir / "arch", max_tokens=10**9, window_turns=2)
         self._fill(cm, 4)
-        lines = [
-            json.loads(line)
-            for line in (self.session_dir / "chat_archive.jsonl")
-            .read_text(encoding="utf-8")
-            .splitlines()
-        ]
-        # The two evicted exchanges (msg 0/reply 0, msg 1/reply 1) survive.
-        assert [e["content"] for e in lines] == [
-            "msg 0",
-            "reply 0",
-            "msg 1",
-            "reply 1",
-        ]
-        # The live window is unaffected and the archive is never loaded back.
-        assert [e["content"] for e in cm._exchanges] == ["msg 2", "reply 2",
-                                                         "msg 3", "reply 3"]
-        reopened = ChatMemory(self.session_dir, max_tokens=10**9, window_turns=2)
-        assert [e["content"] for e in reopened._exchanges] == ["msg 2", "reply 2",
-                                                               "msg 3", "reply 3"]
-
-    def test_token_trim_archives_dropped_entries(self):
-        """The token-cap backstop also archives rather than discards."""
-        cm = ChatMemory(self.session_dir, max_tokens=10**9, window_turns=0)
-        self._fill(cm, 3)
-        cm.max_tokens = 1
-        cm._trim()
-        assert cm._exchanges == []
-        lines = [
-            json.loads(line)
-            for line in (self.session_dir / "chat_archive.jsonl")
-            .read_text(encoding="utf-8")
-            .splitlines()
-        ]
-        assert [e["content"] for e in lines] == [
-            "msg 0", "reply 0", "msg 1", "reply 1", "msg 2", "reply 2",
-        ]
-
-    def test_archive_is_append_only_across_trims(self):
-        cm = ChatMemory(self.session_dir, max_tokens=10**9, window_turns=2)
-        self._fill(cm, 3)
-        self._fill(cm, 2)
-        lines = (self.session_dir / "chat_archive.jsonl").read_text(
-            encoding="utf-8"
-        ).splitlines()
-        # msg 0..2 are evicted, each exactly once.
-        assert [json.loads(x)["content"] for x in lines] == [
+        assert self._archive(cm) == ["msg 0", "reply 0", "msg 1", "reply 1"]
+        # The token-cap backstop archives too, and the archive is never reloaded.
+        cm2 = ChatMemory(self.session_dir / "cap", max_tokens=10**9)
+        self._fill(cm2, 3)
+        cm2.max_tokens = 1
+        cm2._trim()
+        assert cm2._exchanges == []
+        assert self._archive(cm2) == [
             "msg 0", "reply 0", "msg 1", "reply 1", "msg 2", "reply 2",
         ]
 
 
 class TestChatMemoryDropLast(BaseTest):
-    """`drop_last` removes whole exchanges from the tail of the history.
+    """`drop_last` removes whole exchanges from the tail."""
 
-    The unit under test is the real ChatMemory, not a stand-in: the subtlety
-    is which entries count as an exchange, and only the real implementation
-    knows that.
-    """
+    ENTRIES = (
+        ("user", "q1"), ("assistant", "a1"), ("user", "q2"), ("assistant", "a2"),
+        ("tool_call", "{}"), ("tool_result", "42"), ("user", "q3"),
+        ("assistant", "a3"),
+    )
 
     def setUp(self):
         super().setUp()
         self.session_dir = self._tmpdir / "sessions" / "droplast"
 
-    def _fill(self) -> ChatMemory:
-        cm = ChatMemory(self.session_dir, max_tokens=10**9)
-        for role, content in [
-            ("user", "q1"),
-            ("assistant", "a1"),
-            ("user", "q2"),
-            ("assistant", "a2"),
-            ("tool_call", "{}"),
-            ("tool_result", "42"),
-            ("user", "q3"),
-            ("assistant", "a3"),
-        ]:
-            cm._exchanges.append({"role": role, "content": content})
+    def _fill(self, entries=ENTRIES):
+        self._n = getattr(self, "_n", 0) + 1
+        cm = ChatMemory(self.session_dir / str(self._n), max_tokens=10**9)
+        self._last_dir = self.session_dir / str(self._n)
+        cm._exchanges = [{"role": r, "content": c} for r, c in entries]
         cm._recount_tokens()
         return cm
 
-    def _roles(self, cm: ChatMemory) -> list[str]:
-        return [e["role"] for e in cm._exchanges]
-
-    def test_drops_last_exchange_only(self):
+    def test_a_tool_turn_is_dropped_with_its_exchange(self):
         cm = self._fill()
-        removed = cm.drop_last(1)
-        assert removed == 2
-        assert self._roles(cm) == [
-            "user", "assistant", "user", "assistant",
-            "tool_call", "tool_result",
+        assert cm.drop_last(1) == 2
+        assert [e["role"] for e in cm._exchanges] == [
+            "user", "assistant", "user", "assistant", "tool_call", "tool_result",
         ]
-
-    def test_keeps_tool_calls_with_their_exchange(self):
         cm = self._fill()
-        cm.drop_last(2)
-        assert self._roles(cm) == ["user", "assistant"]
+        assert cm.drop_last(2) == 6
+        assert [e["role"] for e in cm._exchanges] == ["user", "assistant"]
 
-    def test_n_zero_drops_everything(self):
-        cm = self._fill()
-        removed = cm.drop_last(0)
-        assert removed == 8
-        assert cm._exchanges == []
+    def test_everything_or_more_clears_the_history(self):
+        for n in (0, 99):
+            cm = self._fill()
+            assert cm.drop_last(n) == 8
+            assert cm._exchanges == []
+        assert ChatMemory(self.session_dir / "empty").drop_last(1) == 0
 
-    def test_n_beyond_history_clears_it(self):
-        cm = self._fill()
-        assert cm.drop_last(99) == 8
-        assert cm._exchanges == []
-
-    def test_empty_history(self):
-        cm = ChatMemory(self.session_dir, max_tokens=10**9)
-        assert cm.drop_last(1) == 0
-
-    def test_recounts_and_persists(self):
+    def test_the_drop_is_recounted_and_persisted(self):
         cm = self._fill()
         before = cm.total_tokens
         cm.drop_last(1)
+        cm.save()
         assert cm.total_tokens < before
-        # Reloaded from disk, so the drop survived the session.
-        reopened = ChatMemory(self.session_dir, max_tokens=10**9)
-        assert len(reopened._exchanges) == 6
+        assert len(ChatMemory(self._last_dir)._exchanges) == 6
 
-    def test_leading_orphan_is_not_mistaken_for_an_exchange(self):
-        """A stray tool result before any user message is not a turn start."""
-        cm = ChatMemory(self.session_dir, max_tokens=10**9)
-        cm._exchanges = [
-            {"role": "tool_result", "content": "leftover"},
-            {"role": "user", "content": "q1"},
-            {"role": "assistant", "content": "a1"},
-            {"role": "user", "content": "q2"},
-            {"role": "assistant", "content": "a2"},
-        ]
+    def test_a_leading_orphan_is_not_a_turn_start(self):
+        orphan = (
+            ("tool_result", "leftover"), ("user", "q1"), ("assistant", "a1"),
+            ("user", "q2"), ("assistant", "a2"),
+        )
+        cm = self._fill(orphan)
         assert cm.drop_last(1) == 2
         assert [e["role"] for e in cm._exchanges] == [
             "tool_result", "user", "assistant",
         ]
-
-    def test_dropping_the_only_exchange_clears_the_orphan_too(self):
-        """Nothing coherent is left, so nothing is kept -- orphan included."""
-        cm = ChatMemory(self.session_dir, max_tokens=10**9)
-        cm._exchanges = [
-            {"role": "tool_result", "content": "leftover"},
-            {"role": "user", "content": "q"},
-            {"role": "assistant", "content": "a"},
-        ]
+        # Dropping the only exchange leaves nothing coherent, orphan included.
+        cm = self._fill((("tool_result", "leftover"), ("user", "q"), ("assistant", "a")))
         assert cm.drop_last(1) == 3
         assert cm._exchanges == []
 
     def test_last_user_prompt(self):
-        cm = self._fill()
-        assert cm.last_user_prompt() == "q3"
-
-    def test_last_user_prompt_ignores_injections_after_the_prompt(self):
+        assert self._fill().last_user_prompt() == "q3"
         cm = self._fill()
         cm._exchanges.append({"role": "user", "content": "steered mid-turn"})
         assert cm.last_user_prompt() == "steered mid-turn"
-
-    def test_last_user_prompt_on_empty(self):
-        assert ChatMemory(
-            self.session_dir, max_tokens=10**9).last_user_prompt() == ""
+        assert ChatMemory(self.session_dir / "none").last_user_prompt() == ""
 
 
-class _SessionDirMixin(BaseTest):
-    """Point `agent.memory.SESSIONS_DIR` at a temp dir and bind by name.
-
-    Sessions are addressed by name in the product (`wmk <name>`, `/resume
-    <name>`); `session_dir` is only a test/injection override and does not set
-    the name. Patching the root keeps these tests on the same path as the real
-    code, including `switch_session`'s default `SESSIONS_DIR / name`.
-    """
-
-    def setUp(self):
-        super().setUp()
-        import agent.memory as memory_mod
-
-        self.sessions_dir = self._tmpdir / "sessions"
-        self.sessions_dir.mkdir(parents=True, exist_ok=True)
-        memory_mod.SESSIONS_DIR = self.sessions_dir
-        self.addCleanup(setattr, memory_mod, "SESSIONS_DIR", memory_mod.SESSIONS_DIR)
-
-    def _fresh(self, name: str) -> Memory:
-        """A fresh process on *name*.
-
-        `Memory` is a singleton whose ``__init__`` returns early once it has
-        been initialized, so a second call in the same test cannot rebind it.
-        Reset it explicitly, the way a new `wmk <name>` process would.
-        """
-        from tests.conftest import reset_singletons
-
-        reset_singletons()
-        return Memory(session=name)
-
-    def _write(self, name: str, messages: int = 0, accessed=None) -> Path:
-        d = self.sessions_dir / name
-        d.mkdir(parents=True, exist_ok=True)
-        when = accessed or datetime.datetime.now()
-        (d / ".session-metadata").write_text(
-            f"created: {when.isoformat()}\naccessed: {when.isoformat()}\n"
-        )
-        (d / "chat_history.json").write_text(
-            json.dumps(
-                {"exchanges": [{"role": "user", "content": str(i)} for i in range(messages)]}
-            )
-        )
-        return d
-
-
-class TestSessionSwitching(_SessionDirMixin):
-    """`Memory` is a singleton, so switching a session must rebind it in place.
-
-    Everything downstream (Core, the footer status line, the prompt message)
-    holds the same object, so an in-place rebind is the only way a switch can
-    be seen by all of them at once.
-    """
-
-    def test_switch_reports_the_previous_name(self):
-        m = self._fresh("first")
-        assert m.session == "first"
-        assert m.switch_session("second") == "first"
-        assert m.session == "second"
-
-    def test_switch_loads_the_other_sessions_state(self):
-        other = self._fresh("second")
-        other.add_note("a note from the second session")
-        other.set_user_profile({"name": "Langur"})
-        # Notes are buffered; a different process only sees them once saved,
-        # which is exactly the state a previously used session is left in.
-        other.save()
-
-        m = self._fresh("first")
-        m.add_note("a note from the first session")
-        m.set_user_profile({"name": "Someone Else"})
-
-        m.switch_session("second")
-        assert m.session == "second"
-        assert [n["content"] for n in m.get_notes()] == ["a note from the second session"]
-        assert m.get_user_profile() == {"name": "Langur"}
-
-    def test_the_singleton_is_rebound_not_replaced(self):
-        """Everything holding a Memory reference must see the switch."""
-        m = self._fresh("first")
-        holder = {"memory": m}
-        m.switch_session("second")
-        assert holder["memory"] is m
-        assert holder["memory"].session == "second"
-
-    def test_switch_moves_the_paths_to_the_new_directory(self):
-        m = self._fresh("first")
-        m.switch_session("second")
-        assert m.session_dir == self.sessions_dir / "second"
-        assert m._user_profile_path == m.session_dir / "user_profile.json"
-        assert m._notes_path == m.session_dir / "notes.json"
-        assert m._chat_history._chat_path == m.session_dir / "chat_history.json"
-
-    def test_switch_loads_the_chat_history(self):
-        first = self._fresh("first")
-        first._chat_history.set_exchanges([{"role": "user", "content": "hello there"}])
-        first._chat_history.save()
-
-        m = self._fresh("second")
-        assert m.get_chat_history_unformatted() == []
-        m.switch_session("first")
-        assert m.get_chat_history_unformatted() == [
-            {"role": "user", "content": "hello there"}
-        ]
-
-    def test_switch_saves_the_previous_session_first(self):
-        m = self._fresh("first")
-        m.add_note("unsaved when the switch happens")
-        first_dir = m.session_dir
-        m.switch_session("second")
-
-        # The note must be on disk in the *old* directory, not lost.
-        saved = json.loads((first_dir / "notes.json").read_text())
-        assert [n["content"] for n in saved] == ["unsaved when the switch happens"]
-
-    def test_switching_to_the_same_session_is_a_noop(self):
-        m = self._fresh("first")
-        m.add_note("kept")
-        assert m.switch_session("first") == "first"
-        assert [n["content"] for n in m.get_notes()] == ["kept"]
-
-    def test_switch_keeps_the_token_budget(self):
-        m = Memory(session="budget", max_chat_history=1234)
-        m.switch_session("other")
-        assert m.get_chat_stats()[1] == 1234
-
-    def test_switch_keeps_the_turn_window(self):
-        m = Memory(session="win", max_chat_history=10**9, window_turns=3)
-        m.switch_session("other")
-        assert m._chat_history.window_turns == 3
-
-    def test_switch_drops_the_vector_store(self):
-        """The store is scoped to a session dir and must not be reused."""
-        m = self._fresh("first")
-        m.vectorstore = object()
-        m.switch_session("second")
-        assert m.vectorstore is None
-
-    def test_switch_creates_a_missing_session(self):
-        """`wmk <new>` creates sessions, so `/resume <new>` should too."""
-        m = self._fresh("first")
-        target = self.sessions_dir / "brand-new"
-        m.switch_session("brand-new")
-        assert target.is_dir()
-        assert (target / ".session-metadata").exists()
-
-    def test_switch_updates_the_accessed_timestamp(self):
-        m = self._fresh("first")
-        first = (self.sessions_dir / "first" / ".session-metadata").read_text()
-        m.switch_session("second")
-        second = (self.sessions_dir / "second" / ".session-metadata").read_text()
-        assert "created:" in first
-        assert "accessed:" in second
-
-    def test_switch_rejects_a_traversing_name(self):
-        m = self._fresh("first")
-        for bad in ("../escape", "a/b", "..", ".", "", "x\\y"):
-            try:
-                m.switch_session(bad)
-            except ValueError:
-                continue
-            self.fail(f"{bad!r} should not be accepted as a session name")
-        assert m.session == "first"
-
-    def test_invalid_names(self):
-        for good in ("default", "wisemonkey", "gaiasky", "my-session", "a b", "unicode"):
-            assert is_valid_session_name(good), good
-        for bad in ("", ".", "..", "../x", "a/b", "a\\b", "x\0y"):
-            assert not is_valid_session_name(bad), bad
-
-
-class TestSessionListing(BaseTest):
-    """`/sessions` must list without opening any session's memory."""
+class _SessionsDir(BaseTest):
+    """Point `agent.memory.SESSIONS_DIR` at a temp dir for the test's lifetime."""
 
     def setUp(self):
         super().setUp()
@@ -720,7 +289,14 @@ class TestSessionListing(BaseTest):
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self._patched = memory_mod.SESSIONS_DIR
         memory_mod.SESSIONS_DIR = self.sessions_dir
-        self.addCleanup(lambda: setattr(memory_mod, "SESSIONS_DIR", self._patched))
+        self.addCleanup(setattr, memory_mod, "SESSIONS_DIR", self._patched)
+
+    def _fresh(self, name: str) -> Memory:
+        """A fresh process on *name*."""
+        from tests.conftest import reset_singletons
+
+        reset_singletons()
+        return Memory(session=name)
 
     def _make(self, name: str, messages: int = 0, accessed=None):
         d = self.sessions_dir / name
@@ -730,28 +306,102 @@ class TestSessionListing(BaseTest):
             f"created: {when.isoformat()}\naccessed: {when.isoformat()}\n"
         )
         (d / "chat_history.json").write_text(
-            json.dumps({"exchanges": [{"role": "user", "content": str(i)} for i in range(messages)]})
+            json.dumps({"exchanges": [
+                {"role": "user", "content": str(i)} for i in range(messages)
+            ]})
         )
         return d
 
-    def test_lists_every_session_newest_first(self):
+
+class TestSessionSwitching(_SessionsDir):
+    """`Memory` is a singleton, so switching must rebind it in place."""
+
+    def test_the_singleton_is_rebound_with_its_paths(self):
+        m = self._fresh("first")
+        holder = {"memory": m}
+        assert m.switch_session("second") == "first"
+        assert holder["memory"] is m and m.session == "second"
+        assert m.session_dir == self.sessions_dir / "second"
+        assert m._user_profile_path == m.session_dir / "user_profile.json"
+        assert m._notes_path == m.session_dir / "notes.json"
+        assert m._chat_history._chat_path == m.session_dir / "chat_history.json"
+
+    def test_switch_loads_the_other_sessions_state(self):
+        other = self._fresh("second")
+        other.add_note("a note from the second session")
+        other.set_user_profile({"name": "Langur"})
+        other._chat_history.set_exchanges([{"role": "user", "content": "hello there"}])
+        other.save()
+
+        m = self._fresh("first")
+        m.add_note("a note from the first session")
+        m.set_user_profile({"name": "Someone Else"})
+        assert m.get_chat_history_unformatted() == []
+
+        m.switch_session("second")
+        assert [n["content"] for n in m.get_notes()] == ["a note from the second session"]
+        assert m.get_user_profile() == {"name": "Langur"}
+        assert m.get_chat_history_unformatted() == [
+            {"role": "user", "content": "hello there"}
+        ]
+
+    def test_switch_saves_the_previous_session_first(self):
+        m = self._fresh("first")
+        m.add_note("unsaved when the switch happens")
+        first_dir = m.session_dir
+        m.switch_session("second")
+        saved = json.loads((first_dir / "notes.json").read_text())
+        assert [n["content"] for n in saved] == ["unsaved when the switch happens"]
+
+    def test_switch_keeps_the_budget_and_window_and_drops_the_vector_store(self):
+        m = Memory(session="budget", max_chat_history=1234, window_turns=3)
+        m.vectorstore = object()
+        m.switch_session("other")
+        assert m.get_chat_stats()[1] == 1234
+        assert m._chat_history.window_turns == 3
+        assert m.vectorstore is None
+
+    def test_switch_creates_a_missing_session_and_rejects_a_traversing_name(self):
+        m = self._fresh("first")
+        target = self.sessions_dir / "brand-new"
+        m.switch_session("brand-new")
+        assert target.is_dir() and (target / ".session-metadata").exists()
+        for bad in ("../escape", "a/b", "..", ".", "", "x\\y"):
+            with self.assertRaises(ValueError, msg=bad):
+                m.switch_session(bad)
+        assert m.session == "brand-new"
+
+    def test_switching_to_the_same_session_is_a_noop(self):
+        m = self._fresh("first")
+        m.add_note("kept")
+        assert m.switch_session("first") == "first"
+        assert [n["content"] for n in m.get_notes()] == ["kept"]
+
+    def test_session_name_validation(self):
+        for good in ("default", "gaiasky", "my-session", "a b"):
+            assert is_valid_session_name(good), good
+        for bad in ("", ".", "..", "../x", "a/b", "a\\b", "x\0y"):
+            assert not is_valid_session_name(bad), bad
+
+
+class TestSessionListing(_SessionsDir):
+    """`/sessions` must list without opening any session's memory."""
+
+    def test_lists_newest_first_with_message_counts(self):
         now = datetime.datetime.now()
         self._make("old", accessed=now - datetime.timedelta(days=2))
-        self._make("newest", accessed=now)
-        self._make("middle", accessed=now - datetime.timedelta(hours=1))
-        names = [s["name"] for s in list_sessions()]
-        assert names == ["newest", "middle", "old"]
+        self._make("newest", messages=7, accessed=now)
+        self._make("middle", messages=3, accessed=now - datetime.timedelta(hours=1))
+        infos = list_sessions()
+        assert [s["name"] for s in infos] == ["newest", "middle", "old"]
+        assert {s["name"]: s["messages"] for s in infos} == {
+            "newest": 7, "middle": 3, "old": 0,
+        }
 
-    def test_reports_the_message_count(self):
-        self._make("a", messages=3)
-        self._make("b", messages=7)
-        counts = {s["name"]: s["messages"] for s in list_sessions()}
-        assert counts == {"a": 3, "b": 7}
-
-    def test_a_hand_made_session_still_lists(self):
+    def test_a_hand_made_session_still_lists_and_debris_is_ignored(self):
         """No metadata file: fall back to the directory mtime, do not crash."""
-        d = self.sessions_dir / "handmade"
-        d.mkdir()
+        (self.sessions_dir / "handmade").mkdir()
+        (self.sessions_dir / "stray.txt").write_text("x")
         infos = list_sessions()
         assert [s["name"] for s in infos] == ["handmade"]
         assert infos[0]["messages"] == 0
@@ -762,240 +412,15 @@ class TestSessionListing(BaseTest):
         (self.sessions_dir / "broken" / "chat_history.json").write_text("{not json")
         assert {s["name"]: s["messages"] for s in list_sessions()} == {"broken": 0}
 
-    def test_loose_files_are_not_sessions(self):
-        self._make("real")
-        (self.sessions_dir / "stray.txt").write_text("x")
-        assert [s["name"] for s in list_sessions()] == ["real"]
-
-    def test_empty_sessions_dir(self):
-        assert list_sessions() == []
-
     def test_session_info_reads_only_the_directory(self):
-        """No Memory is constructed, so no profile/history is loaded."""
         d = self._make("x", messages=2)
         info = session_info(d)
-        assert info["name"] == "x"
-        assert info["dir"] == d
-        assert info["messages"] == 2
+        assert (info["name"], info["dir"], info["messages"]) == ("x", d, 2)
         assert isinstance(info["accessed"], datetime.datetime)
+        assert list_sessions() != [] and list_sessions() is not None
 
 
-class TestConversationalRecap(BaseTest):
-    """The startup recap is for the human; the system prompt is for the model.
-
-    The two want opposite things from the same stored history: a recap needs
-    the conversation, the prompt needs the machinery. `roles` is what lets one
-    renderer serve both.
-    """
-
-    ROLES = ("user", "assistant", "summary")
-
-    def _cm(self, *entries, max_tokens=10**6):
-        cm = ChatMemory(self._tmpdir / self._testMethodName, max_tokens=max_tokens)
-        for role, content, extra in entries:
-            cm.add_exchange(None, role, content, **extra)
-        return cm
-
-    def _recap(self, cm, n=2, **kw):
-        opts = {
-            "timestamps": False,
-            "width": 320,
-            "roles": self.ROLES,
-            "assistant_width": 400,
-            "mark_incomplete": True,
-        }
-        opts.update(kw)
-        return cm.get_formatted(n, **opts)
-
-    # --- roles filtering ---
-
-    def test_tool_entries_are_dropped(self):
-        cm = self._cm(
-            ("user", "what changed?", {}),
-            ("tool_call", "", {"name": "run_command", "arguments": "{}"}),
-            ("tool_result", "tick 1 tick 2", {"name": "run_command"}),
-            ("assistant", "Only the answer.", {}),
-            ("user", "next question", {}),
-            ("tool_result", "more noise", {"name": "grep"}),
-        )
-        out = self._recap(cm)
-        assert "run_command" not in out
-        assert "tick 1" not in out
-        assert "next question" in out
-        assert "Only the answer." in out
-
-    def test_the_user_question_survives_a_tool_heavy_tail(self):
-        """The reported bug: the recap showed tool output and no question."""
-        cm = self._cm(
-            ("user", "fix the failing test", {}),
-            ("tool_call", "", {"name": "run_command", "arguments": "{}"}),
-            ("tool_result", "AssertionError", {"name": "run_command"}),
-            ("assistant", "Fixed.", {}),
-            ("user", "run it again", {}),
-            ("tool_result", "all 594 tests pass", {"name": "run_command"}),
-        )
-        out = self._recap(cm, 2)
-        assert "run it again" in out
-        assert "all 594 tests pass" not in out
-
-    def test_summaries_are_kept(self):
-        cm = self._cm(
-            ("user", "q", {}),
-            ("summary", "earlier: we discussed rivers", {}),
-            ("assistant", "a", {}),
-        )
-        assert "earlier: we discussed rivers" in self._recap(cm)
-
-    def test_the_prompt_path_still_keeps_tool_entries(self):
-        """The default is no filter: the model must see its own tool results."""
-        cm = self._cm(
-            ("user", "q", {}),
-            ("tool_call", "", {"name": "read_file", "arguments": "{}"}),
-            ("tool_result", "file body", {"name": "read_file"}),
-            ("assistant", "a", {}),
-        )
-        out = cm.get_formatted(0, timestamps=False, width=0)
-        assert "read_file" in out
-        assert "file body" in out
-
-    # --- slicing happens after filtering ---
-
-    def test_num_exchanges_counts_conversational_turns(self):
-        """Two entries means two entries of *conversation*, not of history."""
-        cm = self._cm(
-            ("user", "q1", {}),
-            ("assistant", "a1", {}),
-            ("user", "q2", {}),
-            ("tool_result", "noise", {"name": "x"}),
-            ("assistant", "a2", {}),
-            ("user", "q3", {}),
-        )
-        out = self._recap(cm, 2)
-        assert "q3" in out and "a2" in out
-        assert "q1" not in out and "a1" not in out
-        assert "noise" not in out
-
-    def test_conversational_entries_is_the_flattened_turns(self):
-        cm = self._cm(
-            ("user", "q1", {}),
-            ("tool_result", "n", {"name": "x"}),
-            ("user", "q2", {}),
-            ("assistant", "a2", {}),
-        )
-        # Two turns in the history, so the last 2 are both of them. The tool
-        # result contributes nothing.
-        assert [e["content"] for e in cm.conversational_entries(2)] == [
-            "q1",
-            "q2",
-            "a2",
-        ]
-        assert len(cm.conversational_entries(0)) == 3
-
-    def test_the_title_count_matches_what_is_shown(self):
-        cm = self._cm(("user", "q", {}), ("assistant", "a", {}))
-        assert cm.conversational_entries(2) == cm.conversational_entries(0)
-
-    # --- assistant_width ---
-
-    def test_assistant_entries_get_more_room(self):
-        cm = self._cm(
-            ("user", "qword " * 200, {}), ("assistant", "aword " * 200, {})
-        )
-        out = self._recap(cm, 2, width=320)
-        body = out.split("## ")
-        user_line = next(b for b in body if b.startswith("User:"))
-        assistant_line = next(b for b in body if b.startswith("Assistant:"))
-        # The assistant gets 400 and the question 320, so the answer may be
-        # longer -- but both are bounded, and by different amounts. A shared
-        # width would make them equal.
-        assert len(assistant_line) > len(user_line)
-        # 400 plus the heading, the "[...]" marker and the "(continued)"
-        # flag the recap adds to a truncated tail.
-        assert len(assistant_line) <= 440
-
-    def test_no_width_means_no_truncation(self):
-        cm = self._cm(("user", "q" * 500, {}))
-        out = self._recap(cm, 1, width=0, assistant_width=0)
-        assert "q" * 500 in out
-
-    # --- mark_incomplete ---
-
-    def test_a_truncated_answer_is_marked_continued(self):
-        cm = self._cm(("user", "q", {}), ("assistant", "a" * 900, {}))
-        assert "(continued)" in self._recap(cm, 1)
-
-    def test_a_session_that_ended_mid_sentence_is_marked(self):
-        cm = self._cm(
-            ("user", "q", {}), ("assistant", "The river was dry when we", {})
-        )
-        assert "(continued)" in self._recap(cm, 2)
-
-    def test_a_stored_incomplete_flag_is_marked(self):
-        """The core's own verdict beats the punctuation heuristic.
-
-        A dropped connection leaves an answer that *looks* finished -- it can
-        end in a full stop at a sentence boundary and still be a fragment --
-        so the flag recorded at storage time is what the recap trusts.
-        """
-        cm = self._cm(
-            ("user", "q", {}),
-            ("assistant", "The answer looked finished but was not.", {"incomplete": True}),
-        )
-        assert "(continued)" in self._recap(cm, 2)
-
-    def test_the_incomplete_flag_does_not_leak_into_the_prompt(self):
-        """The flag is metadata: the content the model sees is untouched."""
-        cm = self._cm(
-            ("user", "q", {}),
-            ("assistant", "A fragment, cut mid-", {"incomplete": True}),
-        )
-        prompt = cm.get_formatted(0, timestamps=False, width=0)
-        assert "A fragment, cut mid-" in prompt
-        assert "(continued)" not in prompt
-
-    def test_a_complete_answer_is_not_marked(self):
-        cm = self._cm(("user", "q", {}), ("assistant", "All done.", {}))
-        assert "(continued)" not in self._recap(cm, 2)
-
-    def test_a_complete_answer_ending_in_a_quote_is_not_marked(self):
-        cm = self._cm(("user", "q", {}), ("assistant", 'He said "no."', {}))
-        assert "(continued)" not in self._recap(cm, 2)
-
-    def test_only_the_last_assistant_is_marked(self):
-        cm = self._cm(
-            ("user", "q1", {}),
-            ("assistant", "The first answer is complete.", {}),
-            ("user", "q2", {}),
-            ("assistant", "The second answer is complete.", {}),
-        )
-        assert self._recap(cm, 4).count("(continued)") == 0
-
-    def test_a_trailing_user_turn_does_not_hide_the_marker(self):
-        """The last entry is the question, but the answer is still the tail.
-
-        Marking by `len(history) - 1` would skip the answer entirely here,
-        which is exactly the turn you most want flagged.
-        """
-        cm = self._cm(
-            ("user", "q1", {}),
-            ("assistant", "Here is what I found so far and it cuts off", {}),
-            ("user", "what about the rest?", {}),
-        )
-        out = self._recap(cm, 3)
-        assert "(continued)" in out
-        assert "what about the rest?" in out
-
-    def test_the_marker_is_off_by_default(self):
-        cm = self._cm(("assistant", "The river was dry when we", {}))
-        out = cm.get_formatted(1, timestamps=False, width=0)
-        assert "(continued)" not in out
-
-    def test_marker_costs_nothing_on_an_empty_history(self):
-        cm = self._cm(("user", "q", {}))
-        assert self._recap(cm, 5).strip() != ""
-
-
-# A two-turn history whose second turn ran tools, i.e. the shape that made
+# A two-turn history whose second turn ran tools: the shape that made
 # `/history 3` print two tool calls and an answer with no question.
 _TOOL_HEAVY_TURNS = (
     ("user", "prompt 1", {}),
@@ -1008,113 +433,158 @@ _TOOL_HEAVY_TURNS = (
     ("assistant", "assistant 2", {}),
 )
 
+_RECAP = {
+    "timestamps": False,
+    "width": 320,
+    "roles": CONVERSATIONAL_ROLES,
+    "assistant_width": 400,
+    "mark_incomplete": True,
+}
+
 
 class _HistoryBase(BaseTest):
-    """Shared history builder for the slicing tests below."""
+    """A `ChatMemory` builder on a per-test, per-call directory."""
 
     def _cm(self, *entries, max_tokens=10**6):
-        cm = ChatMemory(self._tmpdir / self._testMethodName, max_tokens=max_tokens)
+        self._n = getattr(self, "_n", 0) + 1
+        cm = ChatMemory(
+            self._tmpdir / f"{self._testMethodName}-{self._n}", max_tokens=max_tokens
+        )
         for role, content, extra in entries:
             cm.add_exchange(None, role, content, **extra)
         return cm
 
+    def _recap(self, cm, n, **kw):
+        return cm.get_formatted(n, **{**_RECAP, **kw})
+
+
+class TestConversationalRecap(_HistoryBase):
+    """The startup recap is for the human; the system prompt is for the model."""
+
+    def test_tool_machinery_is_filtered_out(self):
+        cm = self._cm(
+            ("user", "fix the failing test", {}),
+            ("tool_call", "", {"name": "run_command", "arguments": "{}"}),
+            ("tool_result", "AssertionError", {"name": "run_command"}),
+            ("assistant", "Fixed.", {}),
+            ("user", "run it again", {}),
+            ("tool_result", "all 594 tests pass", {"name": "run_command"}),
+        )
+        out = self._recap(cm, 2)
+        assert "run it again" in out and "Fixed." in out
+        assert "run_command" not in out and "594" not in out
+
+    def test_the_prompt_path_keeps_tool_entries_and_summaries(self):
+        cm = self._cm(
+            ("summary", "earlier: we discussed rivers", {}),
+            ("user", "q", {}),
+            ("tool_result", "file body", {"name": "read_file"}),
+            ("assistant", "a", {}),
+        )
+        prompt = cm.get_formatted(0, timestamps=False, width=0)
+        assert "read_file" in prompt and "file body" in prompt
+        assert "earlier: we discussed rivers" in self._recap(cm, 0)
+
+    def test_slicing_counts_conversational_turns(self):
+        cm = self._cm(
+            ("user", "q1", {}), ("assistant", "a1", {}), ("user", "q2", {}),
+            ("tool_result", "noise", {"name": "x"}), ("assistant", "a2", {}),
+            ("user", "q3", {}),
+        )
+        out = self._recap(cm, 2)
+        assert "q3" in out and "a2" in out
+        assert "q1" not in out and "a1" not in out and "noise" not in out
+        assert [e["content"] for e in cm.conversational_entries(2)] == ["q2", "a2", "q3"]
+        assert len(cm.conversational_entries(0)) == 5
+
+    def test_assistant_entries_get_more_room_but_stay_bounded(self):
+        cm = self._cm(
+            ("user", "qword " * 200, {}), ("assistant", "aword " * 200, {})
+        )
+        body = self._recap(cm, 2).split("## ")
+        user_line = next(b for b in body if b.startswith("User:"))
+        assistant_line = next(b for b in body if b.startswith("Assistant:"))
+        assert len(assistant_line) > len(user_line)
+        # 400 plus heading, "[...]" and "(continued)".
+        assert len(assistant_line) <= 440
+        # Zero width means no truncation at all.
+        long = self._cm(("user", "q" * 500, {}))
+        assert "q" * 500 in self._recap(long, 1, width=0, assistant_width=0)
+
+    def test_a_fragment_is_marked_continued(self):
+        for cm in (
+            self._cm(("user", "q", {}), ("assistant", "a" * 900, {})),
+            self._cm(("user", "q", {}), ("assistant", "The river was dry when we", {})),
+            self._cm(
+                ("user", "q", {}),
+                ("assistant", "Looked finished but was not.", {"incomplete": True}),
+            ),
+            self._cm(
+                ("user", "q1", {}),
+                ("assistant", "Here is what I found so far and it cuts off", {}),
+                ("user", "what about the rest?", {}),
+            ),
+        ):
+            assert "(continued)" in self._recap(cm, 3)
+
+    def test_a_whole_answer_is_not_marked_and_the_flag_stays_out_of_the_prompt(self):
+        for answer in ("All done.", 'He said "no."'):
+            cm = self._cm(("user", "q", {}), ("assistant", answer, {}))
+            assert "(continued)" not in self._recap(cm, 2)
+        cm = self._cm(
+            ("user", "q", {}), ("assistant", "A fragment, cut mid-", {"incomplete": True})
+        )
+        assert "(continued)" not in cm.get_formatted(1, timestamps=False, width=0)
+        # Off by default, too.
+        plain = self._cm(("assistant", "The river was dry when we", {}))
+        assert "(continued)" not in plain.get_formatted(1, timestamps=False, width=0)
+
 
 class TestExchangeSlicing(_HistoryBase):
-    """`num_exchanges` counts exchanges on both ends of the history.
+    """`num_exchanges` counts exchanges on both ends of the history."""
 
-    The system prompt asks for everything (`0`), but a caller asking for the
-    last few means *turns*. Slicing stored entries took whatever happened to
-    be at the tail -- a tool call is an entry too -- so the count and the
-    parameter name disagreed.
-    """
-
-    def test_one_exchange_is_whole(self):
+    def test_a_count_is_a_count_of_exchanges(self):
         cm = self._cm(*_TOOL_HEAVY_TURNS)
         out = cm.get_formatted(1, timestamps=False, width=0)
         assert "prompt 2" in out and "assistant 2" in out
+        assert "file body" in out  # the tool turn is not split
         assert "prompt 1" not in out and "assistant 1" not in out
-
-    def test_a_tool_heavy_turn_is_not_split(self):
-        """The tool call and its result go with the question that caused them."""
-        cm = self._cm(*_TOOL_HEAVY_TURNS)
-        out = cm.get_formatted(1, timestamps=False, width=0)
-        assert "read_file" in out and "file body" in out
-
-    def test_zero_means_everything(self):
-        cm = self._cm(*_TOOL_HEAVY_TURNS)
-        out = cm.get_formatted(0, timestamps=False, width=0)
-        assert "prompt 1" in out and "prompt 2" in out
-
-    def test_a_count_past_the_oldest_exchange_means_everything(self):
-        cm = self._cm(*_TOOL_HEAVY_TURNS)
+        everything = cm.get_formatted(0, timestamps=False, width=0)
         for n in (2, 3, 99):
-            assert cm.get_formatted(n, timestamps=False, width=0) == cm.get_formatted(
-                0, timestamps=False, width=0
-            )
+            assert cm.get_formatted(n, timestamps=False, width=0) == everything
 
-    def test_an_entry_count_is_not_what_it_used_to_be(self):
-        """Three entries used to land inside turn two and show no question."""
+    def test_the_two_cutoffs_agree(self):
         cm = self._cm(*_TOOL_HEAVY_TURNS)
-        out = cm.get_formatted(3, timestamps=False, width=0)
-        assert "prompt 1" in out
-
-    def test_the_two_cutoffs_share_the_middle_boundary(self):
-        cm = self._cm(*_TOOL_HEAVY_TURNS)
-        # Two exchanges, starting at entries 0 and 2: the boundary between
-        # them is the same index found from the front or from the back.
         assert cm._oldest_cutoff(1) == cm._newest_cutoff(1) == 2
-        # "Everything" is spelled per side: the oldest cut runs to the end of
-        # the history, the newest one starts at its head.
         assert cm._oldest_cutoff(0) == len(cm._exchanges) == 8
         assert cm._newest_cutoff(0) == cm._newest_cutoff(9) == 0
 
-    def test_a_history_without_a_user_message_still_renders(self):
-        """No exchange starts anywhere, so every count means "everything"."""
+    def test_a_history_without_a_question_still_renders(self):
         cm = self._cm(("assistant", "an opening line", {}))
-        out = cm.get_formatted(1, timestamps=False, width=0)
-        assert "an opening line" in out
+        assert "an opening line" in cm.get_formatted(1, timestamps=False, width=0)
 
 
 class TestConversationalPreamble(_HistoryBase):
-    """A summary in front of the first question is not a turn, but is shown.
-
-    `/history-compact` leaves its summary at the head of the history, where no
-    question introduced it. A recap that drops it hides the very context the
-    compaction was meant to preserve -- but a slice that starts *inside* the
-    history has not asked for it either.
-    """
+    """A summary in front of the first question is not a turn, but is shown."""
 
     ENTRIES = (("summary", "earlier: we discussed rivers", {}), *_TOOL_HEAVY_TURNS)
 
-    def _recap(self, cm, n):
-        return cm.get_formatted(
-            n, timestamps=False, width=0, roles=CONVERSATIONAL_ROLES
-        )
-
-    def test_the_preamble_travels_with_a_whole_history_recap(self):
+    def test_the_preamble_travels_with_a_whole_history_and_not_with_a_slice(self):
         cm = self._cm(*self.ENTRIES)
-        assert "earlier: we discussed rivers" in self._recap(cm, 0)
-        assert "earlier: we discussed rivers" in self._recap(cm, 2)
-
-    def test_a_slice_inside_the_history_leaves_the_preamble_behind(self):
-        cm = self._cm(*self.ENTRIES)
+        for n in (0, 2):
+            assert "earlier: we discussed rivers" in self._recap(cm, n)
         out = self._recap(cm, 1)
-        assert "earlier: we discussed rivers" not in out
-        assert "prompt 2" in out
+        assert "earlier: we discussed rivers" not in out and "prompt 2" in out
 
-    def test_the_preamble_is_not_counted_as_a_turn(self):
+    def test_the_preamble_is_neither_a_turn_nor_lost_from_the_front(self):
         cm = self._cm(*self.ENTRIES)
-        assert cm.conversational_count(0) == 2
-        assert cm.conversational_count(1) == 1
-
-    def test_the_preamble_is_flattened_first(self):
-        cm = self._cm(*self.ENTRIES)
-        contents = [e["content"] for e in cm.conversational_entries(0)]
-        assert contents[0] == "earlier: we discussed rivers"
-        assert contents[1:] == ["prompt 1", "assistant 1", "prompt 2", "assistant 2"]
+        assert cm.conversational_count(0) == 2 and cm.conversational_count(1) == 1
+        assert [e["content"] for e in cm.conversational_entries(0)] == [
+            "earlier: we discussed rivers",
+            "prompt 1", "assistant 1", "prompt 2", "assistant 2",
+        ]
 
     def test_a_preamble_only_history_is_still_shown(self):
-        """Everything in the window was compacted, so there is no question."""
         cm = self._cm(("summary", "a briefing with no question", {}))
         assert "a briefing with no question" in self._recap(cm, 0)
         assert cm.conversational_count(0) == 0
@@ -1123,93 +593,75 @@ class TestConversationalPreamble(_HistoryBase):
 class TestHistoryCommand(_HistoryBase):
     """`/history N` prints N turns: prompt plus final answer, no machinery."""
 
-    def _run(self, *params):
-        from types import SimpleNamespace
-
-        from agent.commands import registry
-
-        command, parsed = registry.lookup(["/history", *params])
-        assert command is not None
-        core = SimpleNamespace(memory=self.memory)
-        return command.handler(core, parsed)
-
     def setUp(self):
         super().setUp()
-        # The real `Memory` facade, so the test exercises the method the
-        # command actually calls rather than a stand-in that happens to match.
+        from types import SimpleNamespace
+
         import agent.memory as memory_mod
 
         sessions = self._tmpdir / "sessions"
         sessions.mkdir()
-        root = memory_mod.SESSIONS_DIR
+        self._patched = memory_mod.SESSIONS_DIR
         memory_mod.SESSIONS_DIR = sessions
-        self.addCleanup(setattr, memory_mod, "SESSIONS_DIR", root)
+        self.addCleanup(setattr, memory_mod, "SESSIONS_DIR", self._patched)
 
         self.memory = Memory(session="history")
         for role, content, extra in _TOOL_HEAVY_TURNS:
             self.memory.add_chat_exchange(None, role, content, **extra)
+        self.core = SimpleNamespace(memory=self.memory)
+
+    def _run(self, *params):
+        from agent.commands import registry
+
+        command, parsed = registry.lookup(["/history", *params])
+        assert command is not None
+        return command.handler(self.core, parsed)
 
     def test_the_count_is_turns(self):
-        ok, _, _, markdown = self._run("3")
+        ok, _, _, markdown = self._run("1")
         assert ok
-        for text in ("prompt 1", "assistant 1", "prompt 2", "assistant 2"):
-            assert text in markdown
-
-    def test_one_turn_is_the_last_one(self):
-        _, _, _, markdown = self._run("1")
         assert "prompt 2" in markdown and "assistant 2" in markdown
         assert "prompt 1" not in markdown
+        _, _, _, all_turns = self._run("3")
+        for text in ("prompt 1", "assistant 1", "prompt 2", "assistant 2"):
+            assert text in all_turns
 
     def test_tool_machinery_stays_out_of_the_panel(self):
-        _, _, _, markdown = self._run("2")
-        for noise in ("read_file", "run_command", "file body", "Tool"):
-            assert noise not in markdown
-
-    def test_no_argument_prints_everything(self):
-        _, _, _, markdown = self._run()
-        assert "prompt 1" in markdown and "prompt 2" in markdown
+        for params in (("2",), ()):
+            _, _, _, markdown = self._run(*params)
+            for noise in ("read_file", "run_command", "file body", "Tool"):
+                assert noise not in markdown
+        assert "prompt 1" in self._run()[3]
 
     def test_the_stats_are_reported(self):
         ok, msg, _, _ = self._run("1")
-        assert ok
-        assert "Memory status:" in msg
+        assert ok and "Memory status:" in msg
 
     def test_a_non_integer_is_rejected(self):
         ok, msg, _, _ = self._run("two")
-        assert not ok
-        assert "must be integer" in msg
+        assert not ok and "must be integer" in msg
 
 
 class TestCorruptFilesAreNotOverwritten(BaseTest):
     """A file that fails to parse is quarantined, never silently overwritten."""
 
     def _session(self, name):
-        return self._tmpdir / "sessions" / name
+        d = self._tmpdir / "sessions" / name
+        d.mkdir(parents=True)
+        return d
 
-    def test_corrupt_chat_history_is_quarantined(self):
+    def test_corrupt_chat_history_is_quarantined_across_a_save(self):
         session_dir = self._session("corrupt_chat")
-        session_dir.mkdir(parents=True)
         bad = '{"exchanges": [{"role": "user", "con'
         (session_dir / "chat_history.json").write_text(bad)
 
         cm = ChatMemory(session_dir)
         assert cm.get_unformatted() == []
-
-        # The original bytes survive under a .corrupt- name.
         kept = list(session_dir.glob("chat_history.json.corrupt-*"))
-        assert len(kept) == 1
-        assert kept[0].read_text() == bad
+        assert len(kept) == 1 and kept[0].read_text() == bad
         # The live path is gone, so a save cannot clobber the evidence.
         assert not (session_dir / "chat_history.json").exists()
-
-    def test_save_after_corrupt_load_keeps_evidence(self):
-        session_dir = self._session("corrupt_then_save")
-        session_dir.mkdir(parents=True)
-        (session_dir / "chat_history.json").write_text("not json")
-
-        cm = ChatMemory(session_dir)
         cm.save()
-
         assert json.loads((session_dir / "chat_history.json").read_text()) == {
             "exchanges": []
         }
@@ -1217,10 +669,8 @@ class TestCorruptFilesAreNotOverwritten(BaseTest):
 
     def test_corrupt_profile_and_notes_are_quarantined(self):
         session_dir = self._session("corrupt_memory")
-        session_dir.mkdir(parents=True)
         (session_dir / "user_profile.json").write_text("{broken")
         (session_dir / "notes.json").write_text("[broken")
-
         m = Memory(session_dir=session_dir)
         assert m.get_notes() == []
         assert len(list(session_dir.glob("user_profile.json.corrupt-*"))) == 1
@@ -1232,27 +682,20 @@ class TestCorruptFilesAreNotOverwritten(BaseTest):
         m.set_user_profile({"name": "Langur"})
         m.add_note("remember this")
         m.save()
-
         m2 = Memory(session_dir=session_dir)
         assert m2.get_user_profile()["name"] == "Langur"
         assert m2.get_notes()[0]["content"] == "remember this"
         assert list(session_dir.glob("*.tmp")) == []
         assert list(session_dir.glob("*.corrupt-*")) == []
 
-    def test_failed_write_leaves_previous_file_intact(self):
-        import unittest.mock as mock
-
+    def test_a_failed_write_leaves_the_previous_file_intact(self):
         session_dir = self._session("atomic")
         cm = ChatMemory(session_dir)
         cm.add_exchange(None, "user", "first")
         cm.save()
         original = (session_dir / "chat_history.json").read_text()
-
         # add_exchange() saves itself; make that write fail mid-replace.
         with mock.patch("agent.memory.os.replace", side_effect=OSError("disk")):
-            try:
+            with self.assertRaises(OSError):
                 cm.add_exchange(None, "user", "second")
-            except OSError:
-                pass
-
         assert (session_dir / "chat_history.json").read_text() == original

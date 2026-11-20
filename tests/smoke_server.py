@@ -1,10 +1,4 @@
-"""Smoke test for the phase 2 UDS server/client.
-
-Starts a server in a subprocess, attaches, pings, runs a slash command,
-and shuts the server down. Run with:
-
-    uv run python tests/smoke_server.py
-"""
+"""Smoke test for the phase 2 UDS server/client."""
 
 import subprocess
 import sys

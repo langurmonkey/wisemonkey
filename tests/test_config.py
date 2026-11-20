@@ -1,129 +1,63 @@
-"""Tests for agent/config.py — Config singleton, get/set, load/save, defaults."""
+"""Tests for agent/config.py — singleton, dot-notation, load/save/reload."""
 
 from tests.conftest import BaseTest
 from agent.config import Config, get_config
 
 
 class TestConfigSingleton(BaseTest):
-    """Test the Config singleton pattern."""
-
-    def test_same_instance_returned(self):
-        a = Config()
-        b = Config()
-        assert a is b
-
-    def test_get_config_returns_same_instance(self):
-        a = get_config()
-        b = get_config()
-        assert a is b
-
-    def test_reset_clears_config(self):
-        c = Config()
-        c._config = {"changed": True}
-        c.reset()
-        # After reset, config is loaded from repo config.yaml
-        assert "agent" in c.to_dict()
-        assert "model" in c.to_dict()
+    def test_one_instance_and_reset_reloads_the_defaults(self):
+        assert Config() is Config() is get_config()
+        config = Config()
+        config._config = {"changed": True}
+        config.reset()
+        assert {"agent", "model"} <= set(config.to_dict())
+        # set()/has()/to_dict() operate on a copy of the nested dicts.
+        snapshot = config.to_dict()
+        snapshot["agent"]["max_turns"] = 999
+        assert config.get("agent.max_turns") != 999
 
 
-class TestConfigGetSet(BaseTest):
-    """Test dot-notation get and set."""
+class TestGetSet(BaseTest):
+    def test_dot_notation_get_set_and_has(self):
+        config = Config()
+        config.reset()
+        assert config.get("agent.max_turns") == 50
+        assert config.get("nonexistent.key") is None
+        assert config.get("nonexistent.key", "fallback") == "fallback"
 
-    def setUp(self):
-        super().setUp()
-        self.config = Config()
-        self.config.reset()
-        assert self.config.get("agent.max_turns") == 50
-
-    def test_get_missing_key_returns_default(self):
-        assert self.config.get("nonexistent.key", "fallback") == "fallback"
-
-    def test_get_missing_key_returns_none(self):
-        assert self.config.get("nonexistent.key") is None
-
-    def test_set_updates_value(self):
-        self.config.set_no_save("agent.max_turns", 99)
-        assert self.config.get("agent.max_turns") == 99
-
-    def test_set_creates_nested_keys(self):
-        self.config.set_no_save("agent.new_field", "hello")
-        assert self.config.get("agent.new_field") == "hello"
-
-    def test_set_deeply_nested(self):
-        self.config.set_no_save("a.b.c.d", 42)
-        assert self.config.get("a.b.c.d") == 42
-
-    def test_has_returns_true_for_existing(self):
-        assert self.config.has("agent.max_turns") is True
-
-    def test_has_returns_false_for_missing(self):
-        assert self.config.has("agent.nonexistent") is False
-
-    def test_has_returns_false_for_deeply_missing(self):
-        assert self.config.has("a.b.c.d.e") is False
-
-    def test_to_dict_returns_copy(self):
-        d = self.config.to_dict()
-        d["agent"]["max_turns"] = 999
-        assert self.config.get("agent.max_turns") == 50
+        config.set_no_save("agent.max_turns", 99)
+        config.set_no_save("a.b.c.d", 42)  # creates the intermediate keys
+        assert config.get("agent.max_turns") == 99
+        assert config.get("a.b.c.d") == 42
+        assert config.has("agent.max_turns") is True
+        assert config.has("a.b.c.d.e") is False
+        assert config.has("agent.nonexistent") is False
 
 
-class TestConfigLoadSave(BaseTest):
-    """Test loading and saving config from/to YAML files."""
-
-    def setUp(self):
-        super().setUp()
-        self.config = Config()
-
-    def test_load_from_file(self):
-        cfg = self._default_config()
-        cfg["agent"]["max_turns"] = 77
-        path = self._write_config(cfg)
-        self.config.load(path)
-        assert self.config.get("agent.max_turns") == 77
-
-    def test_reload_reads_changes_from_selected_file(self):
+class TestLoadSave(BaseTest):
+    def test_load_reload_and_save_round_trip(self):
+        config = Config()
         cfg = self._default_config()
         cfg["agent"]["max_turns"] = 12
         path = self._write_config(cfg)
-        self.config.load(path)
+        config.load(path)
+        assert config.config_path == path
+        assert config.get("agent.max_turns") == 12
 
         cfg["agent"]["max_turns"] = 27
         self._write_config(cfg)
-        self.config.reload()
+        config.reload()
+        assert config.get("agent.max_turns") == 27
 
-        assert self.config.config_path == path
-        assert self.config.get("agent.max_turns") == 27
-
-    def test_config_path_returns_selected_file(self):
-        path = self._write_config(self._default_config())
-        self.config.load(path)
-        assert self.config.config_path == path
-
-    def test_load_missing_file_falls_back_to_repo_config(self):
-        fake_path = self._tmpdir / "nonexistent.yaml"
-        self.config.load(fake_path)
-        # When the given path doesn't exist, load() falls back to repo config.yaml
-        assert self.config.get("agent.max_turns") is not None
-
-    def test_save_creates_file(self):
-        path = self._tmpdir / "test_config.yaml"
-        self.config._config_path = path
-        self.config.save()
-        assert path.exists()
-
-    def test_save_round_trip(self):
-        cfg = self._default_config()
-        cfg["agent"]["max_turns"] = 42
-        path = self._write_config(cfg)
-        self.config.load(path)
-        assert self.config.get("agent.max_turns") == 42
-
-        self.config.set_no_save("agent.max_turns", 88)
-        self.config.save()
-
-        # Reload from disk
+        config.set_no_save("agent.max_turns", 88)
+        config.save()
+        # A fresh instance reads the saved value back.
         del Config._instance
-        c2 = Config()
-        c2.load(path)
-        assert c2.get("agent.max_turns") == 88
+        reloaded = Config()
+        reloaded.load(path)
+        assert reloaded.get("agent.max_turns") == 88
+
+    def test_a_missing_file_falls_back_to_the_repo_config(self):
+        config = Config()
+        config.load(self._tmpdir / "nonexistent.yaml")
+        assert config.get("agent.max_turns") is not None

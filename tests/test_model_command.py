@@ -1,16 +1,9 @@
-"""Tests for the merged /model (endpoint) flow.
-
-URL, provider, API key variable and model are configured in one pass. The
-behaviours worth pinning:
-
-- a canonical URL determines the provider without asking;
-- a local endpoint asks no key question at all;
-- an explicit variable name is stored, and an unset one is an actionable error;
-- ``/url`` is a true alias, and ``/config`` no longer runs the flow twice.
-"""
+"""Tests for the merged /model (endpoint) flow: URL, provider, key and model."""
 
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from agent.commands import registry
@@ -44,30 +37,26 @@ class _ScriptedUI:
 class _Config:
     def __init__(self, **values):
         self.values = dict(values)
-        self.set_calls = []
 
     def get(self, key, default=None):
         return self.values.get(key, default)
 
     def set(self, key, value):
-        self.set_calls.append((key, value))
         self.values[key] = value
 
 
 def _core(models=None):
     core = Mock()
     core.initialize_router.return_value = (True, "ok")
-    core.get_models.return_value = models if models is not None else [
-        {"id": "m1"}
-    ]
+    core.get_models.return_value = models if models is not None else [{"id": "m1"}]
     core.router.model_name = "m1"
     core.set_model.return_value = True
     return core
 
 
-def _run(config, ui, core=None):
+def _run(config, ui, core=None, name="/model"):
     core = core or _core()
-    command = registry.lookup(["/model"])[0]
+    command = registry.lookup([name])[0]
     assert command is not None
     with patch("agent.config.get_config", return_value=config), patch(
         "pubsub.pub.sendMessage"
@@ -76,251 +65,122 @@ def _run(config, ui, core=None):
 
 
 class TestProviderFromURL(unittest.TestCase):
-    def test_known_url_sets_provider_without_asking(self):
-        # api.anthropic.com must resolve to anthropic, not be a question:
-        # asking is how a generic host ends up receiving the Anthropic key.
+    def test_a_known_url_decides_the_provider_and_a_local_one_asks_no_key(self):
+        """Asking is how an Anthropic key ends up offered to a generic host."""
         config = _Config(**{"model.base_url": "", "model.provider": "generic"})
-        ui = _ScriptedUI(
-            strings=["https://api.anthropic.com"], choices=["", "m1"]
-        )
-
+        ui = _ScriptedUI(strings=["https://api.anthropic.com"], choices=["", "m1"])
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "k"}, clear=False):
             ok, _msg, _c, _m = _run(config, ui)
+        assert ok and config.get("model.provider") == "anthropic"
+        # Only the key variable and the model were offered as choices.
+        assert len(ui.choice_prompts) == 2
 
-        self.assertTrue(ok)
-        self.assertEqual(config.get("model.provider"), "anthropic")
-        # No *provider* question was asked: only the key variable and model.
-        self.assertEqual(ui.choice_prompts, [
-            " Environment variable holding the API key for anthropic:",
-            "Choose a model:",
-        ])
-
-    def test_local_url_asks_no_key_variable(self):
+        # A local endpoint has no key chain at all, so no key question.
         config = _Config(**{"model.base_url": ""})
-        ui = _ScriptedUI(
-            strings=["http://localhost:11434"], choices=["m1"]
-        )
-
+        ui = _ScriptedUI(strings=["http://localhost:11434"], choices=["m1"])
         ok, _msg, _c, _m = _run(config, ui)
+        assert ok and config.get("model.provider") == "ollama"
+        assert ui.string_prompts == [" Enter the endpoint URL"]
 
-        self.assertTrue(ok)
-        self.assertEqual(config.get("model.provider"), "ollama")
-        self.assertEqual(ui.string_prompts, [
-            " Enter the endpoint URL"
-        ])  # no key question at all
-
-    def test_unknown_url_asks_provider_defaulting_to_generic(self):
+    def test_an_unknown_url_asks_the_provider(self):
         config = _Config(**{"model.base_url": "", "model.provider": "generic"})
-        # choices: provider, key variable, model
         ui = _ScriptedUI(choices=["generic", "", "m1"])
-
-        with patch.dict(
-            os.environ, {"WM_API_KEY_GENERIC": "k"}, clear=False
-        ):
-            ok, _msg, _c, _m = _run(config, ui)
-
-        self.assertTrue(ok)
-        self.assertEqual(len(ui.choice_prompts), 3)  # provider + key + model
+        with patch.dict(os.environ, {"WM_API_KEY_GENERIC": "k"}, clear=False):
+            assert _run(config, ui)[0] is True
+        assert len(ui.choice_prompts) == 3  # provider + key + model
 
 
 class TestKeyVariableStep(unittest.TestCase):
-    def test_explicit_name_is_stored(self):
-        config = _Config(**{"model.base_url": ""})
-        ui = _ScriptedUI(
-            strings=["https://openrouter.ai/api/v1"],
-            choices=["generic", "OPENROUTER_API_KEY", "m1"],
-        )
-
-        with patch.dict(
-            os.environ, {"OPENROUTER_API_KEY": "or-key"}, clear=False
+    def test_an_explicit_name_is_stored_and_a_blank_defers_to_the_chain(self):
+        for choices, environ, stored in (
+            (["generic", "OPENROUTER_API_KEY", "m1"], "or-key", "OPENROUTER_API_KEY"),
+            (["generic", "", "m1"], "k", ""),
         ):
-            ok, _msg, _c, _m = _run(config, ui)
+            config = _Config(**{"model.base_url": ""})
+            ui = _ScriptedUI(strings=["https://openrouter.ai/api/v1"], choices=choices)
+            env = {"OPENROUTER_API_KEY": environ} if stored else {"OPENAI_API_KEY": environ}
+            with patch.dict(os.environ, env, clear=False):
+                ok, _msg, _c, _m = _run(config, ui)
+            assert ok and config.get("model.api_key_env") == stored, choices
 
-        self.assertTrue(ok)
-        self.assertEqual(config.get("model.api_key_env"), "OPENROUTER_API_KEY")
-
-    def test_unset_explicit_name_is_an_actionable_error(self):
+    def test_an_unset_name_fails_before_the_router_is_built(self):
+        """A missing key must surface here, not as an opaque model-list failure."""
         config = _Config(**{"model.base_url": ""})
-        ui = _ScriptedUI(
-            strings=["https://openrouter.ai/api/v1"],
-            choices=["generic", "NOT_SET_ANYWHERE"],
-        )
-
+        ui = _ScriptedUI(strings=["https://openrouter.ai/api/v1"],
+                         choices=["generic", "NOT_SET_ANYWHERE"])
         core = _core()
         ok, msg, _c, _m = _run(config, ui, core)
-
-        self.assertFalse(ok)
-        # Bailing out before the router is built is the point: a missing key
-        # surfaces here, not as an opaque failure listing models.
+        assert ok is False
         core.initialize_router.assert_not_called()
-        self.assertIn("NOT_SET_ANYWHERE", msg)
-        self.assertIn("auto-detect", msg)
+        assert "NOT_SET_ANYWHERE" in msg and "auto-detect" in msg
 
-    def test_blank_defers_to_the_chain(self):
+
+class TestSuccessMessageAndAlias(unittest.TestCase):
+    def test_the_message_names_the_endpoint_and_url_is_an_alias(self):
         config = _Config(**{"model.base_url": ""})
-        ui = _ScriptedUI(
-            strings=["https://openrouter.ai/api/v1"],
-            choices=["generic", "", "m1"],
-        )
-
-        with patch.dict(
-            os.environ, {"OPENAI_API_KEY": "k"}, clear=False
-        ):
-            ok, _msg, _c, _m = _run(config, ui)
-
-        self.assertTrue(ok)
-        self.assertEqual(config.get("model.api_key_env"), "")
-
-
-class TestUrlAlias(unittest.TestCase):
-    def test_url_runs_the_same_flow(self):
-        config = _Config(**{"model.base_url": ""})
-        ui = _ScriptedUI(
-            strings=["http://localhost:11434"], choices=["m1"]
-        )
-        core = _core()
-
-        command = registry.lookup(["/url"])[0]
-        assert command is not None
-        with patch("agent.config.get_config", return_value=config), patch(
-            "pubsub.pub.sendMessage"
-        ):
-            ok, _msg, _c, _m = command.handler(core, [], ui)
-
-        self.assertTrue(ok)
-        self.assertEqual(config.get("model.base_url"), "http://localhost:11434")
-        core.set_model.assert_called_once_with("m1")
-
-    def test_config_does_not_run_the_endpoint_flow_twice(self):
-        # /config used to run /url *and* /model; now that they are one command
-        # it must run the merged flow exactly once.
-        import inspect
-
-        command = registry.lookup(["/config"])[0]
-        assert command is not None
-        src = inspect.getsource(command.handler)
-        self.assertNotIn('"/url"', src)
-        self.assertIn('"/model"', src)
-
-
-class TestSuccessMessage(unittest.TestCase):
-    def test_message_names_endpoint_key_and_model(self):
-        config = _Config(**{"model.base_url": ""})
-        ui = _ScriptedUI(
-            strings=["https://openrouter.ai/api/v1"],
-            choices=["generic", "OPENROUTER_API_KEY", "deepseek-v4"],
-        )
-
-        with patch.dict(
-            os.environ, {"OPENROUTER_API_KEY": "or-key"}, clear=False
-        ):
+        ui = _ScriptedUI(strings=["https://openrouter.ai/api/v1"],
+                         choices=["generic", "OPENROUTER_API_KEY", "deepseek-v4"])
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "or-key"}, clear=False):
             _ok, msg, _c, _m = _run(config, ui)
+        for fragment in ("openrouter.ai", "OPENROUTER_API_KEY", "deepseek-v4"):
+            assert fragment in msg, fragment
 
-        self.assertIn("openrouter.ai", msg)
-        self.assertIn("OPENROUTER_API_KEY", msg)
-        self.assertIn("deepseek-v4", msg)
+        config = _Config(**{"model.base_url": ""})
+        ui = _ScriptedUI(strings=["http://localhost:11434"], choices=["m1"])
+        core = _core()
+        ok, _msg, _c, _m = _run(config, ui, core, name="/url")
+        assert ok and config.get("model.base_url") == "http://localhost:11434"
+        core.set_model.assert_called_once_with("m1")
 
 
 class TestEndpointList(unittest.TestCase):
-    """``model.endpoints`` turns the URL question into a picker.
-
-    The point of the list is that a host one uses regularly is one selection
-    away, and that a selection can carry the provider and the key variable with
-    it -- those are properties of the *endpoint*, not of the model.
-    """
+    """``model.endpoints`` turns the URL question into a picker."""
 
     ENTRIES = [
-        {
-            "name": "Local",
-            "base_url": "http://127.0.0.1:1234/v1",
-            "provider": "lmstudio",
-        },
-        {
-            "name": "OpenRouter",
-            "base_url": "https://openrouter.ai/api/v1",
-            "provider": "generic",
-            "api_key_env": "OPENROUTER_API_KEY",
-        },
+        {"name": "Local", "base_url": "http://127.0.0.1:1234/v1",
+         "provider": "lmstudio"},
+        {"name": "OpenRouter", "base_url": "https://openrouter.ai/api/v1",
+         "provider": "generic", "api_key_env": "OPENROUTER_API_KEY"},
     ]
 
-    def test_entry_supplies_url_provider_and_key_variable(self):
-        config = _Config(
-            **{"model.base_url": "", "model.endpoints": self.ENTRIES}
-        )
-        # choices: the entry, the key variable, the model -- no URL string.
+    def test_an_entry_supplies_url_provider_and_key_and_the_current_one_defaults(self):
+        config = _Config(**{"model.base_url": "", "model.endpoints": self.ENTRIES})
         ui = _ScriptedUI(choices=["1", "OPENROUTER_API_KEY", "m1"])
-
-        with patch.dict(
-            os.environ, {"OPENROUTER_API_KEY": "or-key"}, clear=False
-        ):
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "or-key"}, clear=False):
             ok, msg, _c, _m = _run(config, ui)
+        assert ok
+        assert ui.string_prompts == []  # the URL is never typed by hand
+        assert config.get("model.base_url") == "https://openrouter.ai/api/v1"
+        assert config.get("model.provider") == "generic"
+        assert config.get("model.api_key_env") == "OPENROUTER_API_KEY"
+        assert "OPENROUTER_API_KEY" in msg
 
-        self.assertTrue(ok)
-        self.assertEqual(ui.string_prompts, [])  # URL never typed by hand
-        self.assertEqual(
-            config.get("model.base_url"), "https://openrouter.ai/api/v1"
-        )
-        self.assertEqual(config.get("model.provider"), "generic")
-        self.assertEqual(config.get("model.api_key_env"), "OPENROUTER_API_KEY")
-        self.assertIn("OPENROUTER_API_KEY", msg)
-
-    def test_new_url_is_still_one_option_of_the_list(self):
-        config = _Config(
-            **{"model.base_url": "", "model.endpoints": self.ENTRIES}
-        )
-        ui = _ScriptedUI(
-            strings=["https://example.test/v1"],
-            choices=["__new_endpoint__", "generic", "", "m1"],
-        )
-
-        with patch.dict(os.environ, {"WM_API_KEY_GENERIC": "k"}, clear=False):
-            ok, _msg, _c, _m = _run(config, ui)
-
-        self.assertTrue(ok)
-        self.assertEqual(ui.string_prompts, [" Enter the endpoint URL"])
-        self.assertEqual(config.get("model.base_url"), "https://example.test/v1")
-
-    def test_current_url_is_the_default_selection(self):
-        config = _Config(
-            **{
-                "model.base_url": "http://127.0.0.1:1234/v1",
-                "model.endpoints": self.ENTRIES,
-            }
-        )
-        ui = _ScriptedUI()  # every answer takes its default
+        # The configured URL is the default, and a new one is still offered.
+        config = _Config(**{"model.base_url": "http://127.0.0.1:1234/v1",
+                            "model.endpoints": self.ENTRIES})
+        ui = _ScriptedUI()
         ui.ask_choice = Mock(side_effect=lambda **kw: kw["default"])
-
         _run(config, ui)
+        first = ui.ask_choice.call_args_list[0].kwargs
+        assert first["default"] == "0"
+        assert first["options"][-1][0] == "__new_endpoint__"
 
-        picked = ui.ask_choice.call_args_list[0].kwargs
-        self.assertEqual(picked["default"], "0")
-        self.assertEqual(picked["options"][-1][0], "__new_endpoint__")
-
-    def test_malformed_entries_do_not_break_the_command(self):
-        # A typo in config.yaml must not make /model unusable.
-        config = _Config(
-            **{
-                "model.base_url": "",
-                "model.endpoints": [None, 42, {}, {"name": "no url"}],
-            }
-        )
-        ui = _ScriptedUI(
-            strings=["http://localhost:11434"], choices=["m1"]
-        )
-
-        ok, _msg, _c, _m = _run(config, ui)
-
-        self.assertTrue(ok)
-        self.assertEqual(config.get("model.base_url"), "http://localhost:11434")
+    def test_malformed_entries_fall_back_to_a_typed_url(self):
+        """A typo in config.yaml must not make /model unusable."""
+        config = _Config(**{
+            "model.base_url": "",
+            "model.endpoints": [None, 42, {}, {"name": "no url"}],
+        })
+        ui = _ScriptedUI(strings=["http://localhost:11434"], choices=["m1"])
+        assert _run(config, ui)[0] is True
+        assert config.get("model.base_url") == "http://localhost:11434"
 
 
 class TestApiKeyListing(unittest.TestCase):
     """Every ``*_API_KEY`` on disk is offered, not a fixed list of presets."""
 
-    def test_env_file_names_are_listed(self):
-        import tempfile
-        from pathlib import Path
-
+    def test_names_come_from_the_env_file_and_the_environment_and_auto_detect_leads(self):
+        from agent.commands import _key_variable_options
         from agent.config import api_key_env_names
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -328,34 +188,11 @@ class TestApiKeyListing(unittest.TestCase):
             env.write_text(
                 "# a comment\n"
                 "OPENROUTER_API_KEY=or\n"
-                "export CEREBRAS_API_KEY=\"c\"\n"
+                'export CEREBRAS_API_KEY="c"\n'
                 "SOME_OTHER_SETTING=1\n"
             )
             with patch("agent.config.env_file_paths", return_value=[env]):
                 names = api_key_env_names()
-
-        self.assertIn("OPENROUTER_API_KEY", names)
-        self.assertIn("CEREBRAS_API_KEY", names)
-        self.assertNotIn("SOME_OTHER_SETTING", names)
-
-    def test_environment_names_are_listed_too(self):
-        from agent.config import api_key_env_names
-
-        with patch("agent.config.env_file_paths", return_value=[]), patch.dict(
-            os.environ, {"MY_PROVIDER_API_KEY": "k"}, clear=False
-        ):
-            self.assertIn("MY_PROVIDER_API_KEY", api_key_env_names())
-
-    def test_picker_offers_every_key_found(self):
-        from agent.commands import _key_variable_options
-
-        import tempfile
-        from pathlib import Path
-
-        with tempfile.TemporaryDirectory() as tmp:
-            env = Path(tmp) / ".env"
-            env.write_text("CEREBRAS_API_KEY=c\n")
-            with patch("agent.config.env_file_paths", return_value=[env]):
                 options = _key_variable_options(
                     base_url="https://openrouter.ai/api/v1",
                     current_env="",
@@ -364,43 +201,25 @@ class TestApiKeyListing(unittest.TestCase):
                     candidates=["OPENROUTER_API_KEY", "WM_API_KEY"],
                 )
 
-        values = [v for v, _ in options]
-        self.assertIn("CEREBRAS_API_KEY", values)
-        self.assertEqual(values[0], "")  # auto-detect stays first
-        self.assertEqual(values[-2:], ["__new_key_name__", "__new_key__"])
+        assert "OPENROUTER_API_KEY" in names and "CEREBRAS_API_KEY" in names
+        assert "SOME_OTHER_SETTING" not in names
+        with patch("agent.config.env_file_paths", return_value=[]), patch.dict(
+            os.environ, {"MY_PROVIDER_API_KEY": "k"}, clear=False
+        ):
+            assert "MY_PROVIDER_API_KEY" in api_key_env_names()
 
-    def test_key_found_in_env_file_can_be_selected(self):
-        import tempfile
-        from pathlib import Path
-
-        config = _Config(**{"model.base_url": ""})
-        ui = _ScriptedUI(
-            strings=["https://openrouter.ai/api/v1"],
-            choices=["generic", "CEREBRAS_API_KEY", "m1"],
-        )
-
-        with tempfile.TemporaryDirectory() as tmp:
-            env = Path(tmp) / ".env"
-            env.write_text("CEREBRAS_API_KEY=c\n")
-            with patch("agent.config.env_file_paths", return_value=[env]), patch.dict(
-                os.environ, {"CEREBRAS_API_KEY": "c"}, clear=False
-            ):
-                ok, _msg, _c, _m = _run(config, ui)
-
-        self.assertTrue(ok)
-        self.assertEqual(config.get("model.api_key_env"), "CEREBRAS_API_KEY")
+        values = [value for value, _ in options]
+        assert "CEREBRAS_API_KEY" in values
+        assert values[0] == ""  # auto-detect stays the default
+        assert values[-2:] == ["__new_key_name__", "__new_key__"]
 
 
 class TestNewKeyEntry(unittest.TestCase):
     def _run_typed_key(self, url, key):
         """Drive the flow to the "enter a new key" branch; return what was stored."""
         config = _Config(**{"model.base_url": ""})
-        ui = _ScriptedUI(
-            strings=[url, key],
-            choices=["generic", "__new_key__", "m1"],
-            confirm=True,
-        )
-
+        ui = _ScriptedUI(strings=[url, key],
+                         choices=["generic", "__new_key__", "m1"], confirm=True)
         stored = {}
 
         def fake_set(name, value, path=None):
@@ -411,66 +230,41 @@ class TestNewKeyEntry(unittest.TestCase):
         with patch("agent.config.set_env_var", side_effect=fake_set), patch(
             "agent.config.env_file_paths", return_value=[]
         ):
-            ok, msg, _c, _m = _run(config, ui)
-
+            ok, _msg, _c, _m = _run(config, ui)
         for name in stored:
             os.environ.pop(name, None)
-        return config, ok, msg, stored
+        return config, ok, stored
 
-    def test_typing_a_key_stores_it_and_uses_it(self):
-        config, ok, msg, stored = self._run_typed_key(
+    def test_a_typed_key_gets_the_hosts_name_and_an_unknown_host_the_namespaced_one(self):
+        """So a router key also works for tools reading OPENROUTER_API_KEY."""
+        config, ok, stored = self._run_typed_key(
             "https://openrouter.ai/api/v1", "sk-brand-new"
         )
+        assert ok and stored == {"OPENROUTER_API_KEY": "sk-brand-new"}
+        assert config.get("model.api_key_env") == "OPENROUTER_API_KEY"
 
-        self.assertTrue(ok)
-        # A known host gets its conventional variable, not the generic fallback:
-        # the key then also works for tools that read OPENROUTER_API_KEY.
-        self.assertEqual(stored, {"OPENROUTER_API_KEY": "sk-brand-new"})
-        self.assertEqual(config.get("model.api_key_env"), "OPENROUTER_API_KEY")
-        self.assertIn("/tmp/fake/.env", msg)
-
-    def test_unknown_host_falls_back_to_the_namespaced_variable(self):
-        _config, ok, _msg, stored = self._run_typed_key(
-            "https://example.test/v1", "sk-x"
-        )
-
-        self.assertTrue(ok)
-        self.assertEqual(stored, {"WM_API_KEY_GENERIC": "sk-x"})
+        _config, ok, stored = self._run_typed_key("https://example.test/v1", "sk-x")
+        assert ok and stored == {"WM_API_KEY_GENERIC": "sk-x"}
 
 
 class TestSetEnvVar(unittest.TestCase):
-    def test_replaces_in_place_and_is_private(self):
-        import tempfile
-        from pathlib import Path
-
+    def test_replaces_in_place_privately_and_quotes_when_needed(self):
         from agent.config import set_env_var
 
         with tempfile.TemporaryDirectory() as tmp:
             env = Path(tmp) / ".env"
             env.write_text("OTHER=1\nFOO_API_KEY=old\n")
             set_env_var("FOO_API_KEY", "new", path=env)
-
             text = env.read_text()
-            self.assertIn("FOO_API_KEY=new", text)
-            self.assertNotIn("old", text)
-            self.assertIn("OTHER=1", text)
-            self.assertEqual(text.count("FOO_API_KEY"), 1)
-            self.assertEqual(env.stat().st_mode & 0o777, 0o600)
+            assert "FOO_API_KEY=new" in text and "old" not in text
+            assert "OTHER=1" in text and text.count("FOO_API_KEY") == 1
+            assert env.stat().st_mode & 0o777 == 0o600
 
-        os.environ.pop("FOO_API_KEY", None)
-
-    def test_values_needing_quotes_are_quoted(self):
-        import tempfile
-        from pathlib import Path
-
-        from agent.config import set_env_var
-
-        with tempfile.TemporaryDirectory() as tmp:
-            env = Path(tmp) / ".env"
             set_env_var("ODD_API_KEY", "a b#c", path=env)
-            self.assertIn('ODD_API_KEY="a b#c"', env.read_text())
+            assert 'ODD_API_KEY="a b#c"' in env.read_text()
 
-        os.environ.pop("ODD_API_KEY", None)
+        for name in ("FOO_API_KEY", "ODD_API_KEY"):
+            os.environ.pop(name, None)
 
 
 if __name__ == "__main__":

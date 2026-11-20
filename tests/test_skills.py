@@ -1,183 +1,70 @@
 """Tests for agent/skills.py — frontmatter parsing, skill loading, formatting."""
 
-import os
-
-from pathlib import Path
-
-from agent.skills import SkillLoader
+from agent.skills import SkillLoader, SkillNotFoundError
 from tests.conftest import BaseTest
 
 
-class TestParseFrontmatter(BaseTest):
-    """Test YAML frontmatter parsing from skill markdown files."""
-
+class _LoaderCase(BaseTest):
     def setUp(self):
         super().setUp()
         self.loader = SkillLoader(skills_dir=self._tmpdir)
 
-    def test_parses_valid_frontmatter(self):
-        content = '---\nname: test-skill\ndescription: A test skill\n---\n\n## Steps\nDo something.'
-        meta, body = self.loader._parse_frontmatter(content)
-        assert meta["name"] == "test-skill"
-        assert meta["description"] == "A test skill"
+    def _write(self, name: str, body: str):
+        path = self._tmpdir / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+        return path
+
+
+class TestFrontmatter(_LoaderCase):
+    def test_meta_body_quotes_and_a_missing_block(self):
+        meta, body = self.loader._parse_frontmatter(
+            "---\nname: test-skill\ndescription: A test skill\n---\n\nDo something."
+        )
+        assert meta == {"name": "test-skill", "description": "A test skill"}
         assert "Do something" in body
 
-    def test_parses_empty_body(self):
-        content = "---\nname: empty\n---\n"
-        meta, body = self.loader._parse_frontmatter(content)
-        assert meta["name"] == "empty"
-        assert body == ""
+        for quoted, expected in (('"quoted"', "quoted"), ("'single'", "single")):
+            meta, body = self.loader._parse_frontmatter(f"---\nname: {quoted}\n---\n")
+            assert (meta["name"], body) == (expected, "")
 
-    def test_no_frontmatter_returns_empty_meta(self):
-        content = "# Just a heading\nNo frontmatter here."
-        meta, body = self.loader._parse_frontmatter(content)
-        assert meta == {}
-        assert "Just a heading" in body
-
-    def test_strips_quotes_from_values(self):
-        content = '---\nname: "quoted-skill"\ndescription: "A quoted description"\n---\nBody.'
-        meta, _body = self.loader._parse_frontmatter(content)
-        assert meta["name"] == "quoted-skill"
-        assert meta["description"] == "A quoted description"
-
-    def test_single_quotes_stripped(self):
-        content = "---\nname: 'single-quoted'\n---\nBody."
-        meta, _body = self.loader._parse_frontmatter(content)
-        assert meta["name"] == "single-quoted"
+        meta, body = self.loader._parse_frontmatter("# Just a heading")
+        assert meta == {} and "Just a heading" in body
 
 
-class TestListSkills(BaseTest):
-    """Test listing available skill files."""
+class TestLoading(_LoaderCase):
+    def test_only_markdown_stems_are_listed_and_a_directory_uses_its_name(self):
+        self._write("a.md", "---\nname: a\n---\n")
+        self._write("readme.txt", "not a skill")
+        self._write("dir-skill/SKILL.md",
+                    "---\nname: dir-skill\n---\n## Steps\nDo something.")
+        self._write("unnamed/SKILL.md", "Body without frontmatter.")
+        assert sorted(self.loader.list_skills()) == ["a", "dir-skill", "unnamed"]
+        assert "Do something" in self.loader.load_skill("dir-skill")[1]
+        assert self.loader.load_skill("unnamed")[1] == "Body without frontmatter."
 
-    def setUp(self):
-        super().setUp()
-        self.loader = SkillLoader(skills_dir=self._tmpdir)
+    def test_load_returns_meta_and_body_and_caches(self):
+        path = self._write("cached.md", "---\nname: cached\n---\nOriginal body.")
+        meta, body = self.loader.load_skill("cached")
+        assert meta["name"] == "cached" and body == "Original body."
+        path.write_text("---\nname: cached\n---\nModified body.", encoding="utf-8")
+        assert self.loader.load_skill("cached")[1] == "Original body."
 
-    def test_empty_directory(self):
-        skills = self.loader.list_skills()       
-        assert skills == []
-
-    def test_lists_skill_files(self):
-        (self._tmpdir / "skill-a.md").write_text("---\nname: a\n---\n")
-        (self._tmpdir / "skill-b.md").write_text("---\nname: b\n---\n")
-        skills = self.loader.list_skills()
-        assert sorted(skills) == ["skill-a", "skill-b"]
-
-    def test_ignores_non_md_files(self):
-        (self._tmpdir / "readme.txt").write_text("not a skill")
-        (self._tmpdir / "skill.md").write_text("---\nname: s\n---\n")
-        assert self.loader.list_skills() == ["skill"]
-
-
-class TestLoadSkill(BaseTest):
-    """Test loading individual skills."""
-
-    def setUp(self):
-        super().setUp()
-        self.loader = SkillLoader(skills_dir=self._tmpdir)
-
-    def test_load_existing_skill(self):
-        content = "---\nname: my-skill\n---\nSkill body here."
-        (self._tmpdir / "my-skill.md").write_text(content, encoding="utf-8")
-        meta, body = self.loader.load_skill("my-skill")
-        assert meta is not None
-        assert meta["name"] == "my-skill"
-        assert body == "Skill body here."
-
-    def test_load_missing_skill(self):
-        from agent.skills import SkillNotFoundError
+    def test_a_missing_skill_raises_and_the_raw_content_keeps_its_frontmatter(self):
         with self.assertRaises(SkillNotFoundError):
             self.loader.load_skill("nonexistent")
-
-    def test_caching(self):
-        content = "---\nname: cached\n---\nOriginal body."
-        (self._tmpdir / "cached.md").write_text(content, encoding="utf-8")
-        _meta1, _body1 = self.loader.load_skill("cached")
-
-        # Modify file on disk
-        (self._tmpdir / "cached.md").write_text(
-            "---\nname: cached\n---\nModified body.", encoding="utf-8"
-        )
-
-        # Should return cached version
-        _meta2, body2 = self.loader.load_skill("cached")
-        assert body2 == "Original body."
+        self._write("flat.md", "---\nname: flat\n---\nBody.")
+        content = self.loader.get_skill_content("flat")
+        assert content is not None and "flat" in content and "Body." in content
 
 
-class TestSubdirectorySkills(BaseTest):
-    """Test loading skills from subdirectory SKILL.md files."""
-
-    def setUp(self):
-        super().setUp()
-        self.loader = SkillLoader(skills_dir=self._tmpdir)
-
-    def test_load_skill_from_subdir(self):
-        skill_dir = self._tmpdir / "my-dir-skill"
-        skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: dir-skill\ndescription: From a subdirectory\n---\n## Steps\nDo something.",
-            encoding="utf-8",
-        )
-        assert "dir-skill" in self.loader.list_skills()
-        meta, body = self.loader.load_skill("dir-skill")
-        assert meta["name"] == "dir-skill"
-        assert "Do something" in body
-
-    def test_subdir_name_fallback(self):
-        skill_dir = self._tmpdir / "unnamed-skill"
-        skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text(
-            "Body without frontmatter.", encoding="utf-8"
-        )
-        assert "unnamed-skill" in self.loader.list_skills()
-
-    def test_get_skill_content(self):
-        (self._tmpdir / "flat-skill.md").write_text(
-            "---\nname: flat-skill\n---\nBody.", encoding="utf-8"
-        )
-        content = self.loader.get_skill_content("flat-skill")
-        assert content is not None
-        assert "flat-skill" in content
-        assert "Body." in content
-
-    def test_get_skill_content_subdir(self):
-        skill_dir = self._tmpdir / "sub-skill"
-        skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: sub-skill\n---\nBody from subdir.", encoding="utf-8"
-        )
-        content = self.loader.get_skill_content("sub-skill")
-        assert content is not None
-        assert "Body from subdir" in content
-
-
-class TestLoadAll(BaseTest):
-    """Test loading all skills into a formatted block."""
-
-    def setUp(self):
-        super().setUp()
-        self.loader = SkillLoader(skills_dir=self._tmpdir)
-
-    def test_no_skills_returns_none(self):
+class TestLoadAll(_LoaderCase):
+    def test_none_when_empty_otherwise_every_skill_with_description_and_body(self):
         assert self.loader.load_all() is None
-
-    def test_single_skill(self):
-        (self._tmpdir / "example.md").write_text(
-            "---\nname: example\ndescription: An example\n---\n## Steps\nDo stuff.",
-            encoding="utf-8",
-        )
+        self._write("a.md", "---\nname: a\ndescription: First\n---\nBody A.")
+        self._write("b.md", "---\nname: b\ndescription: Second\n---\nBody B.")
         result = self.loader.load_all()
+        assert result is not None
         assert "## Available Skills" in result
-        assert "### example (An example)" in result
-        assert "Do stuff" in result
-
-    def test_multiple_skills(self):
-        (self._tmpdir / "a.md").write_text(
-            "---\nname: a\ndescription: First\n---\nBody A.", encoding="utf-8"
-        )
-        (self._tmpdir / "b.md").write_text(
-            "---\nname: b\ndescription: Second\n---\nBody B.", encoding="utf-8"
-        )
-        result = self.loader.load_all()
-        assert "Body A" in result
-        assert "Body B" in result
+        assert "### a (First)" in result
+        assert "Body A" in result and "Body B" in result

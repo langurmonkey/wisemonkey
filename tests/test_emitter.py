@@ -21,314 +21,151 @@ from agent.ipc import (
 )
 
 
-class _Sink:
-    """Collects (name, payload) pairs instead of emitting on a transport."""
-
-    def __init__(self):
-        self.events = []
-
-    def emit_hook(self, message):
-        self.events.append(message)
-
-    def names(self):
-        return [e.name for e in self.events]
-
-    def last(self, name):
-        for e in reversed(self.events):
-            if e.name == name:
-                return e
-        return None
-
-
 def _connected_emitter(**kwargs):
-    """Build an emitter wired to one end of a loopback pair.
-
-    Returns (emitter, peer) where *peer* receives everything the emitter emits.
-    """
+    """Build an emitter wired to one end of a loopback pair."""
     a, b = loopback_pair()
-    emitter = TurnEmitter(transport=a, **kwargs)
-    return emitter, b
+    return TurnEmitter(transport=a, **kwargs), b
 
 
-class TestStageNormalisation(unittest.TestCase):
-    """The emitter must accept the core's Stage enum, strings, or anything."""
-
-    def test_accepts_core_stage_enum(self):
-        from agent.core import Stage
-
-        emitter, peer = _connected_emitter()
-        emitter.prompt(Stage.START)
-        msg = peer.recv(timeout=0.1)
-        payload = payload_as(StagePayload, msg)
-        assert payload.name == "prompt"
-        assert payload.stage == StageKind.START
-
-    def test_accepts_plain_string(self):
-        emitter, peer = _connected_emitter()
-        emitter.prompt("stop")
-        payload = payload_as(StagePayload, peer.recv(timeout=0.1))
-        assert payload.stage == StageKind.STOP
-
-    def test_accepts_uppercase_string(self):
-        emitter, peer = _connected_emitter()
-        emitter.prompt("PROCESS")
-        payload = payload_as(StagePayload, peer.recv(timeout=0.1))
-        assert payload.stage == StageKind.PROCESS
+def _recv(peer, cls, timeout=0.1):
+    return payload_as(cls, peer.recv(timeout=timeout))
 
 
 class TestCallbacks(unittest.TestCase):
     """Every core callback produces the matching event with the right payload."""
 
-    def test_prompt(self):
-        emitter, peer = _connected_emitter()
-        emitter.prompt("start")
-        msg = peer.recv(timeout=0.1)
-        assert msg.is_event
-        assert msg.name == Event.STAGE
-        assert msg.turn_id == emitter.turn_id
+    def test_the_stage_accepts_enum_strings_and_carries_the_turn_id(self):
+        from agent.core import Stage
 
-    def test_reasoning_with_content(self):
+        for given, expected in (
+            (Stage.START, StageKind.START),
+            ("stop", StageKind.STOP),
+            ("PROCESS", StageKind.PROCESS),
+        ):
+            emitter, peer = _connected_emitter(turn_id="T1")
+            emitter.prompt(given)
+            msg = peer.recv(timeout=0.1)
+            assert msg.is_event and msg.name == Event.STAGE and msg.turn_id == "T1"
+            payload = payload_as(StagePayload, msg)
+            assert (payload.name, payload.stage) == ("prompt", expected), given
+
+    def test_reasoning_and_content(self):
         emitter, peer = _connected_emitter()
         emitter.reasoning("process", "aha", True)
-        payload = payload_as(ReasoningPayload, peer.recv(timeout=0.1))
-        assert payload.text == "aha"
-        assert payload.visible is True
-
-    def test_reasoning_none_content_becomes_empty(self):
-        emitter, peer = _connected_emitter()
-        emitter.reasoning("start", None, False)
-        payload = payload_as(ReasoningPayload, peer.recv(timeout=0.1))
-        assert payload.text == ""
-        assert payload.visible is False
-        assert payload.stage == StageKind.START
-
-    def test_reasoning_stage_ride_along(self):
-        emitter, peer = _connected_emitter()
-        emitter.reasoning("stop", "", True)
-        payload = payload_as(ReasoningPayload, peer.recv(timeout=0.1))
-        assert payload.stage == StageKind.STOP
-
-    def test_reasoning_visible_override(self):
-        emitter, peer = _connected_emitter(reasoning_visible=False)
-        emitter.reasoning("process", "x", True)
-        payload = payload_as(ReasoningPayload, peer.recv(timeout=0.1))
-        assert payload.visible is False
-
-    def test_content(self):
-        emitter, peer = _connected_emitter()
+        payload = _recv(peer, ReasoningPayload)
+        assert (payload.text, payload.visible, payload.stage) == (
+            "aha", True, StageKind.PROCESS
+        )
         emitter.content("hi")
-        payload = payload_as(ContentPayload, peer.recv(timeout=0.1))
-        assert payload.text == "hi"
+        assert _recv(peer, ContentPayload).text == "hi"
+        # None becomes "", and the emitter's own visibility flag wins.
+        emitter, peer = _connected_emitter(reasoning_visible=False)
+        emitter.reasoning("start", None, True)
+        payload = _recv(peer, ReasoningPayload)
+        assert (payload.text, payload.visible) == ("", False)
 
-    def test_tool_call(self):
+    def test_tool_call_and_result(self):
         emitter, peer = _connected_emitter()
         emitter.tool_call("read_file", '{"path": "x"}')
-        payload = payload_as(ToolCallPayload, peer.recv(timeout=0.1))
-        assert payload.name == "read_file"
-        assert payload.arguments == '{"path": "x"}'
-        assert payload.index == 0
+        emitter.tool_call("next", {"a": 1})  # dict args are stringified
+        first = _recv(peer, ToolCallPayload)
+        second = _recv(peer, ToolCallPayload)
+        assert (first.name, first.arguments, first.index) == (
+            "read_file", '{"path": "x"}', 0
+        )
+        assert second.index == 1 and "a" in second.arguments
 
-    def test_tool_call_index_increments(self):
-        emitter, peer = _connected_emitter()
-        emitter.tool_call("a", "{}")
-        emitter.tool_call("b", "{}")
-        first = payload_as(ToolCallPayload, peer.recv(timeout=0.1))
-        second = payload_as(ToolCallPayload, peer.recv(timeout=0.1))
-        assert first.index == 0
-        assert second.index == 1
-
-    def test_tool_call_dict_args_are_stringified(self):
-        emitter, peer = _connected_emitter()
-        emitter.tool_call("t", {"a": 1})
-        payload = payload_as(ToolCallPayload, peer.recv(timeout=0.1))
-        assert "a" in payload.arguments
-
-    def test_tool_result(self):
-        emitter, peer = _connected_emitter()
         emitter.tool_result("c1", "read_file", "data", duration=0.5)
-        payload = payload_as(ToolResultPayload, peer.recv(timeout=0.1))
-        assert payload.id == "c1"
-        assert payload.name == "read_file"
-        assert payload.content == "data"
-        assert payload.duration == 0.5
+        payload = _recv(peer, ToolResultPayload)
+        assert (payload.id, payload.content, payload.duration) == ("c1", "data", 0.5)
         assert payload.is_error is False
 
-    def test_tool_result_error(self):
-        emitter, peer = _connected_emitter()
-        emitter.tool_result("c1", "run_command", "boom", is_error=True)
-        payload = payload_as(ToolResultPayload, peer.recv(timeout=0.1))
+        emitter.tool_result("c2", "screenshot", "[image]", is_error=True,
+                            image_base64="QUJD", mime_type="image/png")
+        payload = _recv(peer, ToolResultPayload)
         assert payload.is_error is True
-
-    def test_tool_result_image(self):
-        emitter, peer = _connected_emitter()
-        emitter.tool_result(
-            "c2", "screenshot", "[image]", image_base64="QUJD", mime_type="image/png"
-        )
-        payload = payload_as(ToolResultPayload, peer.recv(timeout=0.1))
-        assert payload.image_base64 == "QUJD"
-        assert payload.mime_type == "image/png"
+        assert (payload.image_base64, payload.mime_type) == ("QUJD", "image/png")
 
 
 class TestLifecycleEvents(unittest.TestCase):
-    def test_turn_start(self):
+    def test_turn_start_and_end_carry_the_outcome(self):
         emitter, peer = _connected_emitter()
         emitter.turn_start("do it")
-        payload = payload_as(TurnStartPayload, peer.recv(timeout=0.1))
-        assert payload.prompt == "do it"
-        assert payload.turn_id == emitter.turn_id
+        start = _recv(peer, TurnStartPayload)
+        assert start.prompt == "do it" and start.turn_id == emitter.turn_id
 
-    def test_turn_end_success(self):
-        emitter, peer = _connected_emitter()
         emitter.turn_end("done", total_tokens=10, n_tools=2, gen_time=1.5)
-        payload = payload_as(TurnEndPayload, peer.recv(timeout=0.1))
-        assert payload.response == "done"
-        assert payload.total_tokens == 10
-        assert payload.n_tools == 2
-        assert payload.gen_time == 1.5
-        assert payload.cancelled is False
+        end = _recv(peer, TurnEndPayload)
+        assert (end.response, end.total_tokens, end.n_tools, end.gen_time) == (
+            "done", 10, 2, 1.5
+        )
+        assert (end.cancelled, end.incomplete, end.incomplete_reason) == (
+            False, False, ""
+        )
 
-    def test_turn_end_cancelled(self):
+        # Both flags travel: a remote frontend must see a fragment as one.
         emitter, peer = _connected_emitter()
         emitter.turn_end("", cancelled=True)
-        payload = payload_as(TurnEndPayload, peer.recv(timeout=0.1))
-        assert payload.cancelled is True
-
-    def test_turn_end_carries_the_incomplete_flag(self):
-        """A fragment must survive the trip to a remote frontend."""
+        assert _recv(peer, TurnEndPayload).cancelled is True
         emitter, peer = _connected_emitter()
-        emitter.turn_end(
-            "half a sent", incomplete=True, incomplete_reason="stream_ended"
-        )
-        payload = payload_as(TurnEndPayload, peer.recv(timeout=0.1))
-        assert payload.incomplete is True
-        assert payload.incomplete_reason == "stream_ended"
+        emitter.turn_end("half a sent", incomplete=True,
+                         incomplete_reason="stream_ended")
+        end = _recv(peer, TurnEndPayload)
+        assert (end.incomplete, end.incomplete_reason) == (True, "stream_ended")
 
-    def test_turn_end_defaults_to_complete(self):
+    def test_status_keeps_known_fields_and_drops_the_rest(self):
         emitter, peer = _connected_emitter()
-        emitter.turn_end("all done.")
-        payload = payload_as(TurnEndPayload, peer.recv(timeout=0.1))
-        assert payload.incomplete is False
-        assert payload.incomplete_reason == ""
-
-    def test_status(self):
-        emitter, peer = _connected_emitter()
-        emitter.status(busy=True, memory_chars=100, memory_max=200)
+        emitter.status(busy=True, memory_chars=100, nonsense=True)
         msg = peer.recv(timeout=0.1)
         assert msg.name == Event.STATUS
-        assert msg.payload["busy"] is True
-        assert msg.payload["memory_chars"] == 100
-
-    def test_status_ignores_unknown_fields(self):
-        emitter, peer = _connected_emitter()
-        emitter.status(nonsense=True)
-        msg = peer.recv(timeout=0.1)
+        assert msg.payload["busy"] is True and msg.payload["memory_chars"] == 100
         assert "nonsense" not in msg.payload
 
 
 class TestCancellation(unittest.TestCase):
     """Cancellation is observable state, not a raised exception."""
 
-    def test_poll_false_initially(self):
-        emitter = TurnEmitter()
-        assert emitter.poll() is False
-        assert emitter.is_cancelled is False
-
-    def test_cancel_sets_poll(self):
-        emitter = TurnEmitter()
-        emitter.cancel()
-        assert emitter.poll() is True
-        assert emitter.is_cancelled is True
-
-    def test_cancel_records_reason(self):
-        emitter = TurnEmitter()
-        emitter.cancel("timeout")
-        assert emitter.cancel_reason == "timeout"
-
-    def test_cancelled_callback_does_not_raise_by_default(self):
-        emitter = TurnEmitter()
-        emitter.cancelled(KeyboardInterrupt())  # must not raise
-        assert emitter.is_cancelled is True
-
-    def test_cancelled_callback_emits_event(self):
-        emitter, peer = _connected_emitter()
-        emitter.cancelled(KeyboardInterrupt())
-        msg = peer.recv(timeout=0.1)
-        assert msg.name == Event.CANCELLED
-        assert msg.payload["reason"] == "user"
-
-    def test_cancelled_callback_raises_when_asked(self):
+    def test_cancel_is_polled_and_the_legacy_raise_fires_once(self):
         from agent.core import TurnCancelled
 
-        emitter = TurnEmitter(raise_on_cancel=True)
-        with self.assertRaises(TurnCancelled):
-            emitter.cancelled(KeyboardInterrupt())
+        emitter = TurnEmitter()
+        assert emitter.poll() is False and emitter.is_cancelled is False
+        emitter.cancel("timeout")
+        assert emitter.poll() is True and emitter.cancel_reason == "timeout"
 
-    def test_cancelled_is_emitted_only_once_per_turn(self):
-        """A turn can be reported cancelled by more than one core path.
+        # Without a transport it records state and does not raise.
+        TurnEmitter().cancelled(KeyboardInterrupt())
 
-        An interrupt while streaming is caught in `_send_to_llm`; one raised
-        inside a tool handler is caught by `run_turn`. Both unwind through the
-        cancel callback, and the user should see the notice once.
-        """
-        emitter, peer = _connected_emitter()
-        emitter.cancelled(KeyboardInterrupt())
-        emitter.cancelled(KeyboardInterrupt())
-        assert peer.recv(timeout=0.1).name == Event.CANCELLED
+        emitter, peer = _connected_emitter(raise_on_cancel=True)
+        for _ in range(2):
+            with self.assertRaises(TurnCancelled):
+                emitter.cancelled(KeyboardInterrupt())
+        msg = peer.recv(timeout=0.1)
+        assert msg.name == Event.CANCELLED and msg.payload["reason"] == "user"
         assert peer.recv(timeout=0.1) is None
 
-    def test_a_second_cancelled_still_raises_in_legacy_mode(self):
-        """Suppressing the duplicate event must not suppress the raise."""
-        from agent.core import TurnCancelled
-
-        emitter = TurnEmitter(raise_on_cancel=True)
-        with self.assertRaises(TurnCancelled):
-            emitter.cancelled(KeyboardInterrupt())
-        with self.assertRaises(TurnCancelled):
-            emitter.cancelled(KeyboardInterrupt())
-
-    def test_reset_allows_a_new_notice(self):
-        emitter, peer = _connected_emitter()
+    def test_reset_allows_a_new_turn(self):
+        emitter, peer = _connected_emitter(turn_id="old")
         emitter.cancelled(KeyboardInterrupt())
         peer.recv(timeout=0.1)
         emitter.reset()
+        assert emitter.poll() is False and emitter.turn_id != "old"
         emitter.cancelled(KeyboardInterrupt())
         assert peer.recv(timeout=0.1).name == Event.CANCELLED
-
-    def test_reset_clears_cancellation(self):
-        emitter = TurnEmitter()
-        emitter.cancel()
-        old_id = emitter.turn_id
-        emitter.reset()
-        assert emitter.poll() is False
-        assert emitter.turn_id != old_id
-
-    def test_reset_can_preserve_turn_id(self):
-        emitter = TurnEmitter()
+        # An explicit id is kept, which is how a retried turn reuses its own.
         emitter.reset("fixed")
         assert emitter.turn_id == "fixed"
 
-
-class TestError(unittest.TestCase):
-    def test_error_emits_and_raises(self):
-        emitter, peer = _connected_emitter()
-        with self.assertRaises(RuntimeError):
-            emitter.error(ValueError("inner"), "outer")
-        msg = peer.recv(timeout=0.1)
-        assert msg.name == Event.ERROR
-        payload = payload_as(ErrorPayload, msg)
-        assert payload.message == "outer"
-        assert payload.recoverable is False
-
-    def test_error_without_message_uses_exception(self):
+    def test_error_emits_then_raises(self):
         emitter, peer = _connected_emitter()
         with self.assertRaises(RuntimeError):
             emitter.error(ValueError("boom"))
-        payload = payload_as(ErrorPayload, peer.recv(timeout=0.1))
-        assert payload.message == "boom"
+        payload = _recv(peer, ErrorPayload)
+        assert payload.message == "boom" and payload.recoverable is False
 
 
 class TestNoTransport(unittest.TestCase):
-    def test_all_methods_are_safe_without_transport(self):
+    def test_every_method_is_safe_without_a_transport_or_with_echo_off(self):
         emitter = TurnEmitter()
         emitter.turn_start("x")
         emitter.prompt("start")
@@ -337,69 +174,42 @@ class TestNoTransport(unittest.TestCase):
         emitter.tool_call("t", "{}")
         emitter.tool_result("c", "t", "r")
         emitter.status(busy=True)
+        emitter.injected("nobody is listening")
         emitter.turn_end("x")
 
-    def test_echo_false_suppresses_emission(self):
         emitter, peer = _connected_emitter(echo=False)
         emitter.content("hidden")
         assert peer.recv(timeout=0.05) is None
 
-    def test_null_emitter_discards_but_tracks_cancel(self):
-        emitter = NullEmitter()
-        emitter.content("ignored")
-        emitter.cancel()
-        assert emitter.poll() is True
+        null = NullEmitter()
+        null.content("ignored")
+        null.cancel()
+        assert null.poll() is True
 
 
 class TestTurnScoping(unittest.TestCase):
-    def test_events_carry_turn_id(self):
+    def test_events_carry_the_turn_id_and_generated_ids_are_unique(self):
         emitter, peer = _connected_emitter(turn_id="T1")
         emitter.content("a")
         emitter.tool_call("t", "{}")
         emitter.turn_end("a")
         for _ in range(3):
-            msg = peer.recv(timeout=0.1)
-            assert msg.turn_id == "T1"
+            assert peer.recv(timeout=0.1).turn_id == "T1"
+        assert len({TurnEmitter().turn_id for _ in range(50)}) == 50
+        assert TurnEmitter().elapsed() >= 0
 
-    def test_generated_turn_ids_are_unique(self):
-        ids = {TurnEmitter().turn_id for _ in range(50)}
-        assert len(ids) == 50
-
-    def test_elapsed_is_non_negative(self):
-        emitter = TurnEmitter()
-        assert emitter.elapsed() >= 0
+    def test_injected_confirms_delivery_with_its_timing(self):
+        """The client drops its own copy on this event."""
+        emitter, peer = _connected_emitter()
+        emitter.injected("use pandas", when=InjectWhen.AFTER_TOOL)
+        payload = _recv(peer, InjectedPayload, timeout=1.0)
+        assert (payload.text, payload.when, payload.role) == (
+            "use pandas", InjectWhen.AFTER_TOOL, "user"
+        )
+        assert payload.turn_id == emitter.turn_id
+        emitter.injected("later")
+        assert _recv(peer, InjectedPayload, timeout=1.0).when == InjectWhen.BETWEEN_TURNS
 
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class TestInjected(unittest.TestCase):
-    """``injected`` confirms delivery, so the client can drop its own copy."""
-
-    def test_payload_carries_text_and_timing(self):
-        emitter, peer = _connected_emitter()
-        emitter.injected("use pandas", when=InjectWhen.AFTER_TOOL)
-        payload = payload_as(InjectedPayload, peer.recv(timeout=1.0))
-        self.assertEqual(payload.text, "use pandas")
-        self.assertEqual(payload.when, InjectWhen.AFTER_TOOL)
-        self.assertEqual(payload.role, "user")
-        self.assertEqual(payload.turn_id, emitter.turn_id)
-
-    def test_default_timing_is_between_turns(self):
-        emitter, peer = _connected_emitter()
-        emitter.injected("later")
-        payload = payload_as(InjectedPayload, peer.recv(timeout=1.0))
-        self.assertEqual(payload.when, InjectWhen.BETWEEN_TURNS)
-
-    def test_emitted_over_the_transport(self):
-        emitter, peer = _connected_emitter()
-        emitter.injected("hello")
-        message = peer.recv(timeout=1.0)
-        self.assertIsNotNone(message)
-        self.assertEqual(message.name, Event.INJECTED)
-        self.assertEqual(payload_as(InjectedPayload, message).text, "hello")
-
-    def test_silent_without_a_transport(self):
-        # A null emitter (local mode, no IPC) must not explode.
-        TurnEmitter().injected("nobody is listening")

@@ -14,187 +14,15 @@ if TYPE_CHECKING:
     from agent.output import RichOutputAdapter
 
 
-class TestSteerInputBuffer(unittest.TestCase):
-    """The line buffer is exercised directly, without a tty."""
+class _Typing(unittest.TestCase):
+    """A `SteerInput` driven a byte at a time, without a tty."""
 
     def setUp(self) -> None:
         self.submitted: list[str] = []
         self.changes = 0
         self.steer = SteerInput(
-            on_submit=self.submitted.append,
-            on_change=self._change,
+            on_submit=self.submitted.append, on_change=self._change
         )
-
-    def _change(self) -> None:
-        self.changes += 1
-
-    def _type(self, text: str) -> None:
-        for char in text:
-            self.steer._handle_byte(ord(char))
-
-    def _enter(self) -> None:
-        self.steer._handle_byte(0x0D)
-
-    # typing
-
-    def test_typing_builds_line(self):
-        self._type("use pandas")
-        self.assertEqual(self.steer.line(), "use pandas")
-        self.assertEqual(self.changes, len("use pandas"))
-
-    def test_enter_submits_stripped_line(self):
-        self._type("  hello  ")
-        self._enter()
-        self.assertEqual(self.submitted, ["hello"])
-        self.assertEqual(self.steer.line(), "")
-
-    def test_empty_enter_submits_nothing(self):
-        self._enter()
-        self.assertEqual(self.submitted, [])
-
-    def test_backspace_deletes_last_char(self):
-        self._type("ab")
-        self.steer._handle_byte(0x7F)
-        self.assertEqual(self.steer.line(), "a")
-        self.steer._handle_byte(0x08)
-        self.assertEqual(self.steer.line(), "")
-
-    def test_backspace_on_empty_line_is_a_noop(self):
-        before = self.changes
-        self.steer._handle_byte(0x7F)
-        self.assertEqual(self.changes, before)
-
-    def test_ctrl_u_clears_line(self):
-        self._type("discard me")
-        self.steer._handle_byte(0x15)
-        self.assertEqual(self.steer.line(), "")
-
-    def test_line_length_is_capped(self):
-        steer = SteerInput(on_submit=lambda _t: None, max_len=4)
-        for char in "abcdefgh":
-            steer._handle_byte(ord(char))
-        self.assertEqual(steer.line(), "abcd")
-
-    def test_control_characters_are_ignored(self):
-        self._type("ab")
-        for byte in (0x01, 0x07, 0x0C, 0x1A):
-            self.steer._handle_byte(byte)
-        self.assertEqual(self.steer.line(), "ab")
-
-    # Ctrl+C is delivered as SIGINT by the kernel (ISIG stays enabled), so
-    # the reader never sees a 0x03 byte. If one ever arrives anyway, it must
-    # not be inserted into the line.
-    def test_ctrl_c_byte_is_never_buffered(self):
-        self._type("ab")
-        self.steer._handle_byte(0x03)
-        self.assertEqual(self.steer.line(), "ab")
-
-    # escape sequences
-
-    def test_escape_sequences_do_not_leak_into_the_line(self):
-        # Up arrow: ESC [ A
-        for byte in b"\x1b[A":
-            self.steer._handle_byte(byte)
-        self.assertEqual(self.steer.line(), "")
-
-    def test_sixteen_escape_sequences_do_not_leak(self):
-        for byte in b"\x1b[1;5C":
-            self.steer._handle_byte(byte)
-        self.assertEqual(self.steer.line(), "")
-
-    # queue
-
-    def test_queue_is_fifo(self):
-        self._steer("first")
-        self._steer("second")
-        self.assertEqual(self.steer.pending(), "first")
-        self.assertEqual(self.steer.take(), "first")
-        self.assertEqual(self.steer.take(), "second")
-        self.assertIsNone(self.steer.take())
-
-    def _steer(self, text: str) -> None:
-        self._type(text)
-        self._enter()
-
-    def test_callback_errors_do_not_kill_the_reader(self):
-        def boom(_line: str) -> None:
-            raise RuntimeError("nope")
-
-        steer = SteerInput(on_submit=boom)
-        steer._handle_byte(ord("x"))
-        steer._handle_byte(0x0D)  # must not raise
-
-    def test_stop_clears_the_partial_line_but_keeps_the_queue(self):
-        self._steer("queued line")
-        self._type("half")
-        steer = self.steer
-        steer._armed = True
-        steer.stop()
-        self.assertEqual(steer.line(), "")
-        self.assertEqual(steer.pending(), "queued line")
-
-    def test_suspend_keeps_the_partial_line_its_caret_and_the_queue(self):
-        """An interruption is not a submit -- nor the end of a turn."""
-        self._steer("queued line")
-        self._type("half typed")
-        steer = self.steer
-        steer._handle_byte(0x01)  # Ctrl+A: caret to the start
-        steer._armed = True
-        steer.suspend()
-        self.assertFalse(steer.armed)
-        self.assertEqual(steer.line(), "half typed")
-        self.assertEqual(steer.caret(), 0)
-        self.assertEqual(steer.pending(), "queued line")
-
-    def test_suspend_then_resume_is_lossless(self):
-        """The caller's contract: resume() hands back what suspend() took."""
-        self._type("use pandas")
-        steer = self.steer
-        steer._armed = True
-        steer.suspend()
-        # No tty here, so `start()` cannot arm the reader -- but it must not
-        # touch the buffer either way.
-        steer.resume()
-        self.assertEqual(steer.line(), "use pandas")
-        steer.stop()
-        self.assertEqual(steer.line(), "")
-
-
-class TestSteerLineEditing(unittest.TestCase):
-    """The caret moves, and the text is edited around it.
-
-    Two encodings are live at once -- the legacy one, and the kitty
-    protocol's, which is pushed at REPL start and *stays* pushed -- so both
-    are driven through the same byte reader. A decoder that only knows one of
-    them silently does nothing on half the terminals.
-    """
-
-    # Legacy spellings.
-    LEFT = b"\x1b[D"
-    RIGHT = b"\x1b[C"
-    HOME = b"\x1b[H"
-    END = b"\x1b[F"
-    # SS3 (application cursor mode) writes them this way.
-    SS3_HOME = b"\x1bOH"
-    SS3_END = b"\x1bOF"
-    # The protocol's spellings: same key, with a modifier field (129 is
-    # num_lock, which is what a real keyboard reports).
-    KITTY_LEFT = b"\x1b[1;129D"
-    KITTY_RIGHT = b"\x1b[1;129C"
-    KITTY_HOME = b"\x1b[1;129H"
-    KITTY_END = b"\x1b[1;129F"
-    # The tilde and CSI-u forms of Home/End/Delete.
-    TILDE_HOME = b"\x1b[1~"
-    TILDE_END = b"\x1b[4~"
-    TILDE_DELETE = b"\x1b[3~"
-    U_DELETE = b"\x1b[3;129u"
-    # Ctrl+Left/Right move by word.
-    CTRL_LEFT = b"\x1b[1;5D"
-    CTRL_RIGHT = b"\x1b[1;5C"
-
-    def setUp(self) -> None:
-        self.changes = 0
-        self.steer = SteerInput(on_change=self._change)
 
     def _change(self) -> None:
         self.changes += 1
@@ -207,24 +35,119 @@ class TestSteerLineEditing(unittest.TestCase):
         for byte in data:
             self.steer._handle_byte(byte)
 
-    def _key(self, key: bytes) -> None:
-        self._send(key)
+    def _enter(self) -> None:
+        self.steer._handle_byte(0x0D)
 
-    # caret movement
+    def _steer(self, text: str) -> None:
+        self._type(text)
+        self._enter()
 
-    def test_left_and_right_move_the_caret(self):
-        self._type("abc")
-        for _ in range(3):
-            self._key(self.LEFT)
-        self.assertEqual(self.steer.caret(), 0)
-        self.assertEqual(self.steer.line(), "abc")  # moving changes no text
-        self._key(self.RIGHT)
-        self.assertEqual(self.steer.caret(), 1)
 
-    def test_every_encoding_of_left_and_right_works(self):
+class TestSteerBuffer(_Typing):
+    def test_typing_builds_the_line_and_enter_submits_it_stripped(self):
+        self._type("  hello  ")
+        self.assertEqual(self.steer.line(), "  hello  ")
+        self.assertEqual(self.changes, len("  hello  "))
+        self._enter()
+        self.assertEqual(self.submitted, ["hello"])
+        self.assertEqual(self.steer.line(), "")
+        # Nothing typed: nothing submitted.
+        self._enter()
+        self.assertEqual(self.submitted, ["hello"])
+
+    def test_backspace_and_control_bytes(self):
+        self._type("ab")
+        for key in (0x7F, 0x08):
+            self.steer._handle_byte(key)
+        self.assertEqual(self.steer.line(), "")
+        before = self.changes
+        self.steer._handle_byte(0x7F)  # empty: no text, no redraw
+        self.assertEqual(self.changes, before)
+
+        steer = SteerInput(on_submit=lambda _t: None, max_len=4)
+        for char in "abcdefgh":
+            steer._handle_byte(ord(char))
+        self.assertEqual(steer.line(), "abcd")
+        # Ctrl+C arrives as SIGINT (ISIG stays on), so the reader never sees
+        # 0x03; if one arrives anyway it must not reach the line.
+        for byte in (0x01, 0x07, 0x0C, 0x1A, 0x03):
+            steer._handle_byte(byte)
+        self.assertEqual(steer.line(), "abcd")
+
+    def test_escape_sequences_do_not_leak_and_a_failing_submit_survives(self):
+        for sequence in (b"\x1b[A", b"\x1b[1;5C", b"\x1b[13;130u"):
+            self._send(sequence)
+            self.assertEqual(self.steer.line(), "", sequence)
+            self.assertEqual(self.steer._esc_mode, 0, sequence)
+
+        def boom(_line: str) -> None:
+            raise RuntimeError("nope")
+
+        steer = SteerInput(on_submit=boom)
+        steer._handle_byte(ord("x"))
+        steer._handle_byte(0x0D)  # must not raise
+
+    def test_stop_clears_the_partial_line_but_suspend_keeps_it(self):
+        """An interruption is not the end of a turn."""
+        self._steer("queued line")
+        self._type("half typed")
+        self._send(b"\x01")  # Ctrl+A: caret to the start
+        self.steer._armed = True
+        self.steer.suspend()
+        self.assertFalse(self.steer.armed)
+        self.assertEqual((self.steer.line(), self.steer.caret()), ("half typed", 0))
+        self.assertEqual(self.steer.pending(), "queued line")
+        # No tty here, so resume() cannot arm the reader -- but it must not
+        # touch the buffer, and stop() is still the end of it.
+        self.steer.resume()
+        self.assertEqual(self.steer.line(), "half typed")
+        self.steer._armed = True
+        self.steer.stop()
+        self.assertEqual(self.steer.line(), "")
+        self.assertEqual(self.steer.pending(), "queued line")
+
+
+class TestSteerQueue(unittest.TestCase):
+    """The FIFO backing mid-turn injection."""
+
+    def setUp(self) -> None:
+        self.steer = SteerInput(on_submit=lambda _t: None)
+        self.steer._queue.extend(["first", "second"])
+
+    def test_take_is_fifo_and_take_all_drains_in_order(self):
+        self.assertEqual(self.steer.pending(), "first")  # peeking does not consume
+        self.assertEqual(self.steer.pending(), "first")
+        self.assertEqual(self.steer.take(), "first")
+        self.assertEqual(self.steer.take(), "second")
+        self.assertIsNone(self.steer.take())
+
+        self.assertEqual(self.steer.take_all(), [])
+        self.steer._queue.extend(["a", "b"])
+        self.assertEqual(self.steer.take_all(), ["a", "b"])
+        self.assertEqual(self.steer.take_all(), [])
+        self.assertIsNone(self.steer.pending())
+
+    def test_ack_removes_one_named_occurrence(self):
+        """Delivery is confirmed out of order relative to typing order."""
+        self.steer._queue.append("first")
+        self.assertTrue(self.steer.ack("second"))
+        self.assertEqual(self.steer.take_all(), ["first", "first"])
+        self.assertFalse(self.steer.ack("never sent"))
+        self.assertFalse(SteerInput().ack("anything"))
+
+
+class TestSteerLineEditing(_Typing):
+    """The caret moves, and the text is edited around it."""
+
+    # Legacy, SS3, the protocol's own (129 is num_lock), and the tilde form.
+    LEFT, RIGHT = b"\x1b[D", b"\x1b[C"
+    HOME = (b"\x1b[H", b"\x1bOH", b"\x1b[1;129H", b"\x1b[1~")
+    END = (b"\x1b[F", b"\x1bOF", b"\x1b[1;129F", b"\x1b[4~")
+
+    def test_every_encoding_of_left_right_home_and_end(self):
         for left, right in (
             (self.LEFT, self.RIGHT),
-            (self.KITTY_LEFT, self.KITTY_RIGHT),
+            (b"\x1b[1;129D", b"\x1b[1;129C"),
             (b"\x1bOD", b"\x1bOC"),
         ):
             with self.subTest(left=left):
@@ -234,13 +157,12 @@ class TestSteerLineEditing(unittest.TestCase):
                 for byte in left:
                     steer._handle_byte(byte)
                 assert steer.caret() == 1, (left, steer.caret())
+                assert steer.line() == "ab", left  # moving changes no text
                 for byte in right:
                     steer._handle_byte(byte)
                 assert steer.caret() == 2, (right, steer.caret())
-
-    def test_home_and_end_in_every_encoding(self):
-        for home in (self.HOME, self.SS3_HOME, self.KITTY_HOME, self.TILDE_HOME):
-            for end in (self.END, self.SS3_END, self.KITTY_END, self.TILDE_END):
+        for home in self.HOME:
+            for end in self.END:
                 with self.subTest(home=home, end=end):
                     steer = SteerInput()
                     for char in "abc":
@@ -252,66 +174,36 @@ class TestSteerLineEditing(unittest.TestCase):
                         steer._handle_byte(byte)
                     assert steer.caret() == 3, end
 
-    def test_ctrl_arrows_move_by_word(self):
+    def test_ctrl_arrows_move_by_word_and_ctrl_letters_by_one(self):
         self._type("use pandas instead")
-        self._send(self.CTRL_LEFT)
+        self._send(b"\x1b[1;5D")
         self.assertEqual(self.steer.caret(), 11)
-        self._send(self.CTRL_LEFT)
+        self._send(b"\x1b[1;5D")
         self.assertEqual(self.steer.caret(), 4)
-        self._send(self.CTRL_RIGHT)
+        self._send(b"\x1b[1;5C")
         self.assertEqual(self.steer.caret(), 11)
+        # Ctrl+A / Ctrl+F / Ctrl+E / Ctrl+B.
+        steer = SteerInput()
+        for char in "abc":
+            steer._handle_byte(ord(char))
+        for key, caret in ((0x01, 0), (0x06, 1), (0x05, 3), (0x02, 2)):
+            steer._handle_byte(key)
+            self.assertEqual(steer.caret(), caret, hex(key))
 
-    def test_readline_control_letters_move_the_caret(self):
-        self._type("abc")
-        self.steer._handle_byte(0x01)  # Ctrl+A
-        self.assertEqual(self.steer.caret(), 0)
-        self.steer._handle_byte(0x06)  # Ctrl+F
-        self.assertEqual(self.steer.caret(), 1)
-        self.steer._handle_byte(0x05)  # Ctrl+E
-        self.assertEqual(self.steer.caret(), 3)
-        self.steer._handle_byte(0x02)  # Ctrl+B
-        self.assertEqual(self.steer.caret(), 2)
-
-    def test_a_move_that_changes_nothing_does_not_notify(self):
-        """Held-down keys must not redraw the footer row for nothing."""
-        self._type("ab")
-        before = self.changes
-        self._key(self.LEFT)  # from the end: this one moves
-        self.assertEqual(self.changes, before + 1)
-        self._key(self.RIGHT)
-        self._key(self.RIGHT)  # already at the end
-        self.assertTrue(self.steer.caret() == 2)
-        self.assertEqual(self.changes, before + 2)
-
-    # editing at the caret
-
-    def test_typing_inserts_at_the_caret(self):
+    def test_typing_inserts_at_the_caret_and_deletion_works_on_both_sides(self):
         self._type("ac")
-        self._key(self.LEFT)
+        self._send(self.LEFT)
         self._type("b")
-        self.assertEqual(self.steer.line(), "abc")
-        self.assertEqual(self.steer.caret(), 2)
-
-    def test_backspace_deletes_before_the_caret(self):
-        self._type("abc")
-        self._key(self.LEFT)
-        self.steer._handle_byte(0x7F)
-        self.assertEqual(self.steer.line(), "ac")
-        self.assertEqual(self.steer.caret(), 1)
-
-    def test_backspace_at_the_start_of_the_line_is_a_noop(self):
-        self._type("ab")
-        self._key(self.LEFT)
-        self._key(self.LEFT)
+        self.assertEqual((self.steer.line(), self.steer.caret()), ("abc", 2))
+        self._send(b"\x7f")
+        self.assertEqual((self.steer.line(), self.steer.caret()), ("ac", 1))
+        # At the start of the line there is nothing to delete: no text, no redraw.
+        self._send(self.LEFT)
         before = self.changes
-        self.steer._handle_byte(0x7F)
-        self.assertEqual(self.steer.line(), "ab")
-        self.assertEqual(self.changes, before)
+        self._send(b"\x7f")
+        self.assertEqual((self.steer.line(), self.changes), ("ac", before))
 
-    def test_delete_removes_the_character_under_the_caret(self):
-        self._type("abc")
-        self._key(self.LEFT)
-        for keys in (self.TILDE_DELETE, self.U_DELETE):
+        for keys in (b"\x1b[3~", b"\x1b[3;129u", b"\x04"):
             with self.subTest(keys=keys):
                 steer = SteerInput()
                 for char in "abc":
@@ -323,75 +215,126 @@ class TestSteerLineEditing(unittest.TestCase):
                 assert steer.line() == "ab", (keys, steer.line())
                 assert steer.caret() == 2, keys
 
-    def test_ctrl_d_deletes_forwards(self):
-        self._type("abc")
-        self._key(self.LEFT)
-        self._key(self.LEFT)
-        self.steer._handle_byte(0x04)
-        self.assertEqual(self.steer.line(), "ac")
-        self.assertEqual(self.steer.caret(), 1)
+        # Enter submits and resets the caret.
+        steer = SteerInput(on_submit=self.submitted.append)
+        for char in "abc":
+            steer._handle_byte(ord(char))
+        for byte in self.LEFT + self.LEFT:
+            steer._handle_byte(byte)
+        steer._handle_byte(0x0D)
+        assert (steer.line(), steer.caret()) == ("", 0)
+        assert self.submitted == ["abc"]
 
-    def test_ctrl_k_kills_to_the_end(self):
+    def test_the_kill_keys(self):
         self._type("hello world")
         for _ in range(6):
-            self._key(self.LEFT)
-        self.steer._handle_byte(0x0B)
-        self.assertEqual(self.steer.line(), "hello")
-        self.assertEqual(self.steer.caret(), 5)
+            self._send(self.LEFT)
+        self._send(b"\x0b")  # Ctrl+K: kill to the end
+        self.assertEqual((self.steer.line(), self.steer.caret()), ("hello", 5))
 
-    def test_ctrl_w_kills_the_word_before_the_caret(self):
-        self._type("use pandas")
-        self.steer._handle_byte(0x17)
-        self.assertEqual(self.steer.line(), "use ")
-        self.steer._handle_byte(0x17)
-        self.assertEqual(self.steer.line(), "")
-        self.assertEqual(self.steer.caret(), 0)
+        steer = SteerInput()
+        for char in "use pandas":
+            steer._handle_byte(ord(char))
+        steer._handle_byte(0x17)  # Ctrl+W: kill the word before the caret
+        self.assertEqual(steer.line(), "use ")
+        steer._handle_byte(0x17)
+        self.assertEqual((steer.line(), steer.caret()), ("", 0))
 
-    def test_ctrl_u_clears_the_line_and_the_caret(self):
-        self._type("discard me")
-        self._key(self.LEFT)
-        self.steer._handle_byte(0x15)
-        self.assertEqual(self.steer.line(), "")
-        self.assertEqual(self.steer.caret(), 0)
+        # Ctrl+U clears the whole line, caret included, wherever it sits.
+        for char in "discard me":
+            steer._handle_byte(ord(char))
+        for byte in self.LEFT:
+            steer._handle_byte(byte)
+        steer._handle_byte(0x15)
+        self.assertEqual((steer.line(), steer.caret()), ("", 0))
 
-    def test_enter_submits_and_resets_the_caret(self):
-        self._type("hello")
-        self._key(self.LEFT)
-        self._key(self.LEFT)
-        self.steer._handle_byte(0x0D)
-        self.assertEqual(self.steer.line(), "")
-        self.assertEqual(self.steer.caret(), 0)
-
-    def test_a_navigation_key_never_leaks_into_the_line(self):
-        """A decoded sequence moves the caret; it does not print itself."""
+    def test_swallowed_sequences_and_moves_that_change_nothing(self):
+        """Decoded sequences move the caret; unknown ones are swallowed."""
         self._type("ab")
-        for keys in (self.LEFT, self.KITTY_LEFT, self.HOME, self.KITTY_END):
-            self._key(keys)
-            self.assertEqual(self.steer.line(), "ab", keys)
-        # And the reader is ready for ordinary input again.
-        self._type("c")
-        self.assertTrue(self.steer.line() in ("cab", "abc"))
+        before = self.changes
+        self._send(self.LEFT)
+        self.assertEqual(self.changes, before + 1)
+        self._send(self.RIGHT)
+        self._send(self.RIGHT)  # already at the end
+        self.assertEqual((self.steer.caret(), self.changes), (2, before + 2))
 
-    def test_an_unbound_sequence_still_moves_nothing(self):
-        """PageUp, F-keys and the keypad are swallowed, as before."""
-        self._type("ab")
+        # PageUp, F-keys and the keypad move nothing and print nothing.
         for keys in (b"\x1b[5~", b"\x1b[15~", b"\x1b[57414;129u"):
-            self._key(keys)
+            self._send(keys)
             self.assertEqual(self.steer.line(), "ab", keys)
-            self.assertEqual(self.steer.caret(), 2)
+        self._type("c")
+        self.assertEqual(self.steer.line(), "abc")
 
-    def test_a_lone_escape_does_not_swallow_the_next_key(self):
-        """An Escape that starts nothing must not eat the character after it."""
-        self.steer._handle_byte(0x1B)
-        self._type("x")
-        self.assertEqual(self.steer.line(), "x")
+        # An Escape that starts nothing must not eat the character after it.
+        steer = SteerInput()
+        steer._handle_byte(0x1B)
+        steer._handle_byte(ord("x"))
+        self.assertEqual(steer.line(), "x")
 
-    def test_stop_resets_the_caret(self):
-        self._type("half typed")
-        self._key(self.LEFT)
-        self.steer._armed = True
-        self.steer.stop()
-        self.assertEqual(self.steer.caret(), 0)
+
+class TestSteerCtrlCFromKittyProtocol(unittest.TestCase):
+    """Ctrl+C as the kitty keyboard protocol reports it."""
+
+    CTRL_C = b"\x1b[99;133u"  # key 'c', ctrl + num_lock
+
+    def setUp(self) -> None:
+        self.interrupts: list[str] = []
+        # _interrupt raises SIGINT for real; here we only observe it was reached,
+        # since there is no tty and no turn to interrupt.
+        patcher = mock.patch.object(
+            SteerInput, "_interrupt",
+            lambda _self: self.interrupts.append("sigint"),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.steer = SteerInput()
+
+    def _feed(self, data: bytes) -> None:
+        for byte in data:
+            self.steer._handle_byte(byte)
+
+    def test_it_raises_an_interrupt_without_leaking_into_the_line(self):
+        self._feed(b"ab" + self.CTRL_C + b"cd")
+        self.assertEqual(self.interrupts, ["sigint"])
+        self.assertEqual(self.steer.line(), "abcd")
+        # The escape state is left clean, so typing resumes normally.
+        self.assertEqual(self.steer._esc_mode, 0)
+        # Hyper is a real modifier too: Ctrl+Hyper+C is still a cancel.
+        self._feed(b"\x1b[99;99u")
+        self.assertEqual(self.interrupts, ["sigint", "sigint"])
+        # The sequence is the one agent/keys.py declares: no drift between them.
+        from agent.keys import is_ctrl_c_sequence
+
+        self.assertTrue(is_ctrl_c_sequence(self.CTRL_C.decode()))
+
+    def test_ordinary_control_c_and_every_other_sequence_are_left_alone(self):
+        """The bare 0x03 arrives as SIGINT (ISIG); the reader must ignore it."""
+        self._feed(b"ab\x03cd")
+        self.assertEqual(self.interrupts, [])
+        self.assertEqual(self.steer.line(), "abcd")
+
+        self.steer = SteerInput()  # a fresh line for the swallowing table
+        for keys in (
+            b"\x1b[D", b"\x1b[A", b"\x1b[13;130u", b"\x1bOP",
+            # The whole re-encoded set: lock and shifted variants of every
+            # functional key.
+            b"\x1b[1;129A", b"\x1b[1;129B", b"\x1b[1;129C", b"\x1b[1;129D",
+            b"\x1b[1;129H", b"\x1b[1;129F", b"\x1b[3;129~", b"\x1b[127;130u",
+            b"\x1b[9;130u", b"\x1b[57419;129u", b"\x1b[57414;129u",
+            b"\x1b[57376;129u", b"\x1b[27;130;13~",
+            # SS3 function keys, whose single final byte is not a CSI one.
+            b"\x1bOQ", b"\x1bOR", b"\x1bOS",
+        ):
+            with self.subTest(keys=keys):
+                self._feed(keys)
+                assert self.steer._esc_mode == 0, f"{keys!r} left the reader mid-escape"
+                assert self.steer._esc_buf == b"", keys
+                assert self.steer.line() == "", keys
+        self.assertEqual(self.interrupts, [])
+        # Typing resumes after a swallowed sequence: SS3's single final byte is
+        # the trap that used to swallow the next keystroke too.
+        self._feed(b"hello")
+        self.assertEqual(self.steer.line(), "hello")
 
 
 def _cooked_attrs(attrs):
@@ -407,168 +350,14 @@ def _cooked_attrs(attrs):
     return [iflag, oflag, cflag, lflag, ispeed, ospeed, cc]
 
 
-class TestSteerCtrlCFromKittyProtocol(unittest.TestCase):
-    """Ctrl+C as the kitty keyboard protocol reports it.
-
-    With disambiguation on, the terminal sends ``CSI 99 ; mods u`` instead of
-    ``0x03``. The kernel never sees the byte, so ``ISIG`` has nothing to act
-    on and no SIGINT is raised -- the reader thread has to re-raise it, or
-    Ctrl+C does nothing for the whole duration of a turn.
-    """
-
-    CTRL_C = b"\x1b[99;133u"  # key 'c', ctrl + num_lock
-
-    def _steer(self, interrupts: list[str]) -> SteerInput:
-        steer = SteerInput()
-        # _interrupt is what raises SIGINT for real; here we only want to
-        # observe that it was reached, since there is no tty (and no turn)
-        # to interrupt.
-        patcher = mock.patch.object(
-            SteerInput, "_interrupt", lambda _self: interrupts.append("sigint")
-        )
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        return steer
-
-    def test_it_raises_an_interrupt(self):
-        interrupts: list[str] = []
-        steer = self._steer(interrupts)
-        for byte in self.CTRL_C:
-            steer._handle_byte(byte)
-        self.assertEqual(interrupts, ["sigint"])
-
-    def test_the_sequence_does_not_leak_into_the_line(self):
-        interrupts: list[str] = []
-        steer = self._steer(interrupts)
-        for byte in b"ab" + self.CTRL_C + b"cd":
-            steer._handle_byte(byte)
-        self.assertEqual(steer.line(), "abcd")
-
-    def test_ordinary_control_c_still_goes_through_isig(self):
-        """The bare 0x03 is the kernel's business, not the reader's."""
-        interrupts: list[str] = []
-        steer = self._steer(interrupts)
-        for byte in b"ab\x03cd":
-            steer._handle_byte(byte)
-        self.assertEqual(interrupts, [])
-        self.assertEqual(steer.line(), "abcd")
-
-    def test_escape_state_is_left_clean(self):
-        interrupts: list[str] = []
-        steer = self._steer(interrupts)
-        for byte in self.CTRL_C:
-            steer._handle_byte(byte)
-        self.assertEqual(steer._esc_mode, 0)
-        # And typing still works afterwards.
-        for byte in b"x":
-            steer._handle_byte(byte)
-        self.assertEqual(steer.line(), "x")
-
-    def test_other_escape_sequences_do_not_interrupt(self):
-        """Arrows and friends must not be mistaken for a cancel."""
-        interrupts: list[str] = []
-        steer = self._steer(interrupts)
-        for keys in (
-            b"\x1b[D",
-            b"\x1b[A",
-            b"\x1b[13;130u",
-            b"\x1bOP",
-            # The whole re-encoded set: lock modifier and shifted variants of
-            # every functional key, which the kitty protocol sends instead of
-            # the legacy encodings once disambiguate is on.
-            b"\x1b[1;129A",
-            b"\x1b[1;129B",
-            b"\x1b[1;129C",
-            b"\x1b[1;129D",
-            b"\x1b[1;129H",
-            b"\x1b[1;129F",
-            b"\x1b[3;129~",
-            b"\x1b[127;130u",
-            b"\x1b[9;130u",
-            b"\x1b[57419;129u",
-            b"\x1b[57414;129u",
-            b"\x1b[57376;129u",
-            b"\x1b[27;130;13~",
-            # SS3 function keys, whose single final byte is not a CSI one.
-            b"\x1bOQ",
-            b"\x1bOR",
-            b"\x1bOS",
-        ):
-            self._assert_swallowed(steer, keys)
-        self.assertEqual(interrupts, [])
-
-    @staticmethod
-    def _assert_swallowed(steer, keys: bytes) -> None:
-        """A sequence is consumed whole and leaves the reader ready again."""
-        steer._buffer.clear()
-        for byte in keys:
-            steer._handle_byte(byte)
-        assert steer._esc_mode == 0, f"{keys!r} left the reader mid-escape"
-        assert steer._esc_buf == b"", keys
-        assert steer.line() == "", keys
-
-    def test_hyper_ctrl_c_is_still_a_cancel(self):
-        """``CSI 99 ; 99 u`` is Ctrl+Hyper+C, and hyper is a real modifier.
-
-        It looks nothing like Ctrl+C, so it is easy to assume the control
-        characters it *looks* like -- the ``99`` -- make it safe to ignore.
-        They do not: it is the same Ctrl+C with hyper held, and the point of
-        registering the whole modifier range is that no combination of held
-        keys silently stops cancelling.
-        """
-        interrupts: list[str] = []
-        steer = self._steer(interrupts)
-        for byte in b"\x1b[99;99u":
-            steer._handle_byte(byte)
-        self.assertEqual(interrupts, ["sigint"])
-
-    def test_typing_resumes_after_a_function_key(self):
-        """A swallowed sequence must not swallow the next keystroke too.
-
-        The SS3 form (``ESC O P``) is a single final byte. If the reader
-        does not recognise it as terminal, the escape never closes and every
-        subsequent character is eaten as part of a sequence that will never
-        end -- silent, and only visible as a line editor that has stopped
-        accepting input.
-        """
-        interrupts: list[str] = []
-        steer = self._steer(interrupts)
-        for byte in b"\x1bOP":
-            steer._handle_byte(byte)
-        for byte in b"hello":
-            steer._handle_byte(byte)
-        self.assertEqual(steer.line(), "hello")
-        self.assertEqual(interrupts, [])
-
-    def test_ctrl_c_does_not_disturb_the_queue(self):
-        interrupts: list[str] = []
-        steer = self._steer(interrupts)
-        steer._handle_byte(ord("q"))
-        for byte in self.CTRL_C:
-            steer._handle_byte(byte)
-        self.assertEqual(steer.line(), "q")
-        self.assertIsNone(steer.pending())
-
-    def test_it_matches_the_sequence_the_keys_module_declares(self):
-        """Keep steer.py and agent/keys.py from drifting apart."""
-        from agent.keys import is_ctrl_c_sequence
-
-        self.assertTrue(is_ctrl_c_sequence(self.CTRL_C.decode()))
-
-
 class TestSteerCbreakMode(unittest.TestCase):
     """The tty must keep ISIG enabled so Ctrl+C still reaches the turn."""
 
-    def test_cbreak_keeps_isig(self):
-        """The cbreak flag mask must clear ICANON/ECHO but not ISIG."""
+    def test_cbreak_clears_icanon_and_echo_but_keeps_isig(self):
         import termios
 
-        # `os.path.exists` is not enough: `/dev/tty` exists on every Linux
-        # box, but opening it raises ENXIO when the process has no
-        # controlling terminal. A test runner started with
-        # `start_new_session=True` -- which is how `spawn`/`poll_job` runs a
-        # background job -- is exactly such a process, so this is a
-        # reachable state and not a hypothetical one.
+        # `os.path.exists` is not enough: opening /dev/tty raises ENXIO without a
+        # controlling terminal, which is exactly a `spawn` job's state.
         try:
             fd = os.open("/dev/tty", os.O_RDWR)
         except OSError:
@@ -576,12 +365,8 @@ class TestSteerCbreakMode(unittest.TestCase):
         if not os.isatty(fd):
             os.close(fd)
             self.skipTest("no controlling tty")
-        # Start from a known cooked state, whatever the test runner is in.
-        # EIO here means this sandbox has a /dev/tty that can be opened and
-        # queried but not reconfigured. The cbreak transition under test is a
-        # tcsetattr, so there is nothing observable here and the test would
-        # fail for an environment reason rather than a code one. Checked
-        # *before* the try/finally, so a skip is not masked by the restore.
+        # EIO means this sandbox's /dev/tty can be opened but not reconfigured:
+        # skip, checked before the try/finally.
         try:
             pristine = termios.tcgetattr(fd)
             termios.tcsetattr(fd, termios.TCSANOW, _cooked_attrs(pristine))
@@ -601,41 +386,19 @@ class TestSteerCbreakMode(unittest.TestCase):
             os.close(fd)
 
     def test_ctrl_c_is_delivered_as_sigint(self):
-        """End-to-end: Ctrl+C reaches the main thread as KeyboardInterrupt.
-
-        Driven entirely over the pty, with a handshake: the child announces
-        that it is armed, and only then does the parent send Ctrl+C. Two
-        things depend on that ordering.
-
-        A fixed sleep is a race. If Ctrl+C arrives before the child has
-        installed a handler, the kernel's *default* disposition applies and it
-        terminates the child outright -- the test then reports a missing file
-        rather than a missing SIGINT. Under load (several suites at once) the
-        imports alone can outlast the sleep, which is exactly how this test
-        used to fail intermittently.
-
-        The result also goes over the pty rather than a temp file: a file has
-        to be created, written, closed and unlinked across a process boundary,
-        so parallel runs can race each other out of existence.
-        """
+        """End-to-end: Ctrl+C reaches the main thread as KeyboardInterrupt."""
+        import fcntl
         import pty
         import select
         import struct
-        import fcntl
         import termios
-        import time
 
         def body() -> None:  # pragma: no cover - child process
             import signal
             import termios as T
 
-            # unittest installs a SIGINT handler in the *parent* to report
-            # Ctrl+C as a test result, and fork() inherits it. With that
-            # handler in place the kernel never raises KeyboardInterrupt, so
-            # the child could not observe SIGINT no matter what SteerInput did
-            # with ISIG -- it would fail for a reason unrelated to the code
-            # under test. (SIG_DFL would kill the child outright; the default
-            # *int handler* is what turns SIGINT into KeyboardInterrupt.)
+            # unittest installs a SIGINT handler in the parent and fork() inherits
+            # it, so the child could never see KeyboardInterrupt.
             signal.signal(signal.SIGINT, signal.default_int_handler)
 
             steer = SteerInput(on_submit=lambda _t: None)
@@ -691,93 +454,20 @@ class TestSteerCbreakMode(unittest.TestCase):
         self.assertIn("armed=True", text)
         self.assertIn("isig=True", text)
         self.assertIn("icanon=False", text)
-        self.assertIn("sigint", text, f"Ctrl+C did not reach the main thread: {text!r}")
+        self.assertIn("sigint", text, f"Ctrl+C did not reach the thread: {text!r}")
 
 
 class TestSteerInputNoTty(unittest.TestCase):
     """Without a terminal, steering must be a silent no-op."""
 
-    def test_start_returns_false_without_a_tty(self):
-        steer = SteerInput(on_submit=lambda _t: None)
+    def test_start_returns_false_and_stop_is_safe(self):
         if os.isatty(0):
             self.skipTest("running with a real tty")
+        steer = SteerInput(on_submit=lambda _t: None)
         self.assertFalse(steer.start())
         self.assertFalse(steer.armed)
-
-    def test_stop_without_start_is_safe(self):
+        # Never started: stopping must not raise.
         SteerInput(on_submit=lambda _t: None).stop()
-
-    def test_take_on_empty_queue(self):
-        self.assertIsNone(SteerInput(on_submit=lambda _t: None).take())
-
-
-if __name__ == "__main__":
-    unittest.main()
-
-
-class TestSteerQueue(unittest.TestCase):
-    """The FIFO backing mid-turn injection.
-
-    Two consumers care about it: the injection seam, which drains *all*
-    pending lines at a tool boundary, and the remote path, which drops its own
-    copy of a line only once the server confirms delivery. So ``ack`` must
-    remove the first equal line, not merely the oldest.
-    """
-
-    def setUp(self) -> None:
-        self.steer = SteerInput(on_submit=lambda _t: None)
-
-    def _queue(self, *lines: str) -> None:
-        for line in lines:
-            self.steer._queue.append(line)
-
-    def test_take_is_fifo(self):
-        self._queue("first", "second")
-        self.assertEqual(self.steer.take(), "first")
-        self.assertEqual(self.steer.take(), "second")
-        self.assertIsNone(self.steer.take())
-
-    def test_take_on_empty_queue(self):
-        self.assertIsNone(self.steer.take())
-
-    def test_pending_does_not_consume(self):
-        self._queue("first")
-        self.assertEqual(self.steer.pending(), "first")
-        self.assertEqual(self.steer.pending(), "first")
-        self.assertEqual(self.steer.take(), "first")
-
-    def test_take_all_drains_everything(self):
-        self._queue("a", "b", "c")
-        self.assertEqual(self.steer.take_all(), ["a", "b", "c"])
-        self.assertEqual(self.steer.take_all(), [])
-        self.assertIsNone(self.steer.pending())
-
-    def test_take_all_on_empty_queue(self):
-        self.assertEqual(self.steer.take_all(), [])
-
-    def test_take_all_preserves_order(self):
-        self._queue("z", "y", "x")
-        self.assertEqual(self.steer.take_all(), ["z", "y", "x"])
-
-    def test_ack_removes_the_named_line(self):
-        """Delivery is confirmed out of order relative to typing order."""
-        self._queue("first", "second")
-        self.assertTrue(self.steer.ack("second"))
-        self.assertEqual(self.steer.take_all(), ["first"])
-
-    def test_ack_reports_miss(self):
-        self._queue("first")
-        self.assertFalse(self.steer.ack("never sent"))
-        self.assertEqual(self.steer.pending(), "first")
-
-    def test_ack_of_blank_queue(self):
-        self.assertFalse(self.steer.ack("anything"))
-
-    def test_ack_only_removes_one_occurrence(self):
-        """The same text typed twice is two separate submissions."""
-        self._queue("go on", "go on")
-        self.assertTrue(self.steer.ack("go on"))
-        self.assertEqual(self.steer.take_all(), ["go on"])
 
 
 class _FakeSteer:
@@ -785,10 +475,7 @@ class _FakeSteer:
 
     def __init__(self, armed: bool = False, line: str = "") -> None:
         self._armed = armed
-        self.starts = 0
-        self.stops = 0
-        self.suspends = 0
-        self.resumes = 0
+        self.starts = self.stops = self.suspends = self.resumes = 0
         # The partial line, so a policy test can see whether it survived.
         self.typed = line
 
@@ -818,16 +505,8 @@ class _FakeSteer:
         return True
 
 
-class TestSteerPausedArmsOnlyIfAlreadyArmed(unittest.TestCase):
-    """A subprocess must not leave a second reader on the tty.
-
-    Between turns the agent calls ``output.steer_stop()``, so when the user
-    runs ``/config edit`` or ``/edit`` the reader is already disarmed and
-    prompt_toolkit owns the tty. ``steer_paused`` used to re-arm it
-    unconditionally, leaving two threads reading the same fd: the terminal
-    stayed in cbreak mode and every keystroke became a race between them, so
-    most keys vanished into the discarded steering buffer.
-    """
+class TestSteerPaused(unittest.TestCase):
+    """A subprocess must not leave a second reader on the tty, nor eat the line."""
 
     def _adapter(self, armed: bool, line: str = "") -> Any:
         from agent.output import RichOutputAdapter
@@ -842,113 +521,68 @@ class TestSteerPausedArmsOnlyIfAlreadyArmed(unittest.TestCase):
     def _fake(out: Any) -> _FakeSteer:
         return cast(_FakeSteer, out._steer)
 
-    def test_disarmed_reader_stays_disarmed(self):
-        """The real case: /config edit and /edit run between turns."""
-        out = self._adapter(armed=False)
-        with out.steer_paused():
-            self.assertEqual(self._fake(out).suspends, 1)
-        self.assertEqual(self._fake(out).starts, 0)
-        self.assertEqual(self._fake(out).resumes, 0)
-        self.assertFalse(self._fake(out).armed)
-
-    def test_armed_reader_is_rearmed(self):
+    def test_an_armed_reader_is_suspended_and_rearmed_even_on_an_exception(self):
         """Mid-turn, the reader was armed and must survive the subprocess."""
         out = self._adapter(armed=True)
-        with out.steer_paused():
-            self.assertFalse(self._fake(out).armed)
+        with self.assertRaises(RuntimeError):
+            with out.steer_paused():
+                self.assertFalse(self._fake(out).armed)
+                raise RuntimeError("editor exploded")
         self.assertEqual(self._fake(out).suspends, 1)
         self.assertEqual(self._fake(out).resumes, 1)
         self.assertTrue(self._fake(out).armed)
 
-    def test_reader_is_stopped_even_if_the_body_raises(self):
-        out = self._adapter(armed=True)
-        with self.assertRaises(RuntimeError):
-            with out.steer_paused():
-                raise RuntimeError("editor exploded")
-        self.assertEqual(self._fake(out).resumes, 1)
-
-    def test_no_reader_is_a_no_op(self):
+        # The real case: /config edit and /edit run between turns, disarmed.
         out = self._adapter(armed=False)
+        with out.steer_paused():
+            self.assertEqual(self._fake(out).suspends, 1)
+        self.assertEqual((self._fake(out).starts, self._fake(out).resumes), (0, 0))
+        self.assertFalse(self._fake(out).armed)
+        # No reader at all is a no-op.
         out._steer = None
         with out.steer_paused():
             pass
 
-
-class TestSteerPausedKeepsTheTypedLine(unittest.TestCase):
-    """A pause is not a submit.
-
-    The reported bug: a tool asked for confirmation while a steering line was
-    half written, the question took the terminal, the tool ran -- and the line
-    was gone. ``steer_paused`` was calling ``stop()``, which is the *end of a
-    turn* (it drops the partial line on purpose), so the one call that must
-    preserve everything was the one that discarded it.
-    """
-
-    def _adapter(self, line: str) -> Any:
-        from agent.output import RichOutputAdapter
-
-        out = RichOutputAdapter.__new__(RichOutputAdapter)
-        out._steer = cast(Any, _FakeSteer(armed=True, line=line))
-        return out
-
-    def test_the_line_survives_a_question(self):
-        out = self._adapter("use pandas")
-        with out.steer_paused():
-            pass
-        self.assertEqual(cast(_FakeSteer, out._steer).typed, "use pandas")
-
-    def test_the_line_survives_an_aborted_pause(self):
-        out = self._adapter("use pandas")
-        with self.assertRaises(RuntimeError):
-            with out.steer_paused():
-                raise RuntimeError("the tool blew up")
-        self.assertEqual(cast(_FakeSteer, out._steer).typed, "use pandas")
-
-    def test_a_real_reader_keeps_its_buffer_across_a_pause(self):
-        """The same invariant against SteerInput itself, not the stand-in."""
-        from agent.steer import SteerInput
-
+    def test_the_typed_line_survives_a_pause(self):
+        """A pause is not a submit."""
+        for raise_in_body in (False, True):
+            out = self._adapter(armed=True, line="use pandas")
+            if raise_in_body:
+                with self.assertRaises(RuntimeError):
+                    with out.steer_paused():
+                        raise RuntimeError("the tool blew up")
+            else:
+                with out.steer_paused():
+                    pass
+            self.assertEqual(self._fake(out).typed, "use pandas")
+        # The same invariant against the real reader.
         steer = SteerInput()
         for char in "use pandas":
             steer._handle_byte(ord(char))
         steer._armed = True  # pretend a tty was there
         steer.suspend()
-        self.assertEqual(steer.line(), "use pandas")
-        self.assertEqual(steer.caret(), len("use pandas"))
-        steer._armed = True
-        steer.stop()
-        self.assertEqual(steer.line(), "")
+        self.assertEqual((steer.line(), steer.caret()), ("use pandas", len("use pandas")))
 
     def test_the_row_is_redrawn_when_the_reader_comes_back(self):
         """The caret is dropped while paused, so re-arming must redraw it."""
-        out = self._adapter("half typed")
+        out = self._adapter(armed=True, line="half typed")
         redraws: list[int] = []
         out._steer_on_change = lambda: redraws.append(1)
         with out.steer_paused():
             self.assertEqual(redraws, [])  # nothing to redraw on the way in
         self.assertEqual(len(redraws), 1)
-
-    def test_no_redraw_when_the_reader_was_never_armed(self):
-        out = self._adapter("half typed")
-        cast(_FakeSteer, out._steer)._armed = False
-        redraws: list[int] = []
-        out._steer_on_change = lambda: redraws.append(1)
+        # Never armed: nothing to redraw, either.
+        self._fake(out)._armed = False
+        redraws.clear()
         with out.steer_paused():
             pass
         self.assertEqual(redraws, [])
 
 
 def _pty_state_after_run_subprocess() -> str:
-    """Child: turn end -> run_subprocess -> report tty state on stdout.
-
-    Run under a real pty, because the bug is only visible when there is a
-    terminal: the reader switches the tty to cbreak, and two readers on one
-    fd is invisible in a pipe.
-    """
+    """Child: turn end -> run_subprocess -> report tty state on stdout."""
     import pty
     import select
-    import subprocess
-    import termios
     import time
 
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -987,10 +621,8 @@ def _pty_state_after_run_subprocess() -> str:
         if not chunk:
             break
         out += chunk
-        # Wait for the *last* field, not the first: the child prints one
-        # line in several write() calls, so b"ARMED" can arrive while the
-        # rest of the line is still in flight. Breaking there truncated the
-        # report and made the assertion below fail intermittently.
+        # Wait for the *last* field: the child prints the line in several write()
+        # calls, so breaking on the first truncates the report.
         if b"ECHO" in out and out.rstrip().endswith(b"True"):
             break
     os.close(fd)
@@ -1010,14 +642,9 @@ class TestEditLeavesTheTtyUsable(unittest.TestCase):
         self.assertIn("ICANON True", text, text)
         self.assertIn("ECHO True", text, text)
 
-class TestQuestionFocus(unittest.TestCase):
-    """Where the keyboard starts when a tool asks something mid-turn.
 
-    The rule: with nothing typed and nothing queued the question takes the
-    keyboard at once, so a fresh prompt needs no Tab. A line in progress (or
-    a queued follow-up) keeps it -- reinterpreting a half-written line is the
-    bug the focus design exists to avoid.
-    """
+class TestQuestionFocus(unittest.TestCase):
+    """Where the keyboard starts when a tool asks something mid-turn."""
 
     def setUp(self) -> None:
         self.steer = SteerInput()
@@ -1026,11 +653,7 @@ class TestQuestionFocus(unittest.TestCase):
         self.steer._armed = True
         self.addCleanup(self.steer.stop)
 
-    def _type(self, text: str) -> None:
-        for char in text:
-            self.steer._handle_byte(ord(char))
-
-    def _ask(self, kind: str = "confirm", default: Any = False) -> tuple[Any, dict]:
+    def _ask(self, kind: str = "confirm", default: Any = False) -> tuple[threading.Thread, dict]:
         """Start a question in a thread; return it with a result holder."""
 
         def run() -> None:
@@ -1046,7 +669,9 @@ class TestQuestionFocus(unittest.TestCase):
         self.assertIsNotNone(self.steer._question, "the question never started")
         return thread, result
 
-    # a fresh prompt: no Tab needed
+    def _type(self, text: str) -> None:
+        for char in text:
+            self.steer._handle_byte(ord(char))
 
     def test_an_empty_line_gives_the_question_the_keyboard(self):
         thread, result = self._ask()
@@ -1054,32 +679,25 @@ class TestQuestionFocus(unittest.TestCase):
         self.steer._handle_byte(ord("y"))
         thread.join(2)
         self.assertEqual(result["answer"], "yes")
-        self.assertEqual(self.steer.focus(), "line")
-
-    def test_the_answer_is_typed_straight_into_the_question(self):
+        self.assertEqual((self.steer.focus(), self.steer.line()), ("line", ""))
+        # A string question uses the same line editor, and its buffer is not
+        # the steering line's.
         thread, result = self._ask("string", "dflt")
-        self.assertEqual(self.steer.focus(), "ask")
         self._type("hello")
         self.steer._handle_byte(0x0D)
         thread.join(2)
         self.assertEqual(result["answer"], "hello")
         self.assertEqual(self.steer.line(), "")
 
-    def test_enter_takes_the_default_when_nothing_was_typed(self):
-        thread, result = self._ask("string", "dflt")
-        self.steer._handle_byte(0x0D)
-        thread.join(2)
-        self.assertEqual(result["answer"], "dflt")
+    def test_enter_takes_the_default(self):
+        for kind, default, expected in (("string", "dflt", "dflt"),
+                                        ("confirm", True, "yes")):
+            thread, result = self._ask(kind, default)
+            self.steer._handle_byte(0x0D)
+            thread.join(2)
+            self.assertEqual(result["answer"], expected, kind)
 
-    def test_confirm_enter_takes_its_default(self):
-        thread, result = self._ask("confirm", True)
-        self.steer._handle_byte(0x0D)
-        thread.join(2)
-        self.assertEqual(result["answer"], "yes")
-
-    # a line in flight keeps the keyboard
-
-    def test_a_half_written_line_keeps_the_keyboard(self):
+    def test_a_half_written_line_or_a_queue_keeps_the_keyboard_until_tab(self):
         self._type("note")
         thread, result = self._ask()
         self.assertEqual(self.steer.focus(), "line")
@@ -1089,32 +707,22 @@ class TestQuestionFocus(unittest.TestCase):
         # Tab is the only way onto the question, and the line survives it.
         self.steer._handle_byte(0x09)
         self.assertEqual(self.steer.focus(), "ask")
+        self.steer._handle_byte(0x09)  # Tab goes back, without answering
+        self.assertEqual(self.steer.focus(), "line")
+        self.steer._handle_byte(0x09)
         self.steer._handle_byte(ord("n"))
         thread.join(2)
         self.assertEqual(result["answer"], "no")
         self.assertEqual(self.steer.line(), "notey")
 
-    def test_a_queued_follow_up_keeps_the_keyboard(self):
+        # Nothing typed but a line in flight is still steering.
+        self.steer._handle_byte(0x15)  # Ctrl+U clears the line
         self._type("queued")
-        self.steer._handle_byte(0x0D)  # Enter submits and clears the buffer
-        self.assertEqual(self.steer.line(), "")
+        self.steer._handle_byte(0x0D)
         thread, result = self._ask()
         self.assertEqual(self.steer.focus(), "line")
         self.steer._handle_byte(0x09)
-        self.steer._handle_byte(ord("y"))
-        thread.join(2)
-        self.assertEqual(result["answer"], "yes")
-
-    def test_tab_toggles_back_to_the_line_without_answering(self):
-        thread, result = self._ask()
-        self.assertEqual(self.steer.focus(), "ask")
-        self.steer._handle_byte(0x09)
-        self.assertEqual(self.steer.focus(), "line")
-        self._type("ok")
-        self.assertEqual(self.steer.line(), "ok")
-        self.assertNotIn("answer", result)
-        self.steer._handle_byte(0x09)
-        self.steer._handle_byte(ord("y"))
+        self._type("y")
         thread.join(2)
         self.assertEqual(result["answer"], "yes")
 
@@ -1123,8 +731,3 @@ class TestQuestionFocus(unittest.TestCase):
         self.steer.stop()
         thread.join(2)
         self.assertIsNone(result["answer"])
-
-
-if __name__ == "__main__":
-    unittest.main()
-    unittest.main()

@@ -1,305 +1,113 @@
-"""Tests for agent/core.py — workspace root finding, context file loading, prompt building."""
+"""Tests for agent/core.py — workspace discovery, context/soul loading, prompt order."""
 
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
-from tests.conftest import BaseTest
 from agent.config import Config
+from agent.core import Core
+from tests.conftest import BaseTest
 
 
-class TestFindWorkspaceRoot(BaseTest):
-    """Test the _find_workspace_root walk-up logic."""
-
-    def setUp(self):
-        super().setUp()
-        self.config = Config()
-
-    def test_finds_agents_md_in_start_dir(self):
-        """AGENTS.md exists in the starting directory."""
-        (self._tmpdir / "AGENTS.md").write_text("# Test", encoding="utf-8")
-        result = self._call_find_workspace_root(self._tmpdir)
-        assert result == self._tmpdir
-
-    def test_finds_agents_md_in_parent(self):
-        """AGENTS.md exists one level up."""
-        sub = self._tmpdir / "sub"
-        sub.mkdir()
-        (self._tmpdir / "AGENTS.md").write_text("# Test", encoding="utf-8")
-        result = self._call_find_workspace_root(sub)
-        assert result == self._tmpdir
-
-    def test_finds_agents_md_two_levels_up(self):
-        """AGENTS.md exists two levels up."""
-        sub = self._tmpdir / "a" / "b"
-        sub.mkdir(parents=True)
-        (self._tmpdir / "AGENTS.md").write_text("# Test", encoding="utf-8")
-        result = self._call_find_workspace_root(sub)
-        assert result == self._tmpdir
-
-    def test_returns_start_when_no_context_file(self):
-        """No context file found — should return start directory."""
-        sub = self._tmpdir / "sub"
-        sub.mkdir()
-        result = self._call_find_workspace_root(sub)
-        assert result == sub
-
-    def test_custom_context_files(self):
-        """Uses custom file names from config."""
-        self.config.set_no_save("agent.context_files", ["CUSTOM.md"])
-        (self._tmpdir / "CUSTOM.md").write_text("# Custom", encoding="utf-8")
-        result = self._call_find_workspace_root(self._tmpdir)
-        assert result == self._tmpdir
-
-    def test_prefers_deepest_match(self):
-        """When context files exist at multiple levels, returns the deepest."""
-        sub = self._tmpdir / "sub"
-        sub.mkdir()
-        (self._tmpdir / "AGENTS.md").write_text("# Root", encoding="utf-8")
-        (sub / "AGENTS.md").write_text("# Sub", encoding="utf-8")
-        result = self._call_find_workspace_root(sub)
-        assert result == sub
-
-    def test_cwd_fallback(self):
-        """When no start dir is given, uses cwd."""
-        (self._tmpdir / "AGENTS.md").write_text("# Cwd", encoding="utf-8")
-        with patch("agent.core.Path.cwd", return_value=self._tmpdir):
-            result = self._call_find_workspace_root()
-        assert result == self._tmpdir
-
-    def _call_find_workspace_root(self, start=None):
-        """Call the private _find_workspace_root on a minimal Core-like object."""
-        # We can't instantiate Core without a full router setup, so we
-        # replicate the method logic using the config singleton.
-        context_files = self.config.get("agent.context_files", ["AGENTS.md"])
-        current = (start or Path.cwd()).resolve()
-        for parent in [current, *current.parents]:
-            for name in context_files:
-                if (parent / name).is_file():
-                    return parent
-        return current
-
-
-class TestLoadContextFiles(BaseTest):
-    """Test the _load_context_files caching and content loading."""
+class _CoreCase(BaseTest):
+    """A Core built without __init__ (no router, no MCP) over the real Config."""
 
     def setUp(self):
         super().setUp()
         self.config = Config()
-
-    def test_loads_single_file(self):
-        (self._tmpdir / "AGENTS.md").write_text("# Hello", encoding="utf-8")
-        result = self._call_load_context_files(self._tmpdir)
-        assert "# Hello" in result
-        assert "## Workspace Instructions (AGENTS.md)" in result
-
-    def test_loads_multiple_files(self):
-        self.config.set_no_save("agent.context_files", ["AGENTS.md", "CUSTOM.md"])
-        (self._tmpdir / "AGENTS.md").write_text("# Agents", encoding="utf-8")
-        (self._tmpdir / "CUSTOM.md").write_text("# Custom", encoding="utf-8")
-        result = self._call_load_context_files(self._tmpdir)
-        assert "# Agents" in result
-        assert "# Custom" in result
-        assert "## Workspace Instructions (AGENTS.md)" in result
-        assert "## Workspace Instructions (CUSTOM.md)" in result
-
-    def test_missing_file_skipped_gracefully(self):
-        self.config.set_no_save("agent.context_files", ["AGENTS.md", "MISSING.md"])
-        (self._tmpdir / "AGENTS.md").write_text("# Agents", encoding="utf-8")
-        result = self._call_load_context_files(self._tmpdir)
-        assert "# Agents" in result
-        assert "MISSING" not in result
-
-    def test_empty_string_when_no_files(self):
-        self.config.set_no_save("agent.context_files", ["NONEXISTENT.md"])
-        result = self._call_load_context_files(self._tmpdir)
-        assert result == ""
-
-    def test_caching(self):
-        """Second call should return the same result without re-reading."""
-        (self._tmpdir / "AGENTS.md").write_text("# Cached", encoding="utf-8")
-        result1 = self._call_load_context_files(self._tmpdir, use_cache=True)
-
-        # Modify the file on disk
-        (self._tmpdir / "AGENTS.md").write_text("# Modified", encoding="utf-8")
-
-        # Should still return cached content (cache was set on first call)
-        result2 = self._call_load_context_files(self._tmpdir, use_cache=True)
-        assert result1 == result2
-        assert "# Cached" in result2
-
-    def _call_load_context_files(self, workspace_root, use_cache=False):
-        """Replicate _load_context_files logic using the config singleton,
-        including the caching behaviour."""
-        context_files = self.config.get("agent.context_files", ["AGENTS.md"])
-
-        # Simulate the cache attribute that Core uses
-        cache_attr = "_context_files_cache"
-        if use_cache and hasattr(self, cache_attr):
-            return getattr(self, cache_attr)
-
-        parts = []
-        for name in context_files:
-            path = workspace_root / name
-            if path.is_file():
-                try:
-                    content = path.read_text(encoding="utf-8")
-                except OSError:
-                    continue
-                if content:
-                    parts.append(f"## Workspace Instructions ({name})\n{content}")
-        result = "\n\n".join(parts) if parts else ""
-
-        if use_cache:
-            setattr(self, cache_attr, result)
-        return result
-
-
-class TestLoadSoulFiles(BaseTest):
-    """Test the _load_soul_files global + workspace soul loading."""
-
-    def setUp(self):
-        super().setUp()
-        self.config = Config()
-        # Build a Core-like object without running __init__ (no router needed).
-        from agent.core import Core
         self.core = Core.__new__(Core)
         self.core.config = self.config
 
-    def _patch_paths(self, tmpdir):
-        """Patch cwd and the global config dir used by _load_soul_files."""
-        from unittest.mock import patch
-        return patch.multiple(
-            "agent.core",
-            BASE_CONFIG_DIR=tmpdir,
-        )
+    def _cwd(self):
+        return patch("agent.core.Path.cwd", return_value=self._tmpdir)
 
-    def test_workspace_soul_loaded(self):
-        (self._tmpdir / "SOUL.md").write_text("# I am a soul", encoding="utf-8")
-        with patch("agent.core.Path.cwd", return_value=self._tmpdir):
-            result = self.core._load_soul_files()
-        assert "# I am a soul" in result
-        assert "## Workspace Soul (SOUL.md)" in result
 
-    def test_global_soul_loaded(self):
-        global_dir = self._tmpdir / "global"
-        global_dir.mkdir()
-        (global_dir / "SOUL.md").write_text("# Global soul", encoding="utf-8")
-        with patch("agent.core.BASE_CONFIG_DIR", global_dir), \
-             patch("agent.core.Path.cwd", return_value=self._tmpdir):
-            result = self.core._load_soul_files()
-        assert "# Global soul" in result
-        assert "## Global Soul (SOUL.md)" in result
+class TestWorkspaceRoot(_CoreCase):
+    def test_walks_up_to_the_deepest_directory_holding_a_context_file(self):
+        sub = self._tmpdir / "a" / "b"
+        sub.mkdir(parents=True)
+        (self._tmpdir / "AGENTS.md").write_text("# Root", encoding="utf-8")
+        assert self.core._find_workspace_root(sub) == self._tmpdir
+        # The deepest match wins, not the outermost one.
+        (sub / "AGENTS.md").write_text("# Sub", encoding="utf-8")
+        assert self.core._find_workspace_root(sub) == sub
 
-    def test_global_and_workspace_soul_combined(self):
+    def test_falls_back_to_the_start_directory_and_honours_custom_names(self):
+        sub = self._tmpdir / "sub"
+        sub.mkdir()
+        assert self.core._find_workspace_root(sub) == sub
+        self.config.set_no_save("agent.context_files", ["CUSTOM.md"])
+        (self._tmpdir / "CUSTOM.md").write_text("# Custom", encoding="utf-8")
+        assert self.core._find_workspace_root(sub) == self._tmpdir
+
+
+class TestContextFiles(_CoreCase):
+    def test_loads_configured_files_and_caches_them(self):
+        self.config.set_no_save("agent.context_files", ["AGENTS.md", "MISSING.md"])
+        (self._tmpdir / "AGENTS.md").write_text("# Hello", encoding="utf-8")
+        with self._cwd():
+            first = self.core._load_context_files()
+        assert "## Workspace Instructions (AGENTS.md)" in first
+        assert "# Hello" in first
+        assert "MISSING" not in first  # an absent file is skipped, not an error
+        # The second call is the cache: an edit on disk is not picked up.
+        (self._tmpdir / "AGENTS.md").write_text("# Changed", encoding="utf-8")
+        with self._cwd():
+            assert self.core._load_context_files() == first
+
+    def test_no_files_yields_an_empty_string(self):
+        self.config.set_no_save("agent.context_files", ["NONEXISTENT.md"])
+        with self._cwd():
+            assert self.core._load_context_files() == ""
+
+
+class TestSoulFiles(_CoreCase):
+    def test_global_soul_precedes_the_workspace_soul(self):
         global_dir = self._tmpdir / "global"
         global_dir.mkdir()
         (global_dir / "SOUL.md").write_text("# Global", encoding="utf-8")
         (self._tmpdir / "SOUL.md").write_text("# Workspace", encoding="utf-8")
-        with patch("agent.core.BASE_CONFIG_DIR", global_dir), \
-             patch("agent.core.Path.cwd", return_value=self._tmpdir):
+        with patch("agent.core.BASE_CONFIG_DIR", global_dir), self._cwd():
             result = self.core._load_soul_files()
-        assert "# Global" in result
-        assert "# Workspace" in result
-        # Global comes first
         assert result.index("# Global") < result.index("# Workspace")
+        assert "## Global Soul (SOUL.md)" in result
+        assert "## Workspace Soul (SOUL.md)" in result
 
-    def test_empty_when_no_soul(self):
-        with patch("agent.core.BASE_CONFIG_DIR", self._tmpdir / "nope"), \
-             patch("agent.core.Path.cwd", return_value=self._tmpdir):
-            result = self.core._load_soul_files()
-        assert result == ""
-
-    def test_disabled_with_empty_config(self):
-        self.config.set_no_save("agent.soul_file", "")
-        self.config.set_no_save("agent.global_soul_file", "")
+    def test_an_empty_config_name_disables_that_file(self):
+        for key in ("agent.soul_file", "agent.global_soul_file"):
+            self.config.set_no_save(key, "")
         (self._tmpdir / "SOUL.md").write_text("# Should not load", encoding="utf-8")
-        with patch("agent.core.Path.cwd", return_value=self._tmpdir):
-            result = self.core._load_soul_files()
-        assert result == ""
+        with self._cwd():
+            assert self.core._load_soul_files() == ""
 
-    def test_custom_soul_file_name(self):
+    def test_a_custom_workspace_soul_name_is_used(self):
         self.config.set_no_save("agent.soul_file", "IDENTITY.md")
         (self._tmpdir / "IDENTITY.md").write_text("# Custom", encoding="utf-8")
-        with patch("agent.core.BASE_CONFIG_DIR", self._tmpdir / "nope"), \
-             patch("agent.core.Path.cwd", return_value=self._tmpdir):
+        with patch("agent.core.BASE_CONFIG_DIR", self._tmpdir / "nope"), self._cwd():
             result = self.core._load_soul_files()
-        assert "# Custom" in result
-        assert "IDENTITY.md" in result
-
-    def test_caching(self):
-        (self._tmpdir / "SOUL.md").write_text("# Cached", encoding="utf-8")
-        with patch("agent.core.BASE_CONFIG_DIR", self._tmpdir / "nope"), \
-             patch("agent.core.Path.cwd", return_value=self._tmpdir):
-            first = self.core._load_soul_files()
-            (self._tmpdir / "SOUL.md").write_text("# Modified", encoding="utf-8")
-            second = self.core._load_soul_files()
-        assert first == second
-        assert "# Cached" in second
+        assert "## Workspace Soul (IDENTITY.md)" in result
 
 
-class TestBuildSystemPrompt(BaseTest):
-    """Test that _build_system_prompt assembles all sections correctly."""
+class TestBuildSystemPrompt(_CoreCase):
+    """Chat history is the tail, so the static prefix stays cacheable."""
 
-    def setUp(self):
-        super().setUp()
-        self.config = Config()
-
-    def test_includes_base_prompt(self):
-        prompt = self._call_build_system_prompt(self._tmpdir)
-        assert "You are a test assistant." in prompt
-
-    def test_includes_context_files(self):
-        (self._tmpdir / "AGENTS.md").write_text("# Workspace", encoding="utf-8")
-        prompt = self._call_build_system_prompt(self._tmpdir)
-        assert "# Workspace" in prompt
-
-    def test_no_context_files_section_when_empty(self):
-        prompt = self._call_build_system_prompt(self._tmpdir)
-        assert "Workspace Instructions" not in prompt
-
-    def _call_build_system_prompt(self, workspace_root):
-        """Replicate _build_system_prompt logic."""
-        parts = ["You are a test assistant."]
-
-        # Context files
-        context_files = self.config.get("agent.context_files", ["AGENTS.md"])
-        ctx_parts = []
-        for name in context_files:
-            path = workspace_root / name
-            if path.is_file():
-                content = path.read_text(encoding="utf-8")
-                if content:
-                    ctx_parts.append(f"## Workspace Instructions ({name})\n{content}")
-        if ctx_parts:
-            parts.append("\n\n".join(ctx_parts))
-
-        return "\n".join(parts)
-
-
-class TestSystemPromptOrder(BaseTest):
-    """Chat history must be the tail of the prompt so the static prefix
-    (identity, context, memory, skills) stays stable for prompt caching."""
-
-    def test_chat_history_is_last_section(self):
-        from typing import Any, cast
-
-        from agent.core import Core
-
-        core = Core.__new__(Core)
-        fake = cast(Any, core)
-        fake.system_prompt = "BASE"
-        fake._load_soul_files = lambda: "SOUL"
-        fake._load_context_files = lambda: "CONTEXT"
-        fake.memory = type("M", (), {
+    def _prompt(self, **overrides):
+        core = cast(Any, self.core)
+        core.system_prompt = "BASE"
+        core._load_soul_files = overrides.get("soul", lambda: "SOUL")
+        core._load_context_files = overrides.get("context", lambda: "CONTEXT")
+        core.memory = type("M", (), {
             "get_user_profile_formatted": lambda self, notes=False: "MEMORY",
-            "get_chat_history_formatted": lambda self, timestamps=False: "CHAT_HISTORY",
+            "get_chat_history_formatted": lambda self, timestamps=False: "CHAT",
         })()
-        fake.skills = type("S", (), {"load_all": lambda self: "SKILLS"})()
+        core.skills = type("S", (), {"load_all": lambda self: "SKILLS"})()
+        return self.core._build_system_prompt()
 
-        prompt = core._build_system_prompt()
-        sections = prompt.split("\n")
-        self.assertEqual(
-            sections, ["BASE", "SOUL", "CONTEXT", "MEMORY", "SKILLS", "CHAT_HISTORY"]
-        )
-        self.assertGreater(prompt.index("SKILLS"), prompt.index("MEMORY"))
-        self.assertGreater(prompt.index("CHAT_HISTORY"), prompt.index("SKILLS"))
+    def test_sections_appear_in_a_stable_order(self):
+        assert self._prompt().split("\n") == [
+            "BASE", "SOUL", "CONTEXT", "MEMORY", "SKILLS", "CHAT",
+        ]
+
+    def test_empty_sections_are_omitted(self):
+        prompt = self._prompt(soul=lambda: "", context=lambda: "")
+        assert prompt.split("\n") == ["BASE", "MEMORY", "SKILLS", "CHAT"]
